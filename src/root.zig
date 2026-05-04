@@ -38,6 +38,7 @@ pub const Connection = connection.Connection;
 pub const Settings = settings.Settings;
 pub const Frame = frame.Frame;
 pub const FieldLine = qpack.FieldLine;
+pub const DynamicTable = qpack.DynamicTable;
 pub const Priority = priority.Priority;
 pub const MessageEncoder = message.Encoder;
 pub const MessageDecoder = message.Decoder;

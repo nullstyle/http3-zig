@@ -7,12 +7,12 @@ for TLS 1.3 / ALPN configuration.
 **Status: session scaffold.** The package now provides the stable protocol
 surfaces plus a first HTTP/3 session layer over `nullq.Connection`: HTTP/3
 constants, SETTINGS and frame codecs, non-blocking QPACK field-section
-encoding/decoding with static-table and Huffman string support, header
-validation, priority parameter parsing, TLS context helpers, transport-free
-message codecs, critical stream setup, SETTINGS exchange, GOAWAY handling,
-graceful-drain state, reset events, structured HTTP/3/QPACK error
-classification, request lifecycle tracking, response lifecycle tracking, and
-lightweight client/server request-response facades.
+encoding/decoding with static-table, Huffman string, and dynamic table core
+support, header validation, priority parameter parsing, TLS context helpers,
+transport-free message codecs, critical stream setup, SETTINGS exchange,
+GOAWAY handling, graceful-drain state, reset events, structured HTTP/3/QPACK
+error classification, request lifecycle tracking, response lifecycle tracking,
+and lightweight client/server request-response facades.
 
 ```sh
 mise install
@@ -36,8 +36,9 @@ just test
 - `protocol`: RFC constants and GREASE helpers.
 - `settings`: HTTP/3 SETTINGS parser/encoder.
 - `frame`: HTTP/3 frame parser/encoder, including RFC 9218 PRIORITY_UPDATE.
-- `qpack`: QPACK primitives plus static-table/literal field-section codecs and
-  RFC 7541 Huffman string literal support.
+- `qpack`: QPACK primitives plus static-table/literal field-section codecs,
+  RFC 7541 Huffman string literal support, and a transport-free dynamic table
+  with QPACK absolute, relative, and post-base indexing helpers.
 - `headers`: HTTP field validation for request/response scaffolding.
 - `priority`: RFC 9218 urgency/incremental parameter parsing.
 - `errors`: structured HTTP/3 application error code metadata plus local

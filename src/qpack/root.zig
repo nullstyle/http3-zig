@@ -4,9 +4,13 @@ const std = @import("std");
 
 pub const integer = @import("integer.zig");
 pub const huffman = @import("huffman.zig");
+pub const dynamic_table = @import("dynamic_table.zig");
 pub const static_table = @import("static_table.zig");
 
-pub const Error = integer.Error || huffman.Error || error{
+pub const DynamicTable = dynamic_table.DynamicTable;
+pub const DynamicEntry = dynamic_table.Entry;
+
+pub const Error = integer.Error || huffman.Error || dynamic_table.Error || error{
     BufferTooSmall,
     OutOfMemory,
     HuffmanUnsupported,
