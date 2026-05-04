@@ -14,9 +14,9 @@ header validation, priority parameter parsing, TLS context helpers,
 transport-free message codecs, critical stream setup, SETTINGS exchange,
 opt-in dynamic QPACK stream integration, GOAWAY handling, graceful-drain state,
 reset events, transport close events, structured HTTP/3/QPACK error
-classification, HTTP/3 DATAGRAM send/receive groundwork, request lifecycle
-tracking, response lifecycle tracking, and lightweight client/server
-request-response facades.
+classification, HTTP/3 DATAGRAM send/receive groundwork, reusable transport
+driver helpers, request lifecycle tracking, response lifecycle tracking, and
+lightweight client/server request-response facades.
 
 ```sh
 mise install
@@ -57,6 +57,9 @@ just test
 - `message`: transport-free request/response HEADERS, DATA, and trailer
   encoding/decoding with stream-order validation.
 - `datagram`: RFC 9297 HTTP/3 DATAGRAM quarter-stream-id payload codec.
+- `driver`: small `nullq`/`null3` transport-driving helpers for tests,
+  examples, and interop peers. It keeps socket and clock ownership with the
+  embedder while centralizing the handle/poll/tick/session-drain order.
 - `session`: HTTP/3 session state over `nullq.Connection`, including control
   streams, peer SETTINGS, request stream draining, response writes, FIN
   validation, optional dynamic QPACK encoder/decoder stream processing,
@@ -93,5 +96,7 @@ just test
   drives `/opt/homebrew/opt/curl/bin/curl --http3-only` through handshake,
   request metadata, POST echo, large response, client-side cancellation,
   response reset, connection-close-after-response, and GOAWAY scenarios.
+  The server and in-process integration tests share the reusable transport
+  driver helper instead of open-coding the packet pump.
 
 See [ROADMAP.md](ROADMAP.md) for the production plan.

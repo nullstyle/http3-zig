@@ -89,8 +89,12 @@ Datagrams / capsules), and the QUIC RFCs already tracked by `nullq`.
 - Done: optional curl HTTP/3 interop harness with localhost UDP server
   coverage for GET, request metadata, POST echo, large response, client-side
   cancellation, response reset, connection-close-after-response, and GOAWAY.
+- Done: reusable transport driver helpers shared by the in-process tests and
+  curl interop server, while keeping socket and clock ownership outside the
+  library.
 - Next: integration harness against `go-quic-peer` once `nullq` upload interop
-  lands, plus reusable transport-driver helpers for examples and future peers.
+  lands, plus additional examples and future peers layered on the shared
+  driver.
 
 ## Phase 4: Production Extensions
 

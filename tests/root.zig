@@ -74,17 +74,16 @@ fn pumpH3(
     now_us: *u64,
 ) !void {
     var pkt: [2048]u8 = undefined;
-
-    try client.tick(now_us.*);
-    try server.tick(now_us.*);
-
-    if (try client.poll(&pkt, now_us.*)) |n| try server.handle(pkt[0..n], null, now_us.*);
-    if (try server.poll(&pkt, now_us.*)) |n| try client.handle(pkt[0..n], null, now_us.*);
-
-    try server_h3.drain(server_events);
-    try client_h3.drain(client_events);
-
-    now_us.* += 1_000;
+    var driver = null3.TransportLoopback.init(
+        null3.TransportEndpoint.withSession(client, client_h3, client_events),
+        null3.TransportEndpoint.withSession(server, server_h3, server_events),
+        .{
+            .now_us = now_us.*,
+            .max_datagrams_per_direction = 1,
+        },
+    );
+    _ = try driver.step(&pkt);
+    now_us.* = driver.now_us;
 }
 
 test "HTTP/3 SETTINGS frame round-trip" {

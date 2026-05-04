@@ -234,6 +234,18 @@ pub fn main(init: std.process.Init) !void {
         for (events.items) |event| event.deinit(allocator);
         events.deinit(allocator);
     }
+    var driver = null3.TransportEndpoint.withSession(&conn, &h3, &events);
+
+    const UdpSink = struct {
+        socket: @TypeOf(sock),
+        io: @TypeOf(io),
+        peer: Net.IpAddress,
+
+        pub fn send(self: *@This(), bytes: []const u8) !void {
+            if (trace_packets) std.debug.print("tx {d} bytes\n", .{bytes.len});
+            try self.socket.send(self.io, &self.peer, bytes);
+        }
+    };
 
     while (!conn.isClosed()) {
         const maybe_msg = sock.receiveTimeout(io, &rx, .{
@@ -268,23 +280,20 @@ pub fn main(init: std.process.Init) !void {
                 try conn.acceptInitial(msg.data, params);
                 transport_params_set = true;
             }
-            try conn.handle(msg.data, null, now_us);
+            try driver.handle(msg.data, null, now_us);
         }
 
-        try h3.start();
-        try h3.drain(&events);
+        _ = try driver.drainSession();
         for (events.items) |event| try app.observe(&h3_server, event);
         clearEvents(allocator, &events);
 
-        while (try conn.poll(&tx, now_us)) |n| {
-            if (peer) |p| {
-                if (trace_packets) std.debug.print("tx {d} bytes\n", .{n});
-                try sock.send(io, &p, tx[0..n]);
-            } else break;
+        if (peer) |p| {
+            var sink = UdpSink{ .socket = sock, .io = io, .peer = p };
+            _ = try driver.flush(&tx, now_us, &sink);
         }
         app.afterPoll(&h3);
-        try conn.tick(now_us);
-        now_us += 1_000;
+        try driver.tick(now_us);
+        now_us += null3.driver.default_step_us;
 
         if (options.max_requests > 0 and app.responses_sent >= options.max_requests) {
             idle_after_done_ms += 5;
