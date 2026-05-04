@@ -1,4 +1,5 @@
 const std = @import("std");
+const boringssl = @import("boringssl");
 const null3 = @import("null3");
 const nullq = @import("nullq");
 
@@ -86,6 +87,100 @@ fn pumpH3(
     now_us.* = driver.now_us;
 }
 
+fn pumpUntilH3Error(
+    allocator: std.mem.Allocator,
+    client: *nullq.Connection,
+    server: *nullq.Connection,
+    client_h3: *null3.Session,
+    server_h3: *null3.Session,
+    client_events: *std.ArrayList(null3.session.Event),
+    server_events: *std.ArrayList(null3.session.Event),
+    now_us: *u64,
+    expected: anyerror,
+) !void {
+    var iters: u32 = 0;
+    while (iters < 20_000) : (iters += 1) {
+        pumpH3(
+            client,
+            server,
+            client_h3,
+            server_h3,
+            client_events,
+            server_events,
+            now_us,
+        ) catch |err| {
+            if (err != expected) return err;
+            return;
+        };
+        clearSessionEvents(allocator, client_events);
+        clearSessionEvents(allocator, server_events);
+    }
+    return error.ExpectedH3ErrorNotFound;
+}
+
+fn writeFrame(conn: *nullq.Connection, stream_id: u64, frame: null3.Frame) !void {
+    var buf: [4096]u8 = undefined;
+    const n = try null3.frame.encode(&buf, frame);
+    _ = try conn.streamWrite(stream_id, buf[0..n]);
+}
+
+fn writeHeadersFrame(conn: *nullq.Connection, stream_id: u64, fields: []const null3.FieldLine) !void {
+    var block: [2048]u8 = undefined;
+    const block_n = try null3.qpack.encodeFieldSection(&block, fields);
+    try writeFrame(conn, stream_id, .{ .headers = block[0..block_n] });
+}
+
+fn expectLastCloseCode(session: *const null3.Session, code: u64) !void {
+    const close = session.lastCloseError() orelse return error.MissingCloseError;
+    try std.testing.expectEqual(code, close.application.code);
+}
+
+const H3Pair = struct {
+    client_tls: boringssl.tls.Context,
+    server_tls: boringssl.tls.Context,
+    client: nullq.Connection,
+    server: nullq.Connection,
+    client_h3: null3.Session,
+    server_h3: null3.Session,
+
+    fn initStarted(
+        self: *H3Pair,
+        allocator: std.mem.Allocator,
+        client_config: null3.session.Config,
+        server_config: null3.session.Config,
+    ) !void {
+        self.client_tls = try null3.client.initTlsContext(.{ .verify = .none });
+        errdefer self.client_tls.deinit();
+
+        self.server_tls = try null3.server.initTlsContext(.{}, test_cert_pem, test_key_pem);
+        errdefer self.server_tls.deinit();
+
+        try initConnectedQuic(allocator, self.client_tls, self.server_tls, &self.client, &self.server);
+        errdefer {
+            self.server.deinit();
+            self.client.deinit();
+        }
+
+        self.client_h3 = null3.Session.init(allocator, .client, &self.client, client_config);
+        errdefer self.client_h3.deinit();
+
+        self.server_h3 = null3.Session.init(allocator, .server, &self.server, server_config);
+        errdefer self.server_h3.deinit();
+
+        try self.client_h3.start();
+        try self.server_h3.start();
+    }
+
+    fn deinit(self: *H3Pair) void {
+        self.server_h3.deinit();
+        self.client_h3.deinit();
+        self.server.deinit();
+        self.client.deinit();
+        self.server_tls.deinit();
+        self.client_tls.deinit();
+    }
+};
+
 test "HTTP/3 SETTINGS frame round-trip" {
     const s: null3.Settings = .{
         .qpack_max_table_capacity = 4096,
@@ -108,6 +203,30 @@ test "HTTP/3 SETTINGS frame round-trip" {
         },
         else => return error.TestExpectedEqual,
     }
+}
+
+test "SETTINGS decoder rejects duplicate reserved and invalid values" {
+    const varint = nullq.wire.varint;
+
+    var duplicate: [16]u8 = undefined;
+    var pos: usize = 0;
+    pos += try varint.encode(duplicate[pos..], null3.protocol.SettingId.h3_datagram);
+    pos += try varint.encode(duplicate[pos..], 1);
+    pos += try varint.encode(duplicate[pos..], null3.protocol.SettingId.h3_datagram);
+    pos += try varint.encode(duplicate[pos..], 1);
+    try std.testing.expectError(error.DuplicateSetting, null3.Settings.decode(duplicate[0..pos]));
+
+    var invalid_bool: [8]u8 = undefined;
+    pos = 0;
+    pos += try varint.encode(invalid_bool[pos..], null3.protocol.SettingId.enable_connect_protocol);
+    pos += try varint.encode(invalid_bool[pos..], 2);
+    try std.testing.expectError(error.InvalidSettingValue, null3.Settings.decode(invalid_bool[0..pos]));
+
+    var reserved: [8]u8 = undefined;
+    pos = 0;
+    pos += try varint.encode(reserved[pos..], 0x02);
+    pos += try varint.encode(reserved[pos..], 1);
+    try std.testing.expectError(error.ReservedSetting, null3.Settings.decode(reserved[0..pos]));
 }
 
 test "literal QPACK field section validates as request headers" {
@@ -174,6 +293,56 @@ test "extended CONNECT header validation requires opt-in" {
     );
 }
 
+test "header validation rejects malformed pseudo headers and connection fields" {
+    const pseudo_after_regular = [_]null3.FieldLine{
+        .{ .name = "accept", .value = "*/*" },
+        .{ .name = ":method", .value = "GET" },
+        .{ .name = ":scheme", .value = "https" },
+        .{ .name = ":path", .value = "/" },
+    };
+    try std.testing.expectError(error.PseudoHeaderAfterRegular, null3.headers.validateRequest(&pseudo_after_regular));
+
+    const duplicate_method = [_]null3.FieldLine{
+        .{ .name = ":method", .value = "GET" },
+        .{ .name = ":method", .value = "POST" },
+        .{ .name = ":scheme", .value = "https" },
+        .{ .name = ":path", .value = "/" },
+    };
+    try std.testing.expectError(error.DuplicatePseudoHeader, null3.headers.validateRequest(&duplicate_method));
+
+    const missing_path = [_]null3.FieldLine{
+        .{ .name = ":method", .value = "GET" },
+        .{ .name = ":scheme", .value = "https" },
+    };
+    try std.testing.expectError(error.MissingPseudoHeader, null3.headers.validateRequest(&missing_path));
+
+    const uppercase = [_]null3.FieldLine{
+        .{ .name = ":method", .value = "GET" },
+        .{ .name = ":scheme", .value = "https" },
+        .{ .name = ":path", .value = "/" },
+        .{ .name = "User-Agent", .value = "bad" },
+    };
+    try std.testing.expectError(error.UppercaseFieldName, null3.headers.validateRequest(&uppercase));
+
+    const connection_specific = [_]null3.FieldLine{
+        .{ .name = ":method", .value = "GET" },
+        .{ .name = ":scheme", .value = "https" },
+        .{ .name = ":path", .value = "/" },
+        .{ .name = "connection", .value = "keep-alive" },
+    };
+    try std.testing.expectError(error.ConnectionSpecificField, null3.headers.validateRequest(&connection_specific));
+
+    const bad_trailer = [_]null3.FieldLine{
+        .{ .name = ":status", .value = "200" },
+    };
+    try std.testing.expectError(error.InvalidPseudoHeader, null3.headers.validateTrailers(&bad_trailer));
+
+    const response_without_status = [_]null3.FieldLine{
+        .{ .name = "content-type", .value = "text/plain" },
+    };
+    try std.testing.expectError(error.MissingPseudoHeader, null3.headers.validateResponse(&response_without_status));
+}
+
 test "capsule and context datagram codecs round-trip" {
     var context_buf: [64]u8 = undefined;
     const context_len = try null3.datagram.encodeContextPayload(&context_buf, 42, "ctx");
@@ -192,6 +361,16 @@ test "capsule and context datagram codecs round-trip" {
     var iter = null3.capsule.iter(capsule_buf[0..capsule_len]);
     try std.testing.expect((try iter.next()) != null);
     try std.testing.expect((try iter.next()) == null);
+}
+
+test "capsule decoder rejects truncated capsule payloads" {
+    var buf: [16]u8 = undefined;
+    var pos: usize = 0;
+    pos += try nullq.wire.varint.encode(buf[pos..], null3.capsule.Type.datagram);
+    pos += try nullq.wire.varint.encode(buf[pos..], 4);
+    buf[pos] = 'x';
+    pos += 1;
+    try std.testing.expectError(error.InsufficientBytes, null3.capsule.decode(buf[0..pos]));
 }
 
 test "PRIORITY_UPDATE request frame round-trip" {
@@ -274,6 +453,39 @@ test "message decoder rejects DATA before HEADERS" {
     try std.testing.expectError(
         null3.message.Error.DataBeforeHeaders,
         dec.observe(std.testing.allocator, d.frame),
+    );
+}
+
+test "message codec rejects oversized headers and DATA after trailers" {
+    var oversized = null3.MessageDecoder.init(.response, .{ .max_field_section_size = 1 });
+    try std.testing.expectError(
+        error.HeaderSectionTooLarge,
+        oversized.observe(std.testing.allocator, .{ .headers = "too-large" }),
+    );
+
+    const headers = [_]null3.FieldLine{
+        .{ .name = ":status", .value = "200" },
+    };
+    const trailers = [_]null3.FieldLine{
+        .{ .name = "x-checksum", .value = "ok" },
+    };
+
+    var bytes: [256]u8 = undefined;
+    var pos: usize = 0;
+    var enc = null3.MessageEncoder.init(.response, .{});
+    pos += try enc.encodeHeaders(bytes[pos..], &headers);
+    pos += try enc.encodeTrailers(bytes[pos..], &trailers);
+    pos += try null3.frame.encode(bytes[pos..], .{ .data = "late" });
+
+    var dec = null3.MessageDecoder.init(.response, .{});
+    var events: std.ArrayList(null3.message.Event) = .empty;
+    defer {
+        for (events.items) |event| event.deinit(std.testing.allocator);
+        events.deinit(std.testing.allocator);
+    }
+    try std.testing.expectError(
+        error.DataAfterTrailers,
+        dec.observeBytes(std.testing.allocator, bytes[0..pos], &events),
     );
 }
 
@@ -648,6 +860,173 @@ test "session negotiates and surfaces extended CONNECT requests" {
     try std.testing.expectEqualStrings("CONNECT", request.method().?);
     try std.testing.expectEqualStrings("/socket", request.path().?);
     try std.testing.expectEqualStrings("websocket", request.protocol().?);
+}
+
+test "session rejects duplicate peer SETTINGS" {
+    const allocator = std.testing.allocator;
+
+    var pair: H3Pair = undefined;
+    try pair.initStarted(allocator, .{}, .{});
+    defer pair.deinit();
+
+    try writeFrame(&pair.client, pair.client_h3.control_stream_id.?, .{ .settings = .{} });
+
+    var client_events: std.ArrayList(null3.session.Event) = .empty;
+    defer {
+        clearSessionEvents(allocator, &client_events);
+        client_events.deinit(allocator);
+    }
+    var server_events: std.ArrayList(null3.session.Event) = .empty;
+    defer {
+        clearSessionEvents(allocator, &server_events);
+        server_events.deinit(allocator);
+    }
+
+    var now_us: u64 = 1_000_000;
+    try pumpUntilH3Error(
+        allocator,
+        &pair.client,
+        &pair.server,
+        &pair.client_h3,
+        &pair.server_h3,
+        &client_events,
+        &server_events,
+        &now_us,
+        error.DuplicateSettings,
+    );
+    try std.testing.expectEqual(null3.session.ShutdownState.closed, pair.server_h3.shutdownState());
+    try expectLastCloseCode(&pair.server_h3, null3.protocol.ErrorCode.settings_error);
+}
+
+test "session closes when peer control stream is closed" {
+    const allocator = std.testing.allocator;
+
+    var pair: H3Pair = undefined;
+    try pair.initStarted(allocator, .{}, .{});
+    defer pair.deinit();
+
+    try pair.client.streamFinish(pair.client_h3.control_stream_id.?);
+
+    var client_events: std.ArrayList(null3.session.Event) = .empty;
+    defer {
+        clearSessionEvents(allocator, &client_events);
+        client_events.deinit(allocator);
+    }
+    var server_events: std.ArrayList(null3.session.Event) = .empty;
+    defer {
+        clearSessionEvents(allocator, &server_events);
+        server_events.deinit(allocator);
+    }
+
+    var now_us: u64 = 1_000_000;
+    try pumpUntilH3Error(
+        allocator,
+        &pair.client,
+        &pair.server,
+        &pair.client_h3,
+        &pair.server_h3,
+        &client_events,
+        &server_events,
+        &now_us,
+        error.ClosedCriticalStream,
+    );
+    try std.testing.expectEqual(null3.session.ShutdownState.closed, pair.server_h3.shutdownState());
+    try expectLastCloseCode(&pair.server_h3, null3.protocol.ErrorCode.closed_critical_stream);
+}
+
+test "session rejects malformed request pseudo headers" {
+    const allocator = std.testing.allocator;
+
+    var pair: H3Pair = undefined;
+    try pair.initStarted(allocator, .{}, .{});
+    defer pair.deinit();
+
+    const stream_id: u64 = 0;
+    _ = try pair.client.openBidi(stream_id);
+    const bad_fields = [_]null3.FieldLine{
+        .{ .name = "accept", .value = "*/*" },
+        .{ .name = ":method", .value = "GET" },
+        .{ .name = ":scheme", .value = "https" },
+        .{ .name = ":path", .value = "/" },
+        .{ .name = ":authority", .value = "localhost" },
+    };
+    try writeHeadersFrame(&pair.client, stream_id, &bad_fields);
+
+    var client_events: std.ArrayList(null3.session.Event) = .empty;
+    defer {
+        clearSessionEvents(allocator, &client_events);
+        client_events.deinit(allocator);
+    }
+    var server_events: std.ArrayList(null3.session.Event) = .empty;
+    defer {
+        clearSessionEvents(allocator, &server_events);
+        server_events.deinit(allocator);
+    }
+
+    var now_us: u64 = 1_000_000;
+    try pumpUntilH3Error(
+        allocator,
+        &pair.client,
+        &pair.server,
+        &pair.client_h3,
+        &pair.server_h3,
+        &client_events,
+        &server_events,
+        &now_us,
+        error.PseudoHeaderAfterRegular,
+    );
+    try std.testing.expectEqual(null3.session.ShutdownState.closed, pair.server_h3.shutdownState());
+    try expectLastCloseCode(&pair.server_h3, null3.protocol.ErrorCode.message_error);
+}
+
+test "session enforces max field section size on decoded request headers" {
+    const allocator = std.testing.allocator;
+
+    var pair: H3Pair = undefined;
+    try pair.initStarted(allocator, .{}, .{
+        .settings = .{ .max_field_section_size = 4 },
+        .max_field_section_size = 4,
+    });
+    defer pair.deinit();
+
+    const stream_id: u64 = 0;
+    _ = try pair.client.openBidi(stream_id);
+    const fields = [_]null3.FieldLine{
+        .{ .name = ":method", .value = "GET" },
+        .{ .name = ":scheme", .value = "https" },
+        .{ .name = ":path", .value = "/" },
+        .{ .name = ":authority", .value = "localhost" },
+    };
+    var block: [512]u8 = undefined;
+    const block_n = try null3.qpack.encodeFieldSection(&block, &fields);
+    try std.testing.expect(block_n > 4);
+    try writeFrame(&pair.client, stream_id, .{ .headers = block[0..block_n] });
+
+    var client_events: std.ArrayList(null3.session.Event) = .empty;
+    defer {
+        clearSessionEvents(allocator, &client_events);
+        client_events.deinit(allocator);
+    }
+    var server_events: std.ArrayList(null3.session.Event) = .empty;
+    defer {
+        clearSessionEvents(allocator, &server_events);
+        server_events.deinit(allocator);
+    }
+
+    var now_us: u64 = 1_000_000;
+    try pumpUntilH3Error(
+        allocator,
+        &pair.client,
+        &pair.server,
+        &pair.client_h3,
+        &pair.server_h3,
+        &client_events,
+        &server_events,
+        &now_us,
+        error.HeaderSectionTooLarge,
+    );
+    try std.testing.expectEqual(null3.session.ShutdownState.closed, pair.server_h3.shutdownState());
+    try expectLastCloseCode(&pair.server_h3, null3.protocol.ErrorCode.message_error);
 }
 
 test "session exchanges HTTP/3 request and response over nullq streams" {

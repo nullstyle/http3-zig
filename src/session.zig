@@ -750,6 +750,12 @@ pub const Session = struct {
 
             const maybe_event = switch (decoded.frame) {
                 .headers => |block| blk: {
+                    if (self.config.max_field_section_size) |max| {
+                        if (block.len > max) {
+                            self.closeForError(error.HeaderSectionTooLarge);
+                            return error.HeaderSectionTooLarge;
+                        }
+                    }
                     const decoded_fields = self.decodeFieldSectionForStream(state.id, block) catch |err| {
                         if (err == error.RequiredInsertCountNotReady) {
                             state.blocked_on_qpack = true;
