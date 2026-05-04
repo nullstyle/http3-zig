@@ -201,6 +201,7 @@ pub fn codeForError(err: anyerror) u64 {
         error.OutOfMemory,
         error.BufferTooSmall,
         error.WriteStalled,
+        error.SendBufferFull,
         error.DatagramTooLarge,
         error.InsertCountOverflow,
         error.ReferenceCountOverflow,
@@ -260,6 +261,7 @@ fn known(code: u64, name: []const u8, category: Category, default_scope: Scope) 
 fn scopeForError(err: anyerror, app: ApplicationError) Scope {
     return switch (err) {
         error.RequestBlockedByGoaway => .stream,
+        error.SendBufferFull => .stream,
         else => app.default_scope,
     };
 }
@@ -271,6 +273,7 @@ fn categoryForError(err: anyerror, app: ApplicationError) Category {
         error.PeerAlerted,
         error.UnsupportedCipherSuite,
         error.InboxOverflow,
+        error.SendBufferFull,
         error.PeerDcidNotSet,
         error.PathLimitExceeded,
         => .transport,

@@ -1242,6 +1242,41 @@ test "session surfaces nullq flow blocked events" {
     try std.testing.expect(saw_flow_blocked);
 }
 
+test "session exposes send buffer state and enforces configured cap" {
+    const allocator = std.testing.allocator;
+
+    var pair: H3Pair = undefined;
+    try pair.initStarted(
+        allocator,
+        .{ .max_stream_send_buffered = 256 },
+        .{},
+    );
+    defer pair.deinit();
+
+    var h3_client = null3.Client.init(&pair.client_h3);
+    var writer = try h3_client.startRequest(allocator, .{
+        .method = "POST",
+        .authority = "localhost",
+        .path = "/buffered",
+    });
+
+    const before = try writer.sendState();
+    try std.testing.expectEqual(writer.stream_id, before.stream_id);
+    try std.testing.expect(before.written_bytes > 0);
+    try std.testing.expectEqual(@as(u64, 0), before.acked_bytes);
+    try std.testing.expectEqual(before.written_bytes, before.buffered_bytes);
+    try std.testing.expect(before.has_pending);
+    try std.testing.expect(!before.overLimit(256));
+
+    var body = [_]u8{'x'} ** 512;
+    try std.testing.expect(!try writer.canWrite(body.len));
+    try std.testing.expectError(error.SendBufferFull, writer.write(&body));
+
+    const after = try writer.sendState();
+    try std.testing.expectEqual(before.written_bytes, after.written_bytes);
+    try std.testing.expectEqual(before.buffered_bytes, after.buffered_bytes);
+}
+
 test "session rejects disabled DATAGRAM sends after SETTINGS" {
     const allocator = std.testing.allocator;
 

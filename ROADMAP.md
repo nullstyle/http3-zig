@@ -101,8 +101,11 @@ Datagrams / capsules), and the QUIC RFCs already tracked by `nullq`.
 - Done: reusable transport driver helpers shared by the in-process tests and
   curl interop server, while keeping socket and clock ownership outside the
   library.
-- Next: integration harness against `go-quic-peer` once `nullq` upload interop
-  lands, plus additional examples and future peers layered on the shared
+- Done: opt-in per-stream send-buffer backpressure caps plus send-state
+  introspection for written, acknowledged, buffered, pending, and flow-blocked
+  state.
+- Next: HTTP/3 interop harnesses against external peers over ordinary
+  `nullq.Connection` APIs, plus additional examples layered on the shared
   driver.
 
 ## Phase 4: Production Extensions
@@ -132,5 +135,8 @@ Datagrams / capsules), and the QUIC RFCs already tracked by `nullq`.
   malformed pseudo-headers, truncated capsules, DATA-after-trailers, oversized
   decoded field sections, QPACK decoder feedback errors, and peer QPACK dynamic
   table capacity/entry overflow.
+- Partial: send-side stream buffering now has an opt-in per-stream cap; broader
+  memory budgets still need coverage across decoded bodies, capsules, QPACK,
+  and queued events.
 - Remaining: broader fuzzing plus sustained memory/flow/resource-pressure cases.
 - Interop matrix across quic-go, ngtcp2, lsquic, aioquic, and Chromium/curl where practical.

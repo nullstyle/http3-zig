@@ -70,6 +70,7 @@ pub const UnknownFrame = session_mod.UnknownFrameEvent;
 pub const ConnectionClosed = session_mod.ConnectionClosedEvent;
 pub const DatagramSend = session_mod.DatagramSendEvent;
 pub const FlowBlocked = session_mod.FlowBlockedEvent;
+pub const StreamSendState = session_mod.StreamSendState;
 
 pub const RequestOptions = struct {
     method: []const u8 = "GET",
@@ -102,6 +103,18 @@ pub const RequestWriter = struct {
 
     pub fn write(self: *RequestWriter, data: []const u8) session_mod.Error!void {
         if (data.len > 0) try self.client.sendData(self.stream_id, data);
+    }
+
+    pub fn sendState(self: *const RequestWriter) session_mod.Error!StreamSendState {
+        return try self.client.streamSendState(self.stream_id);
+    }
+
+    pub fn canBuffer(self: *const RequestWriter, additional_bytes: usize) session_mod.Error!bool {
+        return try self.client.canBufferStreamBytes(self.stream_id, additional_bytes);
+    }
+
+    pub fn canWrite(self: *const RequestWriter, data_len: usize) session_mod.Error!bool {
+        return try self.client.canSendData(self.stream_id, data_len);
     }
 
     pub fn datagram(self: *RequestWriter, payload: []const u8) session_mod.Error!void {
@@ -435,6 +448,18 @@ pub const Client = struct {
 
     pub fn sendData(self: *Client, stream_id: u64, data: []const u8) session_mod.Error!void {
         try self.session.sendRequestData(stream_id, data);
+    }
+
+    pub fn streamSendState(self: *const Client, stream_id: u64) session_mod.Error!StreamSendState {
+        return try self.session.streamSendState(stream_id);
+    }
+
+    pub fn canBufferStreamBytes(self: *const Client, stream_id: u64, additional_bytes: usize) session_mod.Error!bool {
+        return try self.session.canBufferStreamBytes(stream_id, additional_bytes);
+    }
+
+    pub fn canSendData(self: *const Client, stream_id: u64, data_len: usize) session_mod.Error!bool {
+        return try self.session.canSendData(stream_id, data_len);
     }
 
     pub fn sendDatagram(self: *Client, stream_id: u64, payload: []const u8) session_mod.Error!void {

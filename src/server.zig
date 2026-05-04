@@ -78,6 +78,7 @@ pub const UnknownFrame = session_mod.UnknownFrameEvent;
 pub const ConnectionClosed = session_mod.ConnectionClosedEvent;
 pub const DatagramSend = session_mod.DatagramSendEvent;
 pub const FlowBlocked = session_mod.FlowBlockedEvent;
+pub const StreamSendState = session_mod.StreamSendState;
 
 pub const ResponseOptions = struct {
     status: []const u8 = "200",
@@ -102,6 +103,18 @@ pub const ResponseWriter = struct {
 
     pub fn write(self: *ResponseWriter, data: []const u8) session_mod.Error!void {
         if (data.len > 0) try self.server.sendData(self.stream_id, data);
+    }
+
+    pub fn sendState(self: *const ResponseWriter) session_mod.Error!StreamSendState {
+        return try self.server.streamSendState(self.stream_id);
+    }
+
+    pub fn canBuffer(self: *const ResponseWriter, additional_bytes: usize) session_mod.Error!bool {
+        return try self.server.canBufferStreamBytes(self.stream_id, additional_bytes);
+    }
+
+    pub fn canWrite(self: *const ResponseWriter, data_len: usize) session_mod.Error!bool {
+        return try self.server.canSendData(self.stream_id, data_len);
     }
 
     pub fn datagram(self: *ResponseWriter, payload: []const u8) session_mod.Error!void {
@@ -285,6 +298,18 @@ pub const Server = struct {
 
     pub fn sendData(self: *Server, stream_id: u64, data: []const u8) session_mod.Error!void {
         try self.session.sendResponseData(stream_id, data);
+    }
+
+    pub fn streamSendState(self: *const Server, stream_id: u64) session_mod.Error!StreamSendState {
+        return try self.session.streamSendState(stream_id);
+    }
+
+    pub fn canBufferStreamBytes(self: *const Server, stream_id: u64, additional_bytes: usize) session_mod.Error!bool {
+        return try self.session.canBufferStreamBytes(stream_id, additional_bytes);
+    }
+
+    pub fn canSendData(self: *const Server, stream_id: u64, data_len: usize) session_mod.Error!bool {
+        return try self.session.canSendData(stream_id, data_len);
     }
 
     pub fn sendDatagram(self: *Server, stream_id: u64, payload: []const u8) session_mod.Error!void {

@@ -44,6 +44,7 @@ pub const Error = nullq.conn.state.Error ||
         RequestBlockedByGoaway,
         DatagramNotEnabled,
         DatagramTooLarge,
+        SendBufferFull,
     };
 
 pub const Config = struct {
@@ -64,6 +65,9 @@ pub const Config = struct {
     read_chunk_size: usize = 4096,
     max_data_frame_payload: usize = 16 * 1024,
     max_datagram_payload_size: usize = 64 * 1024,
+    /// Optional cap on per-stream bytes buffered in nullq but not yet
+    /// acknowledged. Leave null to preserve unbounded legacy behavior.
+    max_stream_send_buffered: ?usize = null,
 };
 
 pub const FieldEvent = struct {
@@ -94,6 +98,19 @@ pub const DatagramSendEvent = nullq.conn.DatagramSendEvent;
 pub const FlowBlockedEvent = nullq.conn.FlowBlockedInfo;
 pub const FlowBlockedKind = nullq.conn.FlowBlockedKind;
 pub const FlowBlockedSource = nullq.conn.FlowBlockedSource;
+
+pub const StreamSendState = struct {
+    stream_id: u64,
+    written_bytes: u64,
+    acked_bytes: u64,
+    buffered_bytes: u64,
+    has_pending: bool,
+    flow_blocked: ?FlowBlockedEvent = null,
+
+    pub fn overLimit(self: StreamSendState, max_buffered: usize) bool {
+        return self.buffered_bytes > @as(u64, @intCast(max_buffered));
+    }
+};
 
 pub const StreamFinishedEvent = struct {
     stream_id: u64,
@@ -458,6 +475,52 @@ pub const Session = struct {
 
     pub fn lastCloseError(self: *const Session) ?errors_mod.ConnectionError {
         return self.last_close_error;
+    }
+
+    pub fn streamSendState(self: *const Session, stream_id: u64) Error!StreamSendState {
+        const stream = self.quic.stream(stream_id) orelse return Error.MissingStream;
+        const written = stream.send.writtenBytes();
+        const acked = stream.send.ackedFloor();
+        return .{
+            .stream_id = stream_id,
+            .written_bytes = written,
+            .acked_bytes = acked,
+            .buffered_bytes = written - acked,
+            .has_pending = stream.send.hasPendingChunk(),
+            .flow_blocked = self.streamFlowBlocked(stream_id),
+        };
+    }
+
+    pub fn streamFlowBlocked(self: *const Session, stream_id: u64) ?FlowBlockedEvent {
+        if (self.quic.localStreamDataBlockedAt(stream_id)) |limit| {
+            return .{
+                .source = .local,
+                .kind = .stream_data,
+                .limit = limit,
+                .stream_id = stream_id,
+            };
+        }
+        if (self.quic.localDataBlockedAt()) |limit| {
+            return .{
+                .source = .local,
+                .kind = .data,
+                .limit = limit,
+            };
+        }
+        return null;
+    }
+
+    pub fn canBufferStreamBytes(self: *const Session, stream_id: u64, additional_bytes: usize) Error!bool {
+        const max_buffered = self.config.max_stream_send_buffered orelse return true;
+        const state = try self.streamSendState(stream_id);
+        const max: u64 = @intCast(max_buffered);
+        const additional: u64 = @intCast(additional_bytes);
+        if (additional > max) return false;
+        return state.buffered_bytes <= max - additional;
+    }
+
+    pub fn canSendData(self: *const Session, stream_id: u64, data_len: usize) Error!bool {
+        return try self.canBufferStreamBytes(stream_id, self.dataFramesEncodedLen(data_len));
     }
 
     pub fn close(self: *Session, error_code: u64, reason: []const u8) void {
@@ -1178,6 +1241,8 @@ pub const Session = struct {
         encoder: *message_mod.Encoder,
         data: []const u8,
     ) Error!void {
+        try self.ensureStreamSendCapacity(stream_id, self.dataFramesEncodedLen(data.len));
+
         const chunk_size = if (self.config.max_data_frame_payload == 0)
             data.len
         else
@@ -1193,6 +1258,26 @@ pub const Session = struct {
             try self.writeAll(stream_id, buf[0..n]);
             offset = end;
         }
+    }
+
+    fn dataFramesEncodedLen(self: *const Session, data_len: usize) usize {
+        if (data_len == 0) return 0;
+        const chunk_size = if (self.config.max_data_frame_payload == 0)
+            data_len
+        else
+            self.config.max_data_frame_payload;
+
+        var total: usize = 0;
+        var offset: usize = 0;
+        while (offset < data_len) {
+            const end = @min(data_len, offset + chunk_size);
+            const chunk_len = end - offset;
+            total += varint.encodedLen(protocol.FrameType.data) +
+                varint.encodedLen(chunk_len) +
+                chunk_len;
+            offset = end;
+        }
+        return total;
     }
 
     fn sendCapsuleData(
@@ -1383,12 +1468,19 @@ pub const Session = struct {
     }
 
     fn writeAll(self: *Session, stream_id: u64, bytes: []const u8) Error!void {
+        try self.ensureStreamSendCapacity(stream_id, bytes.len);
+
         var rest = bytes;
         while (rest.len > 0) {
             const n = try self.quic.streamWrite(stream_id, rest);
             if (n == 0) return Error.WriteStalled;
             rest = rest[n..];
         }
+    }
+
+    fn ensureStreamSendCapacity(self: *const Session, stream_id: u64, additional_bytes: usize) Error!void {
+        if (try self.canBufferStreamBytes(stream_id, additional_bytes)) return;
+        return Error.SendBufferFull;
     }
 
     fn nextLocalUniId(self: *const Session, first_id: u64) u64 {

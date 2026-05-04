@@ -57,6 +57,7 @@ pub const DatagramSendEvent = session.DatagramSendEvent;
 pub const FlowBlockedEvent = session.FlowBlockedEvent;
 pub const FlowBlockedKind = session.FlowBlockedKind;
 pub const FlowBlockedSource = session.FlowBlockedSource;
+pub const StreamSendState = session.StreamSendState;
 pub const Capsule = capsule.Capsule;
 pub const CapsuleDecoded = capsule.Decoded;
 pub const DatagramContextPayload = datagram.ContextPayload;
