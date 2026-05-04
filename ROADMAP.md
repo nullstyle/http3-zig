@@ -48,6 +48,9 @@ Datagrams / capsules), and the QUIC RFCs already tracked by `nullq`.
   wrapping, field-section prefix base handling, blocked stream accounting,
   Known Received Count, acknowledgments, cancellations, and insert-count
   increments.
+- Done: dynamic-aware field-section codecs for indexed field lines, literal
+  field lines with dynamic name references, post-base references, and
+  encoder-side outstanding reference tracking.
 - Configurable indexing policy with safe defaults for sensitive fields.
 - RFC 9204 examples and cross-implementation fixture tests.
 
