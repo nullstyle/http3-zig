@@ -162,6 +162,8 @@ pub fn codeForError(err: anyerror) u64 {
         error.InvalidPseudoHeader,
         error.ExtendedConnectNotEnabled,
         error.ConnectionSpecificField,
+        error.DecodedFieldSectionTooLarge,
+        error.TooManyFieldLines,
         => protocol.ErrorCode.message_error,
         error.HuffmanUnsupported,
         error.InvalidHuffmanCode,
@@ -277,6 +279,8 @@ fn categoryForError(err: anyerror, app: ApplicationError) Category {
         error.BodyTooLarge,
         error.EventPayloadTooLarge,
         error.EventQueueFull,
+        error.DecodedFieldSectionTooLarge,
+        error.TooManyFieldLines,
         => .resource,
         error.HandshakeFailed,
         error.PeerAlerted,
@@ -322,4 +326,8 @@ test "local causes map to close codes and cause categories" {
     const event_queue = classify(error.EventQueueFull);
     try std.testing.expectEqual(protocol.ErrorCode.internal_error, event_queue.application.code);
     try std.testing.expectEqual(Category.resource, event_queue.category);
+
+    const decoded_fields = classify(error.DecodedFieldSectionTooLarge);
+    try std.testing.expectEqual(protocol.ErrorCode.message_error, decoded_fields.application.code);
+    try std.testing.expectEqual(Category.resource, decoded_fields.category);
 }

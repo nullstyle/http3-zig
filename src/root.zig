@@ -51,6 +51,7 @@ pub const DynamicTable = qpack.DynamicTable;
 pub const QpackIndexingPolicy = qpack.IndexingPolicy;
 pub const QpackEncoderInstruction = qpack.EncoderInstruction;
 pub const QpackDecoderInstruction = qpack.DecoderInstruction;
+pub const QpackFieldSectionDecodeOptions = qpack.FieldSectionDecodeOptions;
 pub const QpackEncoderState = qpack.QpackEncoderState;
 pub const QpackDecoderState = qpack.QpackDecoderState;
 pub const Priority = priority.Priority;

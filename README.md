@@ -82,7 +82,9 @@ just test
   per-stream bytes accepted by nullq but not yet acknowledged, and
   `StreamSendState` exposes written/acked/buffered byte counters. Session
   drain can also cap emitted event count and owned event payload bytes before
-  DATA, DATAGRAM, capsule, push, or close-reason payloads are copied.
+  DATA, DATAGRAM, capsule, push, or close-reason payloads are copied. QPACK
+  decode can cap decoded field-line count and decoded field storage separately
+  from encoded HEADERS payload size.
 - `connection`: `nullq.Connection` adapter for control stream, optional QPACK
   streams, and request/data frame writes.
 - `client` / `server`: BoringSSL TLS context helpers with ALPN set to `h3`,
@@ -113,7 +115,7 @@ just test
   in both directions over `nullq` DATAGRAM frames, including tracked send IDs
   and DATAGRAM ACK propagation, nullq connection-ID replenishment events,
   send-buffer cap enforcement, tracker body-budget enforcement, session
-  event-budget enforcement, RFC 9204 Appendix B exact-byte
+  event-budget and QPACK decoded-field budget enforcement, RFC 9204 Appendix B exact-byte
   QPACK examples for dynamic table insertion, field-section references,
   acknowledgments, cancellations, and eviction, an opt-in dynamic QPACK
   response header over the in-process `nullq` exchange, plus exact-byte

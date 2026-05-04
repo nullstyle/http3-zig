@@ -110,6 +110,8 @@ Datagrams / capsules), and the QUIC RFCs already tracked by `nullq`.
   owned lifecycle assemblers.
 - Done: session drain event-count and owned-payload budgets, covering transient
   DATA, DATAGRAM, capsule DATA, push-promise, and close-reason event copies.
+- Done: QPACK field-section decode budgets for decoded field-line count and
+  decoded owned field storage, distinct from encoded HEADERS size limits.
 - Next: HTTP/3 interop harnesses against external peers over ordinary
   `nullq.Connection` APIs, plus additional examples layered on the shared
   driver.
@@ -141,8 +143,9 @@ Datagrams / capsules), and the QUIC RFCs already tracked by `nullq`.
   malformed pseudo-headers, truncated capsules, DATA-after-trailers, oversized
   decoded field sections, QPACK decoder feedback errors, and peer QPACK dynamic
   table capacity/entry overflow.
-- Partial: send-side stream buffering, session event queues, and tracker body
-  accumulation now have opt-in caps; broader memory budgets still need coverage
-  across QPACK and extension-specific capsule state.
+- Partial: send-side stream buffering, session event queues, tracker body
+  accumulation, and decoded QPACK field sections now have opt-in caps; broader
+  sustained resource-pressure coverage is still needed, especially around
+  extension-specific capsule state.
 - Remaining: broader fuzzing plus sustained memory/flow/resource-pressure cases.
 - Interop matrix across quic-go, ngtcp2, lsquic, aioquic, and Chromium/curl where practical.

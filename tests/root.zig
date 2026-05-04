@@ -1559,6 +1559,30 @@ test "session enforces max field section size on decoded request headers" {
     try expectLastCloseCode(&pair.server_h3, null3.protocol.ErrorCode.message_error);
 }
 
+test "session enforces decoded field-line count budget" {
+    const allocator = std.testing.allocator;
+
+    var pair: H3Pair = undefined;
+    try pair.initStarted(allocator, .{}, .{
+        .max_field_lines = 3,
+    });
+    defer pair.deinit();
+
+    const stream_id: u64 = 0;
+    _ = try pair.client.openBidi(stream_id);
+    const fields = [_]null3.FieldLine{
+        .{ .name = ":method", .value = "GET" },
+        .{ .name = ":scheme", .value = "https" },
+        .{ .name = ":path", .value = "/" },
+        .{ .name = ":authority", .value = "localhost" },
+    };
+    try writeHeadersFrame(&pair.client, stream_id, &fields);
+
+    try expectPairH3Error(allocator, &pair, error.TooManyFieldLines);
+    try std.testing.expectEqual(null3.session.ShutdownState.closed, pair.server_h3.shutdownState());
+    try expectLastCloseCode(&pair.server_h3, null3.protocol.ErrorCode.message_error);
+}
+
 test "session exchanges HTTP/3 request and response over nullq streams" {
     const allocator = std.testing.allocator;
 

@@ -27,6 +27,8 @@ pub const Error = integer.Error || huffman.Error || dynamic_table.Error || instr
     UnsupportedRepresentation,
     MalformedFieldSection,
     InvalidStaticIndex,
+    DecodedFieldSectionTooLarge,
+    TooManyFieldLines,
 };
 
 pub const StringOptions = struct {
@@ -35,6 +37,11 @@ pub const StringOptions = struct {
 
 pub const FieldSectionEncodeOptions = struct {
     huffman: bool = false,
+};
+
+pub const FieldSectionDecodeOptions = struct {
+    max_field_lines: ?usize = null,
+    max_decoded_bytes: ?usize = null,
 };
 
 pub const DynamicFieldSectionTracker = struct {
@@ -53,6 +60,34 @@ pub const FieldLine = struct {
     value: []const u8,
     /// Maps to QPACK's N bit. Sensitive fields are never indexed.
     sensitive: bool = false,
+};
+
+const DecodeBudget = struct {
+    max_field_lines: ?usize,
+    max_decoded_bytes: ?usize,
+    field_lines: usize = 0,
+    decoded_bytes: usize = 0,
+
+    fn init(options: FieldSectionDecodeOptions) DecodeBudget {
+        return .{
+            .max_field_lines = options.max_field_lines,
+            .max_decoded_bytes = options.max_decoded_bytes,
+        };
+    }
+
+    fn reserve(self: *DecodeBudget, name: []const u8, value: []const u8) Error!void {
+        if (self.max_field_lines) |max| {
+            if (self.field_lines >= max) return error.TooManyFieldLines;
+        }
+        const field_bytes = @sizeOf(FieldLine) + name.len + value.len;
+        if (self.max_decoded_bytes) |max| {
+            if (field_bytes > max or self.decoded_bytes > max - field_bytes) {
+                return error.DecodedFieldSectionTooLarge;
+            }
+        }
+        self.field_lines += 1;
+        self.decoded_bytes += field_bytes;
+    }
 };
 
 const FieldRepresentation = union(enum) {
@@ -279,7 +314,15 @@ pub fn decodeFieldSection(
     allocator: std.mem.Allocator,
     src: []const u8,
 ) Error![]FieldLine {
-    return decodeStaticOnlyFieldSection(allocator, src);
+    return decodeFieldSectionWithOptions(allocator, src, .{});
+}
+
+pub fn decodeFieldSectionWithOptions(
+    allocator: std.mem.Allocator,
+    src: []const u8,
+    options: FieldSectionDecodeOptions,
+) Error![]FieldLine {
+    return decodeStaticOnlyFieldSection(allocator, src, options);
 }
 
 /// Decode a field section that can reference `table`. If the Required Insert
@@ -290,6 +333,16 @@ pub fn decodeDynamicFieldSection(
     table: *const DynamicTable,
     max_table_capacity: u64,
     src: []const u8,
+) Error![]FieldLine {
+    return decodeDynamicFieldSectionWithOptions(allocator, table, max_table_capacity, src, .{});
+}
+
+pub fn decodeDynamicFieldSectionWithOptions(
+    allocator: std.mem.Allocator,
+    table: *const DynamicTable,
+    max_table_capacity: u64,
+    src: []const u8,
+    options: FieldSectionDecodeOptions,
 ) Error![]FieldLine {
     const decoded_prefix = try state.decodeFieldSectionPrefix(
         src,
@@ -304,6 +357,7 @@ pub fn decodeDynamicFieldSection(
         table,
         decoded_prefix.prefix,
         src[decoded_prefix.bytes_read..],
+        options,
     );
 }
 
@@ -314,7 +368,15 @@ pub fn decodeLiteralFieldSection(
     allocator: std.mem.Allocator,
     src: []const u8,
 ) Error![]FieldLine {
-    return decodeStaticOnlyFieldSection(allocator, src);
+    return decodeLiteralFieldSectionWithOptions(allocator, src, .{});
+}
+
+pub fn decodeLiteralFieldSectionWithOptions(
+    allocator: std.mem.Allocator,
+    src: []const u8,
+    options: FieldSectionDecodeOptions,
+) Error![]FieldLine {
+    return decodeStaticOnlyFieldSection(allocator, src, options);
 }
 
 pub fn freeFieldSection(allocator: std.mem.Allocator, fields: []FieldLine) void {
@@ -598,6 +660,7 @@ fn readStringAlloc(
 fn decodeStaticOnlyFieldSection(
     allocator: std.mem.Allocator,
     src: []const u8,
+    options: FieldSectionDecodeOptions,
 ) Error![]FieldLine {
     var pos: usize = 0;
     const ric = try integer.decode(src[pos..], 8);
@@ -618,6 +681,7 @@ fn decodeStaticOnlyFieldSection(
         }
         fields.deinit(allocator);
     }
+    var budget = DecodeBudget.init(options);
 
     while (pos < src.len) {
         const first = src[pos];
@@ -626,7 +690,7 @@ fn decodeStaticOnlyFieldSection(
             const index = try integer.decode(src[pos..], 6);
             pos += index.bytes_read;
             const entry = static_table.get(@intCast(index.value)) orelse return Error.InvalidStaticIndex;
-            try appendCopiedField(&fields, allocator, entry.name, entry.value, false);
+            try appendCopiedField(&fields, allocator, &budget, entry.name, entry.value, false);
         } else if ((first & 0xc0) == 0x40) {
             if ((first & 0x10) == 0) return Error.DynamicTableUnsupported;
             const sensitive = (first & 0x20) != 0;
@@ -636,13 +700,14 @@ fn decodeStaticOnlyFieldSection(
             try appendCopiedNameField(
                 &fields,
                 allocator,
+                &budget,
                 entry.name,
                 try readStringAlloc(allocator, src, &pos, 7),
                 sensitive,
             );
         } else if ((first & 0xe0) == 0x20) {
             const sensitive = (first & 0x10) != 0;
-            try appendLiteralField(&fields, allocator, src, &pos, sensitive);
+            try appendLiteralField(&fields, allocator, &budget, src, &pos, sensitive);
         } else {
             return Error.UnsupportedRepresentation;
         }
@@ -656,6 +721,7 @@ fn decodeDynamicFieldSectionBody(
     table: *const DynamicTable,
     prefix: state.FieldSectionPrefix,
     src: []const u8,
+    options: FieldSectionDecodeOptions,
 ) Error![]FieldLine {
     const ReferencedField = struct {
         name: []const u8,
@@ -671,6 +737,7 @@ fn decodeDynamicFieldSectionBody(
         }
         fields.deinit(allocator);
     }
+    var budget = DecodeBudget.init(options);
 
     while (pos < src.len) {
         const first = src[pos];
@@ -685,7 +752,7 @@ fn decodeDynamicFieldSectionBody(
                 const entry = table.getRelative(prefix.base, index.value) orelse return error.InvalidDynamicIndex;
                 break :dynamic .{ .name = entry.name, .value = entry.value };
             };
-            try appendCopiedField(&fields, allocator, referenced.name, referenced.value, false);
+            try appendCopiedField(&fields, allocator, &budget, referenced.name, referenced.value, false);
         } else if ((first & 0xc0) == 0x40) {
             const sensitive = (first & 0x20) != 0;
             const index = try integer.decode(src[pos..], 4);
@@ -699,6 +766,7 @@ fn decodeDynamicFieldSectionBody(
             try appendCopiedNameField(
                 &fields,
                 allocator,
+                &budget,
                 name,
                 try readStringAlloc(allocator, src, &pos, 7),
                 sensitive,
@@ -707,7 +775,7 @@ fn decodeDynamicFieldSectionBody(
             const index = try integer.decode(src[pos..], 4);
             pos += index.bytes_read;
             const entry = table.getPostBase(prefix.base, index.value) orelse return error.InvalidDynamicIndex;
-            try appendCopiedField(&fields, allocator, entry.name, entry.value, false);
+            try appendCopiedField(&fields, allocator, &budget, entry.name, entry.value, false);
         } else if ((first & 0xf0) == 0) {
             const sensitive = (first & 0x08) != 0;
             const index = try integer.decode(src[pos..], 3);
@@ -716,13 +784,14 @@ fn decodeDynamicFieldSectionBody(
             try appendCopiedNameField(
                 &fields,
                 allocator,
+                &budget,
                 entry.name,
                 try readStringAlloc(allocator, src, &pos, 7),
                 sensitive,
             );
         } else if ((first & 0xe0) == 0x20) {
             const sensitive = (first & 0x10) != 0;
-            try appendLiteralField(&fields, allocator, src, &pos, sensitive);
+            try appendLiteralField(&fields, allocator, &budget, src, &pos, sensitive);
         } else {
             return Error.UnsupportedRepresentation;
         }
@@ -734,10 +803,12 @@ fn decodeDynamicFieldSectionBody(
 fn appendCopiedField(
     fields: *std.ArrayList(FieldLine),
     allocator: std.mem.Allocator,
+    budget: *DecodeBudget,
     name_src: []const u8,
     value_src: []const u8,
     sensitive: bool,
-) std.mem.Allocator.Error!void {
+) Error!void {
+    try budget.reserve(name_src, value_src);
     const name = try allocator.dupe(u8, name_src);
     errdefer allocator.free(name);
     const value = try allocator.dupe(u8, value_src);
@@ -752,11 +823,13 @@ fn appendCopiedField(
 fn appendCopiedNameField(
     fields: *std.ArrayList(FieldLine),
     allocator: std.mem.Allocator,
+    budget: *DecodeBudget,
     name_src: []const u8,
     value: []u8,
     sensitive: bool,
-) std.mem.Allocator.Error!void {
+) Error!void {
     errdefer allocator.free(value);
+    try budget.reserve(name_src, value);
     const name = try allocator.dupe(u8, name_src);
     errdefer allocator.free(name);
     try fields.append(allocator, .{
@@ -769,14 +842,16 @@ fn appendCopiedNameField(
 fn appendOwnedField(
     fields: *std.ArrayList(FieldLine),
     allocator: std.mem.Allocator,
+    budget: *DecodeBudget,
     name: []u8,
     value: []u8,
     sensitive: bool,
-) std.mem.Allocator.Error!void {
+) Error!void {
     errdefer {
         allocator.free(name);
         allocator.free(value);
     }
+    try budget.reserve(name, value);
     try fields.append(allocator, .{
         .name = name,
         .value = value,
@@ -787,6 +862,7 @@ fn appendOwnedField(
 fn appendLiteralField(
     fields: *std.ArrayList(FieldLine),
     allocator: std.mem.Allocator,
+    budget: *DecodeBudget,
     src: []const u8,
     pos: *usize,
     sensitive: bool,
@@ -796,7 +872,7 @@ fn appendLiteralField(
         allocator.free(name);
         return err;
     };
-    try appendOwnedField(fields, allocator, name, value, sensitive);
+    try appendOwnedField(fields, allocator, budget, name, value, sensitive);
 }
 
 test "static table indexed fields and name references round-trip" {
@@ -817,6 +893,37 @@ test "static table indexed fields and name references round-trip" {
     try std.testing.expectEqualStrings("GET", decoded[0].value);
     try std.testing.expectEqualStrings("/index.html", decoded[2].value);
     try std.testing.expect(decoded[3].sensitive);
+}
+
+test "field-section decode options cap decoded fields and bytes" {
+    const fields = [_]FieldLine{
+        .{ .name = "x-first", .value = "one" },
+        .{ .name = "x-second", .value = "two" },
+    };
+
+    var buf: [256]u8 = undefined;
+    const n = try encodeLiteralFieldSection(&buf, &fields);
+
+    try std.testing.expectError(
+        error.TooManyFieldLines,
+        decodeFieldSectionWithOptions(std.testing.allocator, buf[0..n], .{
+            .max_field_lines = 1,
+        }),
+    );
+    try std.testing.expectError(
+        error.DecodedFieldSectionTooLarge,
+        decodeFieldSectionWithOptions(std.testing.allocator, buf[0..n], .{
+            .max_decoded_bytes = 1,
+        }),
+    );
+
+    const decoded = try decodeFieldSectionWithOptions(std.testing.allocator, buf[0..n], .{
+        .max_field_lines = 2,
+        .max_decoded_bytes = 256,
+    });
+    defer freeFieldSection(std.testing.allocator, decoded);
+    try std.testing.expectEqual(@as(usize, 2), decoded.len);
+    try std.testing.expectEqualStrings("two", decoded[1].value);
 }
 
 test "literal field section round-trip" {

@@ -63,6 +63,12 @@ pub const Config = struct {
     /// QPACK encoder-stream instructions and dynamic field-section references.
     qpack_indexing: qpack.IndexingPolicy = qpack.IndexingPolicy.static_only,
     qpack_huffman: bool = false,
+    /// Optional cap on decoded QPACK field-line count per field section.
+    max_field_lines: ?usize = null,
+    /// Optional cap on decoded field names/values plus field-line storage per
+    /// QPACK field section. This is separate from `max_field_section_size`,
+    /// which limits encoded HEADERS payload bytes.
+    max_decoded_field_section_bytes: ?usize = null,
     max_field_section_size: ?usize = null,
     read_chunk_size: usize = 4096,
     max_data_frame_payload: usize = 16 * 1024,
@@ -1183,7 +1189,11 @@ pub const Session = struct {
     ) Error!DecodedFieldSection {
         if (!self.receivesDynamicQpack()) {
             return .{
-                .fields = try qpack.decodeFieldSection(self.allocator, block),
+                .fields = try qpack.decodeFieldSectionWithOptions(
+                    self.allocator,
+                    block,
+                    self.qpackDecodeOptions(),
+                ),
                 .required_insert_count = 0,
             };
         }
@@ -1202,13 +1212,21 @@ pub const Session = struct {
         }
 
         return .{
-            .fields = try qpack.decodeDynamicFieldSection(
+            .fields = try qpack.decodeDynamicFieldSectionWithOptions(
                 self.allocator,
                 &self.qpack_decoder_table,
                 self.local_settings.qpack_max_table_capacity,
                 block,
+                self.qpackDecodeOptions(),
             ),
             .required_insert_count = decoded_prefix.prefix.required_insert_count,
+        };
+    }
+
+    fn qpackDecodeOptions(self: *const Session) qpack.FieldSectionDecodeOptions {
+        return .{
+            .max_field_lines = self.config.max_field_lines,
+            .max_decoded_bytes = self.config.max_decoded_field_section_bytes,
         };
     }
 
