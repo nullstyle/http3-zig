@@ -6,7 +6,11 @@ test:
 qpack-interop:
     cd interop/qpack_quic_go && go test -v
 
+curl-h3-interop:
+    zig build curl-h3-server
+    bash interop/curl_h3/run.sh
+
 fmt:
-    zig fmt build.zig src tests
+    zig fmt build.zig src tests interop/curl_h3
 
 check: fmt test

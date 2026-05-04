@@ -83,5 +83,8 @@ just test
   quic-go/qpack interop vectors for the shared static/literal/Huffman profile.
 - `just qpack-interop` runs the optional Go-side fixture harness against
   `github.com/quic-go/qpack`.
+- `just curl-h3-interop` builds a small localhost `null3` HTTP/3 server and
+  drives `/opt/homebrew/opt/curl/bin/curl --http3-only` through handshake,
+  request metadata, POST echo, large response, and GOAWAY scenarios.
 
 See [ROADMAP.md](ROADMAP.md) for the production plan.
