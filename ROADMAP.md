@@ -87,10 +87,10 @@ Datagrams / capsules), and the QUIC RFCs already tracked by `nullq`.
   `client.ResponseTracker` / `ResponseReader` and
   `server.RequestTracker` / `RequestReader`.
 - Done: optional curl HTTP/3 interop harness with localhost UDP server
-  coverage for GET, request metadata, POST echo, large response, response
-  reset, connection-close-after-response, and GOAWAY.
+  coverage for GET, request metadata, POST echo, large response, client-side
+  cancellation, response reset, connection-close-after-response, and GOAWAY.
 - Next: integration harness against `go-quic-peer` once `nullq` upload interop
-  lands, plus client-side cancellation scenarios in the curl interop harness.
+  lands, plus reusable transport-driver helpers for examples and future peers.
 
 ## Phase 4: Production Extensions
 

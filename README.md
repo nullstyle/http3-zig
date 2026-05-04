@@ -88,7 +88,7 @@ just test
   `github.com/quic-go/qpack`.
 - `just curl-h3-interop` builds a small localhost `null3` HTTP/3 server and
   drives `/opt/homebrew/opt/curl/bin/curl --http3-only` through handshake,
-  request metadata, POST echo, large response, response reset,
-  connection-close-after-response, and GOAWAY scenarios.
+  request metadata, POST echo, large response, client-side cancellation,
+  response reset, connection-close-after-response, and GOAWAY scenarios.
 
 See [ROADMAP.md](ROADMAP.md) for the production plan.

@@ -37,6 +37,31 @@ const App = struct {
 
     fn observe(self: *App, server: *null3.Server, event: null3.session.Event) !void {
         const request_event = server.classify(event) orelse return;
+        switch (request_event) {
+            .reset => |reset| {
+                std.debug.print(
+                    "OBSERVED request reset stream={d} code={d} final={d}\n",
+                    .{ reset.stream_id, reset.error_code, reset.final_size },
+                );
+                self.responses_sent += 1;
+                return;
+            },
+            .connection_closed => |closed| {
+                std.debug.print(
+                    "OBSERVED connection close source={s} space={s} code={d} reason={s}\n",
+                    .{
+                        @tagName(closed.source),
+                        @tagName(closed.error_space),
+                        closed.error_code,
+                        closed.reason,
+                    },
+                );
+                self.responses_sent += 1;
+                return;
+            },
+            else => {},
+        }
+
         const request = (try self.tracker.observe(request_event)) orelse return;
         if (!request.complete or request.headers == null) return;
         if (self.responded.contains(request.stream_id)) return;
@@ -62,6 +87,8 @@ const App = struct {
             try self.respondBytes(server, request.stream_id, "200", request.bodyBytes());
         } else if (std.mem.startsWith(u8, path, "/large")) {
             try self.respondLarge(server, request.stream_id, parseBytesQuery(path) orelse 262_144);
+        } else if (std.mem.startsWith(u8, path, "/cancel-upload")) {
+            try self.respondText(server, request.stream_id, "200", "unexpected complete\n");
         } else if (std.mem.startsWith(u8, path, "/reset")) {
             try server.reset(request.stream_id, null3.protocol.ErrorCode.internal_error);
         } else if (std.mem.startsWith(u8, path, "/close")) {

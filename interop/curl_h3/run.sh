@@ -88,6 +88,21 @@ show_server_log() {
     fi
 }
 
+wait_for_server_log() {
+    local pattern="$1"
+    for _ in $(seq 1 120); do
+        if [[ -n "${SERVER_LOG:-}" ]] && grep -Eq "$pattern" "$SERVER_LOG"; then
+            return 0
+        fi
+        if [[ -n "${SERVER_PID:-}" ]] && ! kill -0 "$SERVER_PID" 2>/dev/null; then
+            [[ -n "${SERVER_LOG:-}" ]] && grep -Eq "$pattern" "$SERVER_LOG"
+            return "$?"
+        fi
+        sleep 0.05
+    done
+    return 1
+}
+
 curl_common() {
     "$CURL_H3" --http3-only --max-time 10 --silent --show-error \
         --cacert "$CERT" \
@@ -153,6 +168,32 @@ if [[ "$(head -c 16 "$large_out")" != "0123456789abcdef" ]]; then
 fi
 stop_server
 echo "PASS large response"
+
+start_server 1
+cancel_payload="$WORK_DIR/cancel-upload.bin"
+cancel_body="$WORK_DIR/cancel-upload.body"
+cancel_err="$WORK_DIR/cancel-upload.err"
+dd if=/dev/zero of="$cancel_payload" bs=1024 count=8192 >/dev/null 2>&1
+set +e
+curl_common --max-time 1 --limit-rate 1024 --request POST \
+    --data-binary @"$cancel_payload" \
+    --output "$cancel_body" \
+    "https://localhost:${SERVER_PORT}/cancel-upload" 2>"$cancel_err"
+cancel_status="$?"
+set -e
+if [[ "$cancel_status" == "0" ]]; then
+    echo "FAIL client cancellation: curl unexpectedly completed upload" >&2
+    show_server_log
+    exit 1
+fi
+if ! wait_for_server_log 'OBSERVED (request reset|connection close)'; then
+    echo "FAIL client cancellation: server did not observe reset or close" >&2
+    printf 'curl stderr:\n%s\n' "$(cat "$cancel_err")" >&2
+    show_server_log
+    exit 1
+fi
+stop_server
+echo "PASS client cancellation"
 
 start_server 1
 reset_body="$WORK_DIR/reset.body"
