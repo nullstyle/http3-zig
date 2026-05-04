@@ -6,6 +6,7 @@ pub const integer = @import("integer.zig");
 pub const huffman = @import("huffman.zig");
 pub const dynamic_table = @import("dynamic_table.zig");
 pub const instructions = @import("instructions.zig");
+pub const policy = @import("policy.zig");
 pub const state = @import("state.zig");
 pub const static_table = @import("static_table.zig");
 
@@ -13,6 +14,7 @@ pub const DynamicTable = dynamic_table.DynamicTable;
 pub const DynamicEntry = dynamic_table.Entry;
 pub const EncoderInstruction = instructions.EncoderInstruction;
 pub const DecoderInstruction = instructions.DecoderInstruction;
+pub const IndexingPolicy = policy.IndexingPolicy;
 pub const QpackEncoderState = state.EncoderState;
 pub const QpackDecoderState = state.DecoderState;
 pub const FieldSectionPrefix = state.FieldSectionPrefix;
@@ -43,6 +45,7 @@ pub const DynamicFieldSectionTracker = struct {
 pub const DynamicFieldSectionEncodeOptions = struct {
     huffman: bool = false,
     tracker: ?DynamicFieldSectionTracker = null,
+    indexing: IndexingPolicy = .{},
 };
 
 pub const FieldLine = struct {
@@ -185,9 +188,8 @@ pub fn encodeFieldSectionWithOptions(
     return pos;
 }
 
-/// Length for `encodeDynamicFieldSection`: static references are still
-/// preferred when they are exact, but dynamic table exact and name references
-/// are used for entries present in `table`.
+/// Length for `encodeDynamicFieldSection`: representation choices follow
+/// `DynamicFieldSectionEncodeOptions.indexing`.
 pub fn dynamicFieldSectionEncodedLen(
     table: *const DynamicTable,
     fields: []const FieldLine,
@@ -204,9 +206,10 @@ pub fn dynamicFieldSectionEncodedLenWithOptions(
     return try plan.totalLen(@intCast(table.max_capacity));
 }
 
-/// Encode a QPACK field section that can reference the dynamic table. This is
-/// still transport-free: callers are responsible for emitting any encoder
-/// stream instructions that populate `table`.
+/// Encode a QPACK field section that can reference the dynamic table according
+/// to `options.indexing`. This is still transport-free: callers are
+/// responsible for emitting any encoder stream instructions that populate
+/// `table`.
 pub fn encodeDynamicFieldSection(
     dst: []u8,
     table: *const DynamicTable,
@@ -230,7 +233,7 @@ pub fn encodeDynamicFieldSectionWithOptions(
         tracker.encoder_state.recordInsertCount(table.insert_count);
         var references: std.ArrayList(u64) = .empty;
         defer references.deinit(tracker.encoder_state.allocator);
-        try collectDynamicReferences(&references, tracker.encoder_state.allocator, table, fields, plan.base);
+        try collectDynamicReferences(&references, tracker.encoder_state.allocator, table, fields, plan.base, options);
         _ = try tracker.encoder_state.trackFieldSection(tracker.stream_id, references.items);
     }
 
@@ -241,8 +244,30 @@ pub fn encodeDynamicFieldSectionWithOptions(
     }, max_table_capacity);
 
     for (fields) |field| {
-        const representation = chooseFieldRepresentation(table, plan.base, field);
+        const representation = chooseFieldRepresentation(table, plan.base, field, options);
         pos += try encodeFieldRepresentation(dst[pos..], table, plan.base, field, representation, options);
+    }
+    return pos;
+}
+
+/// Emit QPACK encoder-stream insertion instructions for `fields` according to
+/// `options.indexing`, mutating `table` to mirror the emitted instructions.
+/// The field section can then be encoded with `encodeDynamicFieldSection`.
+pub fn encodeFieldSectionEncoderInstructions(
+    dst: []u8,
+    table: *DynamicTable,
+    fields: []const FieldLine,
+    options: DynamicFieldSectionEncodeOptions,
+) Error!usize {
+    var pos: usize = 0;
+    for (fields) |field| {
+        const instruction = chooseInsertInstruction(table, field, options) orelse continue;
+        const n = try instructions.encodeEncoderInstruction(dst[pos..], instruction);
+        const inserted = try instructions.applyEncoderInstruction(table, instruction);
+        if (inserted) |absolute_index| {
+            if (options.tracker) |tracker| try tracker.encoder_state.recordInsert(absolute_index);
+        }
+        pos += n;
     }
     return pos;
 }
@@ -337,7 +362,7 @@ fn planDynamicFieldSection(
     var body_len: usize = 0;
 
     for (fields) |field| {
-        const representation = chooseFieldRepresentation(table, base, field);
+        const representation = chooseFieldRepresentation(table, base, field, options);
         switch (representation) {
             .dynamic_indexed,
             .dynamic_post_base_indexed,
@@ -363,20 +388,43 @@ fn chooseFieldRepresentation(
     table: *const DynamicTable,
     base: u64,
     field: FieldLine,
+    options: DynamicFieldSectionEncodeOptions,
 ) FieldRepresentation {
-    if (!field.sensitive) {
+    const reference_context = policy.ReferenceContext{
+        .encoder_state = if (options.tracker) |tracker| tracker.encoder_state else null,
+        .will_track_field_section = options.tracker != null,
+    };
+
+    if (options.indexing.prefer_static and options.indexing.allowsStaticIndexed(field.sensitive)) {
         if (static_table.find(field.name, field.value)) |index| return .{ .static_indexed = index };
-        if (table.find(field.name, field.value)) |absolute_index| {
+    }
+
+    if (table.find(field.name, field.value)) |absolute_index| {
+        if (options.indexing.allowsDynamicReference(field.sensitive, absolute_index, reference_context)) {
             if (absolute_index < base) return .{ .dynamic_indexed = absolute_index };
             return .{ .dynamic_post_base_indexed = absolute_index };
         }
     }
 
-    if (static_table.findName(field.name)) |index| return .{ .static_name = index };
-    if (table.findName(field.name)) |absolute_index| {
-        if (absolute_index < base) return .{ .dynamic_name = absolute_index };
-        return .{ .dynamic_post_base_name = absolute_index };
+    if (!options.indexing.prefer_static and options.indexing.allowsStaticIndexed(field.sensitive)) {
+        if (static_table.find(field.name, field.value)) |index| return .{ .static_indexed = index };
     }
+
+    if (options.indexing.prefer_static) {
+        if (static_table.findName(field.name)) |index| return .{ .static_name = index };
+    }
+
+    if (table.findName(field.name)) |absolute_index| {
+        if (options.indexing.allowsDynamicReference(field.sensitive, absolute_index, reference_context)) {
+            if (absolute_index < base) return .{ .dynamic_name = absolute_index };
+            return .{ .dynamic_post_base_name = absolute_index };
+        }
+    }
+
+    if (!options.indexing.prefer_static) {
+        if (static_table.findName(field.name)) |index| return .{ .static_name = index };
+    }
+
     return .literal;
 }
 
@@ -475,9 +523,10 @@ fn collectDynamicReferences(
     table: *const DynamicTable,
     fields: []const FieldLine,
     base: u64,
+    options: DynamicFieldSectionEncodeOptions,
 ) Error!void {
     for (fields) |field| {
-        const representation = chooseFieldRepresentation(table, base, field);
+        const representation = chooseFieldRepresentation(table, base, field, options);
         switch (representation) {
             .dynamic_indexed,
             .dynamic_post_base_indexed,
@@ -487,6 +536,44 @@ fn collectDynamicReferences(
             .static_indexed, .static_name, .literal => {},
         }
     }
+}
+
+fn chooseInsertInstruction(
+    table: *const DynamicTable,
+    field: FieldLine,
+    options: DynamicFieldSectionEncodeOptions,
+) ?instructions.EncoderInstruction {
+    if (!options.indexing.allowsDynamicInsert(table, field.sensitive, field.name, field.value)) return null;
+    if (static_table.find(field.name, field.value) != null) return null;
+    if (table.find(field.name, field.value) != null) return null;
+
+    if (static_table.findName(field.name)) |index| {
+        return .{ .insert_name_ref = .{
+            .table = .static,
+            .index = @intCast(index),
+            .value = field.value,
+            .value_huffman = options.huffman,
+        } };
+    }
+
+    if (table.findName(field.name)) |absolute_index| {
+        if (table.absoluteToEncoderRelative(absolute_index)) |relative_index| {
+            return .{ .insert_name_ref = .{
+                .table = .dynamic,
+                .index = relative_index,
+                .value = field.value,
+                .value_huffman = options.huffman,
+            } };
+        }
+    }
+
+    if (options.indexing.dynamic_inserts != .all) return null;
+    return .{ .insert_literal = .{
+        .name = field.name,
+        .value = field.value,
+        .name_huffman = options.huffman,
+        .value_huffman = options.huffman,
+    } };
 }
 
 fn readStringAlloc(
@@ -782,14 +869,15 @@ test "dynamic field sections encode and decode indexed and name-reference fields
         .{ .name = "x-test", .value = "one" },
         .{ .name = "x-alt", .value = "new" },
     };
-    var buf: [256]u8 = undefined;
-    const n = try encodeDynamicFieldSectionWithOptions(&buf, &table, &fields, .{
+    const options = DynamicFieldSectionEncodeOptions{
         .tracker = .{
             .encoder_state = &encoder_state,
             .stream_id = 12,
         },
-    });
-    try std.testing.expectEqual(try dynamicFieldSectionEncodedLen(&table, &fields), n);
+    };
+    var buf: [256]u8 = undefined;
+    const n = try encodeDynamicFieldSectionWithOptions(&buf, &table, &fields, options);
+    try std.testing.expectEqual(try dynamicFieldSectionEncodedLenWithOptions(&table, &fields, options), n);
     try std.testing.expectEqual(@as(u64, 2), encoder_state.insert_count);
     try std.testing.expectEqual(@as(u64, 1), encoder_state.referenceCount(0));
     try std.testing.expectEqual(@as(u64, 1), encoder_state.referenceCount(1));
@@ -806,6 +894,97 @@ test "dynamic field sections encode and decode indexed and name-reference fields
     try encoder_state.receiveDecoderInstruction(.{ .section_ack = 12 });
     try std.testing.expectEqual(@as(u64, 0), encoder_state.referenceCount(0));
     try std.testing.expectEqual(@as(u64, 0), encoder_state.referenceCount(1));
+}
+
+test "default dynamic policy avoids untracked blocking references" {
+    var table = DynamicTable.init(std.testing.allocator, 256);
+    defer table.deinit();
+    try table.setCapacity(256);
+    _ = try table.insert("x-test", "one", false);
+
+    const fields = [_]FieldLine{
+        .{ .name = "x-test", .value = "one" },
+    };
+    var buf: [256]u8 = undefined;
+    const n = try encodeDynamicFieldSection(&buf, &table, &fields);
+
+    const decoded_prefix = try state.decodeFieldSectionPrefix(buf[0..n], table.max_capacity, table.insert_count);
+    try std.testing.expectEqual(@as(u64, 0), decoded_prefix.prefix.required_insert_count);
+    try std.testing.expect(buf[decoded_prefix.bytes_read] & 0xe0 == 0x20);
+}
+
+test "indexing policy emits encoder instructions and references inserted fields" {
+    var table = DynamicTable.init(std.testing.allocator, 256);
+    defer table.deinit();
+    try table.setCapacity(256);
+    var encoder_state = state.EncoderState.init(std.testing.allocator, 4);
+    defer encoder_state.deinit();
+
+    const fields = [_]FieldLine{
+        .{ .name = "x-policy", .value = "one" },
+        .{ .name = "authorization", .value = "secret", .sensitive = true },
+    };
+    const options = DynamicFieldSectionEncodeOptions{
+        .tracker = .{
+            .encoder_state = &encoder_state,
+            .stream_id = 20,
+        },
+        .indexing = .{ .dynamic_inserts = .all },
+    };
+
+    var encoder_stream: [256]u8 = undefined;
+    const instruction_n = try encodeFieldSectionEncoderInstructions(&encoder_stream, &table, &fields, options);
+    try std.testing.expect(instruction_n > 0);
+    try std.testing.expectEqual(@as(u64, 1), table.insert_count);
+    try std.testing.expectEqualStrings("x-policy", table.getAbsolute(0).?.name);
+    try std.testing.expect(table.find("authorization", "secret") == null);
+
+    var field_section: [256]u8 = undefined;
+    const field_n = try encodeDynamicFieldSectionWithOptions(&field_section, &table, &fields, options);
+    const decoded_prefix = try state.decodeFieldSectionPrefix(field_section[0..field_n], table.max_capacity, table.insert_count);
+    try std.testing.expectEqual(@as(u64, 1), decoded_prefix.prefix.required_insert_count);
+    try std.testing.expectEqual(@as(u64, 1), encoder_state.referenceCount(0));
+
+    const decoded = try decodeDynamicFieldSection(
+        std.testing.allocator,
+        &table,
+        table.max_capacity,
+        field_section[0..field_n],
+    );
+    defer freeFieldSection(std.testing.allocator, decoded);
+    try std.testing.expectEqualStrings("x-policy", decoded[0].name);
+    try std.testing.expectEqualStrings("one", decoded[0].value);
+    try std.testing.expectEqualStrings("authorization", decoded[1].name);
+    try std.testing.expect(decoded[1].sensitive);
+}
+
+test "indexing policy can require acknowledged dynamic references" {
+    var table = DynamicTable.init(std.testing.allocator, 128);
+    defer table.deinit();
+    try table.setCapacity(128);
+    _ = try table.insert("x-test", "one", false);
+
+    var encoder_state = state.EncoderState.init(std.testing.allocator, 0);
+    defer encoder_state.deinit();
+    encoder_state.recordInsertCount(table.insert_count);
+
+    const fields = [_]FieldLine{.{ .name = "x-test", .value = "one" }};
+    const blocked_options = DynamicFieldSectionEncodeOptions{
+        .tracker = .{
+            .encoder_state = &encoder_state,
+            .stream_id = 4,
+        },
+        .indexing = .{ .dynamic_references = .acknowledged },
+    };
+    var buf: [128]u8 = undefined;
+    const literal_n = try encodeDynamicFieldSectionWithOptions(&buf, &table, &fields, blocked_options);
+    const literal_prefix = try state.decodeFieldSectionPrefix(buf[0..literal_n], table.max_capacity, table.insert_count);
+    try std.testing.expectEqual(@as(u64, 0), literal_prefix.prefix.required_insert_count);
+
+    try encoder_state.receiveDecoderInstruction(.{ .insert_count_increment = 1 });
+    const acked_n = try encodeDynamicFieldSectionWithOptions(&buf, &table, &fields, blocked_options);
+    const acked_prefix = try state.decodeFieldSectionPrefix(buf[0..acked_n], table.max_capacity, table.insert_count);
+    try std.testing.expectEqual(@as(u64, 1), acked_prefix.prefix.required_insert_count);
 }
 
 test "dynamic field decoder supports post-base indexed and name-reference fields" {

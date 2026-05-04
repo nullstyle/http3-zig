@@ -9,8 +9,8 @@ surfaces plus a first HTTP/3 session layer over `nullq.Connection`: HTTP/3
 constants, SETTINGS and frame codecs, non-blocking QPACK field-section
 encoding/decoding with static-table, Huffman string, and dynamic table core
 support plus dynamic field-section representations, encoder/decoder stream
-instruction codecs, and state-sync accounting, header validation, priority
-parameter parsing, TLS context helpers,
+instruction codecs, state-sync accounting, and configurable indexing policy,
+header validation, priority parameter parsing, TLS context helpers,
 transport-free message codecs, critical stream setup, SETTINGS exchange,
 GOAWAY handling, graceful-drain state, reset events, structured HTTP/3/QPACK
 error classification, request lifecycle tracking, response lifecycle tracking,
@@ -43,9 +43,10 @@ just test
   with QPACK absolute, relative, and post-base indexing helpers. It also
   provides dynamic-aware field-section codecs for indexed, name-reference, and
   post-base representations, transport-free encoder/decoder stream instruction
-  codecs, a dynamic-table apply helper for encoder instructions, plus Known
-  Received Count, blocked-stream, acknowledgment, cancellation, and
-  field-section prefix accounting helpers.
+  codecs, configurable indexing policy with conservative defaults for
+  sensitive fields and blocking risk, a dynamic-table apply helper for encoder
+  instructions, plus Known Received Count, blocked-stream, acknowledgment,
+  cancellation, and field-section prefix accounting helpers.
 - `headers`: HTTP field validation for request/response scaffolding.
 - `priority`: RFC 9218 urgency/incremental parameter parsing.
 - `errors`: structured HTTP/3 application error code metadata plus local

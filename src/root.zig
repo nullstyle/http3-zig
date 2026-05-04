@@ -39,6 +39,7 @@ pub const Settings = settings.Settings;
 pub const Frame = frame.Frame;
 pub const FieldLine = qpack.FieldLine;
 pub const DynamicTable = qpack.DynamicTable;
+pub const QpackIndexingPolicy = qpack.IndexingPolicy;
 pub const QpackEncoderInstruction = qpack.EncoderInstruction;
 pub const QpackDecoderInstruction = qpack.DecoderInstruction;
 pub const QpackEncoderState = qpack.QpackEncoderState;

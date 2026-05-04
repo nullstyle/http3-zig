@@ -51,7 +51,8 @@ Datagrams / capsules), and the QUIC RFCs already tracked by `nullq`.
 - Done: dynamic-aware field-section codecs for indexed field lines, literal
   field lines with dynamic name references, post-base references, and
   encoder-side outstanding reference tracking.
-- Configurable indexing policy with safe defaults for sensitive fields.
+- Done: configurable indexing policy with safe defaults for sensitive fields,
+  non-blocking or tracked dynamic references, and opt-in dynamic insertions.
 - RFC 9204 examples and cross-implementation fixture tests.
 
 ## Phase 3: Client and Server APIs
