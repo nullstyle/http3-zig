@@ -38,7 +38,8 @@ Datagrams / capsules), and the QUIC RFCs already tracked by `nullq`.
 
 ## Phase 2: QPACK Complete
 
-- Full static table, Huffman codec, dynamic table, encoder/decoder streams.
+- Done: full static table and RFC 7541 Huffman codec for string literals.
+- Dynamic table, encoder/decoder streams.
 - Blocked stream accounting, acknowledgments, cancellations, and capacity changes.
 - Configurable indexing policy with safe defaults for sensitive fields.
 - RFC 9204 examples and cross-implementation fixture tests.

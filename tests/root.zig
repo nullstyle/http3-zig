@@ -83,7 +83,7 @@ test "literal QPACK field section validates as request headers" {
     var block: [512]u8 = undefined;
     const n = try null3.qpack.encodeLiteralFieldSection(&block, &fields);
     const decoded = try null3.qpack.decodeLiteralFieldSection(std.testing.allocator, block[0..n]);
-    defer std.testing.allocator.free(decoded);
+    defer null3.qpack.freeFieldSection(std.testing.allocator, decoded);
 
     try null3.headers.validateRequest(decoded);
     try std.testing.expectEqual(fields.len, decoded.len);
@@ -103,7 +103,7 @@ test "static QPACK field section uses indexed representation" {
     try std.testing.expect(n < literal_n);
 
     const decoded = try null3.qpack.decodeFieldSection(std.testing.allocator, block[0..n]);
-    defer std.testing.allocator.free(decoded);
+    defer null3.qpack.freeFieldSection(std.testing.allocator, decoded);
     try null3.headers.validateRequest(decoded);
     try std.testing.expectEqualStrings("GET", decoded[0].value);
     try std.testing.expectEqualStrings("/search", decoded[2].value);

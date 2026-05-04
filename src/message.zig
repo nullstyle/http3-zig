@@ -49,7 +49,7 @@ pub const Event = union(enum) {
 
     pub fn deinit(self: Event, allocator: std.mem.Allocator) void {
         switch (self) {
-            .headers, .trailers => |fields| allocator.free(fields),
+            .headers, .trailers => |fields| qpack.freeFieldSection(allocator, fields),
             else => {},
         }
     }
