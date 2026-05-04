@@ -124,6 +124,9 @@ Datagrams / capsules), and the QUIC RFCs already tracked by `nullq`.
 
 - Fuzz frame/QPACK decoders.
 - Memory-budget enforcement and field-section size limits.
-- Abuse tests for critical stream closure, duplicate SETTINGS, invalid frame types,
-  malformed pseudo-headers, and oversized dynamic-table state.
+- Done: abuse tests now cover critical stream closure, duplicate SETTINGS,
+  invalid frame placement, duplicate critical streams, server-side push streams,
+  malformed pseudo-headers, truncated capsules, DATA-after-trailers, and
+  oversized decoded field sections.
+- Remaining: oversized dynamic-table state and resource-pressure cases.
 - Interop matrix across quic-go, ngtcp2, lsquic, aioquic, and Chromium/curl where practical.

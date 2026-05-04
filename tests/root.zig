@@ -124,6 +124,17 @@ fn writeFrame(conn: *nullq.Connection, stream_id: u64, frame: null3.Frame) !void
     _ = try conn.streamWrite(stream_id, buf[0..n]);
 }
 
+fn writeStreamType(conn: *nullq.Connection, stream_id: u64, stream_type: u64) !void {
+    var buf: [8]u8 = undefined;
+    const n = try nullq.wire.varint.encode(&buf, stream_type);
+    _ = try conn.streamWrite(stream_id, buf[0..n]);
+}
+
+fn openUniWithType(conn: *nullq.Connection, stream_id: u64, stream_type: u64) !void {
+    _ = try conn.openUni(stream_id);
+    try writeStreamType(conn, stream_id, stream_type);
+}
+
 fn writeHeadersFrame(conn: *nullq.Connection, stream_id: u64, fields: []const null3.FieldLine) !void {
     var block: [2048]u8 = undefined;
     const block_n = try null3.qpack.encodeFieldSection(&block, fields);
@@ -180,6 +191,32 @@ const H3Pair = struct {
         self.client_tls.deinit();
     }
 };
+
+fn expectPairH3Error(allocator: std.mem.Allocator, pair: *H3Pair, expected: anyerror) !void {
+    var client_events: std.ArrayList(null3.session.Event) = .empty;
+    defer {
+        clearSessionEvents(allocator, &client_events);
+        client_events.deinit(allocator);
+    }
+    var server_events: std.ArrayList(null3.session.Event) = .empty;
+    defer {
+        clearSessionEvents(allocator, &server_events);
+        server_events.deinit(allocator);
+    }
+
+    var now_us: u64 = 1_000_000;
+    try pumpUntilH3Error(
+        allocator,
+        &pair.client,
+        &pair.server,
+        &pair.client_h3,
+        &pair.server_h3,
+        &client_events,
+        &server_events,
+        &now_us,
+        expected,
+    );
+}
 
 test "HTTP/3 SETTINGS frame round-trip" {
     const s: null3.Settings = .{
@@ -871,31 +908,95 @@ test "session rejects duplicate peer SETTINGS" {
 
     try writeFrame(&pair.client, pair.client_h3.control_stream_id.?, .{ .settings = .{} });
 
-    var client_events: std.ArrayList(null3.session.Event) = .empty;
-    defer {
-        clearSessionEvents(allocator, &client_events);
-        client_events.deinit(allocator);
-    }
-    var server_events: std.ArrayList(null3.session.Event) = .empty;
-    defer {
-        clearSessionEvents(allocator, &server_events);
-        server_events.deinit(allocator);
-    }
-
-    var now_us: u64 = 1_000_000;
-    try pumpUntilH3Error(
-        allocator,
-        &pair.client,
-        &pair.server,
-        &pair.client_h3,
-        &pair.server_h3,
-        &client_events,
-        &server_events,
-        &now_us,
-        error.DuplicateSettings,
-    );
+    try expectPairH3Error(allocator, &pair, error.DuplicateSettings);
     try std.testing.expectEqual(null3.session.ShutdownState.closed, pair.server_h3.shutdownState());
     try expectLastCloseCode(&pair.server_h3, null3.protocol.ErrorCode.settings_error);
+}
+
+test "session rejects DATA on control streams" {
+    const allocator = std.testing.allocator;
+
+    var pair: H3Pair = undefined;
+    try pair.initStarted(allocator, .{}, .{});
+    defer pair.deinit();
+
+    try writeFrame(&pair.client, pair.client_h3.control_stream_id.?, .{ .data = "bad-control-data" });
+    try expectPairH3Error(allocator, &pair, error.FrameUnexpected);
+    try std.testing.expectEqual(null3.session.ShutdownState.closed, pair.server_h3.shutdownState());
+    try expectLastCloseCode(&pair.server_h3, null3.protocol.ErrorCode.frame_unexpected);
+}
+
+test "session rejects SETTINGS on request streams" {
+    const allocator = std.testing.allocator;
+
+    var pair: H3Pair = undefined;
+    try pair.initStarted(allocator, .{}, .{});
+    defer pair.deinit();
+
+    const stream_id: u64 = 0;
+    _ = try pair.client.openBidi(stream_id);
+    try writeFrame(&pair.client, stream_id, .{ .settings = .{} });
+    try expectPairH3Error(allocator, &pair, error.FrameUnexpected);
+    try std.testing.expectEqual(null3.session.ShutdownState.closed, pair.server_h3.shutdownState());
+    try expectLastCloseCode(&pair.server_h3, null3.protocol.ErrorCode.frame_unexpected);
+}
+
+test "session rejects GOAWAY on request streams" {
+    const allocator = std.testing.allocator;
+
+    var pair: H3Pair = undefined;
+    try pair.initStarted(allocator, .{}, .{});
+    defer pair.deinit();
+
+    const stream_id: u64 = 0;
+    _ = try pair.client.openBidi(stream_id);
+    try writeFrame(&pair.client, stream_id, .{ .goaway = 0 });
+    try expectPairH3Error(allocator, &pair, error.FrameUnexpected);
+    try std.testing.expectEqual(null3.session.ShutdownState.closed, pair.server_h3.shutdownState());
+    try expectLastCloseCode(&pair.server_h3, null3.protocol.ErrorCode.frame_unexpected);
+}
+
+test "session rejects duplicate peer control streams" {
+    const allocator = std.testing.allocator;
+
+    var pair: H3Pair = undefined;
+    try pair.initStarted(allocator, .{}, .{});
+    defer pair.deinit();
+
+    try openUniWithType(&pair.client, 6, null3.protocol.StreamType.control);
+    try expectPairH3Error(allocator, &pair, error.CriticalStreamAlreadyOpen);
+    try std.testing.expectEqual(null3.session.ShutdownState.closed, pair.server_h3.shutdownState());
+    try expectLastCloseCode(&pair.server_h3, null3.protocol.ErrorCode.stream_creation_error);
+}
+
+test "session rejects duplicate peer QPACK encoder streams" {
+    const allocator = std.testing.allocator;
+
+    var pair: H3Pair = undefined;
+    try pair.initStarted(
+        allocator,
+        .{ .open_qpack_streams = true },
+        .{ .open_qpack_streams = true },
+    );
+    defer pair.deinit();
+
+    try openUniWithType(&pair.client, 14, null3.protocol.StreamType.qpack_encoder);
+    try expectPairH3Error(allocator, &pair, error.CriticalStreamAlreadyOpen);
+    try std.testing.expectEqual(null3.session.ShutdownState.closed, pair.server_h3.shutdownState());
+    try expectLastCloseCode(&pair.server_h3, null3.protocol.ErrorCode.stream_creation_error);
+}
+
+test "session rejects push streams sent to servers" {
+    const allocator = std.testing.allocator;
+
+    var pair: H3Pair = undefined;
+    try pair.initStarted(allocator, .{}, .{});
+    defer pair.deinit();
+
+    try openUniWithType(&pair.client, 6, null3.protocol.StreamType.push);
+    try expectPairH3Error(allocator, &pair, error.UnexpectedStream);
+    try std.testing.expectEqual(null3.session.ShutdownState.closed, pair.server_h3.shutdownState());
+    try expectLastCloseCode(&pair.server_h3, null3.protocol.ErrorCode.stream_creation_error);
 }
 
 test "session closes when peer control stream is closed" {
@@ -907,29 +1008,7 @@ test "session closes when peer control stream is closed" {
 
     try pair.client.streamFinish(pair.client_h3.control_stream_id.?);
 
-    var client_events: std.ArrayList(null3.session.Event) = .empty;
-    defer {
-        clearSessionEvents(allocator, &client_events);
-        client_events.deinit(allocator);
-    }
-    var server_events: std.ArrayList(null3.session.Event) = .empty;
-    defer {
-        clearSessionEvents(allocator, &server_events);
-        server_events.deinit(allocator);
-    }
-
-    var now_us: u64 = 1_000_000;
-    try pumpUntilH3Error(
-        allocator,
-        &pair.client,
-        &pair.server,
-        &pair.client_h3,
-        &pair.server_h3,
-        &client_events,
-        &server_events,
-        &now_us,
-        error.ClosedCriticalStream,
-    );
+    try expectPairH3Error(allocator, &pair, error.ClosedCriticalStream);
     try std.testing.expectEqual(null3.session.ShutdownState.closed, pair.server_h3.shutdownState());
     try expectLastCloseCode(&pair.server_h3, null3.protocol.ErrorCode.closed_critical_stream);
 }
@@ -952,29 +1031,7 @@ test "session rejects malformed request pseudo headers" {
     };
     try writeHeadersFrame(&pair.client, stream_id, &bad_fields);
 
-    var client_events: std.ArrayList(null3.session.Event) = .empty;
-    defer {
-        clearSessionEvents(allocator, &client_events);
-        client_events.deinit(allocator);
-    }
-    var server_events: std.ArrayList(null3.session.Event) = .empty;
-    defer {
-        clearSessionEvents(allocator, &server_events);
-        server_events.deinit(allocator);
-    }
-
-    var now_us: u64 = 1_000_000;
-    try pumpUntilH3Error(
-        allocator,
-        &pair.client,
-        &pair.server,
-        &pair.client_h3,
-        &pair.server_h3,
-        &client_events,
-        &server_events,
-        &now_us,
-        error.PseudoHeaderAfterRegular,
-    );
+    try expectPairH3Error(allocator, &pair, error.PseudoHeaderAfterRegular);
     try std.testing.expectEqual(null3.session.ShutdownState.closed, pair.server_h3.shutdownState());
     try expectLastCloseCode(&pair.server_h3, null3.protocol.ErrorCode.message_error);
 }
@@ -1002,29 +1059,7 @@ test "session enforces max field section size on decoded request headers" {
     try std.testing.expect(block_n > 4);
     try writeFrame(&pair.client, stream_id, .{ .headers = block[0..block_n] });
 
-    var client_events: std.ArrayList(null3.session.Event) = .empty;
-    defer {
-        clearSessionEvents(allocator, &client_events);
-        client_events.deinit(allocator);
-    }
-    var server_events: std.ArrayList(null3.session.Event) = .empty;
-    defer {
-        clearSessionEvents(allocator, &server_events);
-        server_events.deinit(allocator);
-    }
-
-    var now_us: u64 = 1_000_000;
-    try pumpUntilH3Error(
-        allocator,
-        &pair.client,
-        &pair.server,
-        &pair.client_h3,
-        &pair.server_h3,
-        &client_events,
-        &server_events,
-        &now_us,
-        error.HeaderSectionTooLarge,
-    );
+    try expectPairH3Error(allocator, &pair, error.HeaderSectionTooLarge);
     try std.testing.expectEqual(null3.session.ShutdownState.closed, pair.server_h3.shutdownState());
     try expectLastCloseCode(&pair.server_h3, null3.protocol.ErrorCode.message_error);
 }
