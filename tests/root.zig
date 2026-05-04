@@ -124,6 +124,16 @@ fn writeFrame(conn: *nullq.Connection, stream_id: u64, frame: null3.Frame) !void
     _ = try conn.streamWrite(stream_id, buf[0..n]);
 }
 
+fn writeQpackEncoderInstruction(
+    conn: *nullq.Connection,
+    stream_id: u64,
+    instruction: null3.QpackEncoderInstruction,
+) !void {
+    var buf: [512]u8 = undefined;
+    const n = try null3.qpack.instructions.encodeEncoderInstruction(&buf, instruction);
+    _ = try conn.streamWrite(stream_id, buf[0..n]);
+}
+
 fn writeStreamType(conn: *nullq.Connection, stream_id: u64, stream_type: u64) !void {
     var buf: [8]u8 = undefined;
     const n = try nullq.wire.varint.encode(&buf, stream_type);
@@ -1047,6 +1057,79 @@ test "session rejects duplicate peer QPACK encoder streams" {
     try expectPairH3Error(allocator, &pair, error.CriticalStreamAlreadyOpen);
     try std.testing.expectEqual(null3.session.ShutdownState.closed, pair.server_h3.shutdownState());
     try expectLastCloseCode(&pair.server_h3, null3.protocol.ErrorCode.stream_creation_error);
+}
+
+test "session rejects peer QPACK capacity above advertised limit" {
+    const allocator = std.testing.allocator;
+
+    var pair: H3Pair = undefined;
+    try pair.initStarted(
+        allocator,
+        .{ .open_qpack_streams = true },
+        .{
+            .settings = .{ .qpack_max_table_capacity = 64 },
+            .open_qpack_streams = true,
+        },
+    );
+    defer pair.deinit();
+
+    try writeQpackEncoderInstruction(
+        &pair.client,
+        pair.client_h3.qpack_encoder_stream_id.?,
+        .{ .set_capacity = 128 },
+    );
+    try expectPairH3Error(allocator, &pair, error.CapacityTooLarge);
+    try std.testing.expectEqual(null3.session.ShutdownState.closed, pair.server_h3.shutdownState());
+    try expectLastCloseCode(&pair.server_h3, null3.protocol.ErrorCode.qpack_decompression_failed);
+}
+
+test "session rejects peer QPACK insert larger than dynamic table capacity" {
+    const allocator = std.testing.allocator;
+
+    var pair: H3Pair = undefined;
+    try pair.initStarted(
+        allocator,
+        .{ .open_qpack_streams = true },
+        .{
+            .settings = .{ .qpack_max_table_capacity = 64 },
+            .open_qpack_streams = true,
+        },
+    );
+    defer pair.deinit();
+
+    try writeQpackEncoderInstruction(
+        &pair.client,
+        pair.client_h3.qpack_encoder_stream_id.?,
+        .{ .set_capacity = 64 },
+    );
+    try writeQpackEncoderInstruction(
+        &pair.client,
+        pair.client_h3.qpack_encoder_stream_id.?,
+        .{ .insert_literal = .{
+            .name = "x-overflow-name",
+            .value = "this-value-is-too-large-for-a-sixty-four-byte-qpack-entry",
+        } },
+    );
+    try expectPairH3Error(allocator, &pair, error.EntryTooLarge);
+    try std.testing.expectEqual(null3.session.ShutdownState.closed, pair.server_h3.shutdownState());
+    try expectLastCloseCode(&pair.server_h3, null3.protocol.ErrorCode.qpack_decompression_failed);
+}
+
+test "session rejects invalid peer QPACK decoder feedback" {
+    const allocator = std.testing.allocator;
+
+    var pair: H3Pair = undefined;
+    try pair.initStarted(
+        allocator,
+        .{ .open_qpack_streams = true },
+        .{ .open_qpack_streams = true },
+    );
+    defer pair.deinit();
+
+    _ = try pair.client.streamWrite(pair.client_h3.qpack_decoder_stream_id.?, &.{0});
+    try expectPairH3Error(allocator, &pair, error.InsertCountIncrementZero);
+    try std.testing.expectEqual(null3.session.ShutdownState.closed, pair.server_h3.shutdownState());
+    try expectLastCloseCode(&pair.server_h3, null3.protocol.ErrorCode.qpack_decoder_stream_error);
 }
 
 test "session rejects push streams sent to servers" {

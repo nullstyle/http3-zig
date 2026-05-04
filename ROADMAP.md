@@ -127,7 +127,8 @@ Datagrams / capsules), and the QUIC RFCs already tracked by `nullq`.
 - Done: abuse tests now cover critical stream closure, duplicate SETTINGS,
   invalid frame placement, duplicate critical streams, server-side push streams,
   malformed peer GOAWAY sequencing, DATAGRAM negotiation and size failures,
-  malformed pseudo-headers, truncated capsules, DATA-after-trailers, and
-  oversized decoded field sections.
-- Remaining: oversized dynamic-table state and resource-pressure cases.
+  malformed pseudo-headers, truncated capsules, DATA-after-trailers, oversized
+  decoded field sections, QPACK decoder feedback errors, and peer QPACK dynamic
+  table capacity/entry overflow.
+- Remaining: broader fuzzing plus sustained memory/flow/resource-pressure cases.
 - Interop matrix across quic-go, ngtcp2, lsquic, aioquic, and Chromium/curl where practical.
