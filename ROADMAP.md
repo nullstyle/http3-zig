@@ -104,6 +104,8 @@ Datagrams / capsules), and the QUIC RFCs already tracked by `nullq`.
 - Done: opt-in per-stream send-buffer backpressure caps plus send-state
   introspection for written, acknowledged, buffered, pending, and flow-blocked
   state.
+- Done: request/response tracker body-budget caps for applications that use the
+  owned lifecycle assemblers.
 - Next: HTTP/3 interop harnesses against external peers over ordinary
   `nullq.Connection` APIs, plus additional examples layered on the shared
   driver.
@@ -135,8 +137,8 @@ Datagrams / capsules), and the QUIC RFCs already tracked by `nullq`.
   malformed pseudo-headers, truncated capsules, DATA-after-trailers, oversized
   decoded field sections, QPACK decoder feedback errors, and peer QPACK dynamic
   table capacity/entry overflow.
-- Partial: send-side stream buffering now has an opt-in per-stream cap; broader
-  memory budgets still need coverage across decoded bodies, capsules, QPACK,
-  and queued events.
+- Partial: send-side stream buffering and tracker body accumulation now have
+  opt-in caps; broader memory budgets still need coverage across capsules,
+  QPACK, and queued events.
 - Remaining: broader fuzzing plus sustained memory/flow/resource-pressure cases.
 - Interop matrix across quic-go, ngtcp2, lsquic, aioquic, and Chromium/curl where practical.

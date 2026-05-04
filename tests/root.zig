@@ -706,6 +706,28 @@ test "request tracker owns server request lifecycle" {
     try std.testing.expect(tracker.get(0) == null);
 }
 
+test "request tracker enforces body budget" {
+    const allocator = std.testing.allocator;
+    var tracker = null3.RequestTracker.initWithConfig(allocator, .{ .max_body_bytes = 5 });
+    defer tracker.deinit();
+
+    _ = try tracker.observe(.{ .data = .{
+        .stream_id = 0,
+        .bytes = "hel",
+    } });
+    _ = try tracker.observe(.{ .data = .{
+        .stream_id = 0,
+        .bytes = "lo",
+    } });
+    try std.testing.expectError(error.BodyTooLarge, tracker.observe(.{ .data = .{
+        .stream_id = 0,
+        .bytes = "!",
+    } }));
+
+    const state = tracker.get(0).?;
+    try std.testing.expectEqualStrings("hello", state.bodyBytes());
+}
+
 test "response tracker owns client response lifecycle" {
     const allocator = std.testing.allocator;
     var tracker = null3.ResponseTracker.init(allocator);
@@ -750,6 +772,28 @@ test "response tracker owns client response lifecycle" {
         allocator.destroy(removed);
     }
     try std.testing.expect(tracker.get(0) == null);
+}
+
+test "response tracker enforces body budget" {
+    const allocator = std.testing.allocator;
+    var tracker = null3.ResponseTracker.initWithConfig(allocator, .{ .max_body_bytes = 4 });
+    defer tracker.deinit();
+
+    _ = try tracker.observe(.{ .data = .{
+        .stream_id = 0,
+        .bytes = "po",
+    } });
+    _ = try tracker.observe(.{ .data = .{
+        .stream_id = 0,
+        .bytes = "ng",
+    } });
+    try std.testing.expectError(error.BodyTooLarge, tracker.observe(.{ .data = .{
+        .stream_id = 0,
+        .bytes = "!",
+    } }));
+
+    const state = tracker.get(0).?;
+    try std.testing.expectEqualStrings("pong", state.bodyBytes());
 }
 
 test "server runner classifies and tracks request batches" {
@@ -876,6 +920,28 @@ test "client runner classifies and tracks response batches" {
     try std.testing.expect(response.complete());
     try std.testing.expectEqualStrings("204", response.status().?);
     try std.testing.expectEqualStrings("done", response.body());
+}
+
+test "runners pass body budgets to lifecycle trackers" {
+    const allocator = std.testing.allocator;
+
+    var client_runner = null3.ClientRunner.initWithConfig(allocator, .{
+        .response_tracker = .{ .max_body_bytes = 2 },
+    });
+    defer client_runner.deinit();
+    try std.testing.expectError(error.BodyTooLarge, client_runner.observeResponseEvent(.{ .data = .{
+        .stream_id = 0,
+        .bytes = "abc",
+    } }));
+
+    var server_runner = null3.ServerRunner.initWithConfig(allocator, .{
+        .request_tracker = .{ .max_body_bytes = 2 },
+    });
+    defer server_runner.deinit();
+    try std.testing.expectError(error.BodyTooLarge, server_runner.observeRequestEvent(.{ .data = .{
+        .stream_id = 0,
+        .bytes = "abc",
+    } }));
 }
 
 test "session negotiates and surfaces extended CONNECT requests" {

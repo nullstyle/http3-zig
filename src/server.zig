@@ -499,14 +499,41 @@ pub const RequestState = struct {
         if (self.trailers) |old| freeFields(allocator, old);
         self.trailers = copy;
     }
+
+    fn appendBody(
+        self: *RequestState,
+        allocator: std.mem.Allocator,
+        bytes: []const u8,
+        max_body_bytes: ?usize,
+    ) RequestTrackerError!void {
+        if (max_body_bytes) |max| {
+            if (bytes.len > max or self.body.items.len > max - bytes.len) {
+                return error.BodyTooLarge;
+            }
+        }
+        try self.body.appendSlice(allocator, bytes);
+    }
+};
+
+pub const RequestTrackerConfig = struct {
+    max_body_bytes: ?usize = null,
+};
+
+pub const RequestTrackerError = std.mem.Allocator.Error || error{
+    BodyTooLarge,
 };
 
 pub const RequestTracker = struct {
     allocator: std.mem.Allocator,
+    config: RequestTrackerConfig = .{},
     requests: std.AutoHashMapUnmanaged(u64, *RequestState) = .empty,
 
     pub fn init(allocator: std.mem.Allocator) RequestTracker {
         return .{ .allocator = allocator };
+    }
+
+    pub fn initWithConfig(allocator: std.mem.Allocator, config: RequestTrackerConfig) RequestTracker {
+        return .{ .allocator = allocator, .config = config };
     }
 
     pub fn deinit(self: *RequestTracker) void {
@@ -531,7 +558,7 @@ pub const RequestTracker = struct {
     pub fn observe(
         self: *RequestTracker,
         event: RequestEvent,
-    ) std.mem.Allocator.Error!?*RequestState {
+    ) RequestTrackerError!?*RequestState {
         switch (event) {
             .headers => |headers| {
                 const request = try self.ensure(headers.stream_id);
@@ -540,7 +567,7 @@ pub const RequestTracker = struct {
             },
             .data => |data| {
                 const request = try self.ensure(data.stream_id);
-                try request.body.appendSlice(self.allocator, data.bytes);
+                try request.appendBody(self.allocator, data.bytes, self.config.max_body_bytes);
                 return request;
             },
             .trailers => |trailers| {

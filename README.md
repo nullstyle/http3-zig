@@ -19,7 +19,7 @@ send/receive groundwork, reusable transport driver helpers, request lifecycle
 tracking, response lifecycle tracking, client/server event runners, Extended
 CONNECT negotiation and request metadata, Capsule Protocol codecs,
 context-aware DATAGRAM helpers, opt-in send-buffer backpressure limits, and
-lightweight request-response facades.
+lightweight request-response facades with configurable tracker body budgets.
 
 ```sh
 mise install
@@ -88,12 +88,14 @@ just test
   `Server.startResponse` return streaming writers for incremental bodies and
   trailers, `Client.request` / `Server.respond` provide one-shot helpers, and
   `client.ResponseTracker` / `server.RequestTracker` build owned per-stream
-  reader state that can outlive the drained event batch. `ClientRunner` and
-  `ServerRunner` wrap the trackers for applications that want batch-oriented
-  event processing. `RequestHeadOptions.connect_protocol` opens the Extended
-  CONNECT path once the peer advertises support, and `RequestReader.protocol`
-  exposes the received protocol token. Request/response writers can send
-  context-aware unreliable datagrams and reliable DATAGRAM capsules.
+  reader state that can outlive the drained event batch, with optional maximum
+  accumulated body bytes. `ClientRunner` and `ServerRunner` wrap the trackers
+  for applications that want batch-oriented event processing.
+  `RequestHeadOptions.connect_protocol` opens the Extended CONNECT path once
+  the peer advertises support, and `RequestReader.protocol` exposes the
+  received protocol token.
+  Request/response writers can send context-aware unreliable datagrams and
+  reliable DATAGRAM capsules.
 
 ## Verified
 
@@ -106,8 +108,8 @@ just test
   and flow-control blocked events surface through the typed
   session/client/server APIs. It also covers negotiated HTTP/3 DATAGRAM exchange
   in both directions over `nullq` DATAGRAM frames, including tracked send IDs
-  and DATAGRAM ACK propagation, send-buffer cap enforcement, RFC 9204 Appendix
-  B exact-byte
+  and DATAGRAM ACK propagation, send-buffer cap enforcement, tracker body-budget
+  enforcement, RFC 9204 Appendix B exact-byte
   QPACK examples for dynamic table insertion, field-section references,
   acknowledgments, cancellations, and eviction, an opt-in dynamic QPACK
   response header over the in-process `nullq` exchange, plus exact-byte

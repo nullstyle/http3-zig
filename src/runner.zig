@@ -53,6 +53,14 @@ pub const ServerObservation = union(enum) {
     ignored_unknown_frame: server_mod.UnknownFrame,
 };
 
+pub const ClientRunnerConfig = struct {
+    response_tracker: client_mod.ResponseTrackerConfig = .{},
+};
+
+pub const ServerRunnerConfig = struct {
+    request_tracker: server_mod.RequestTrackerConfig = .{},
+};
+
 pub const ClientRunner = struct {
     tracker: client_mod.ResponseTracker,
     peer_settings: ?settings_mod.Settings = null,
@@ -61,6 +69,10 @@ pub const ClientRunner = struct {
 
     pub fn init(allocator: std.mem.Allocator) ClientRunner {
         return .{ .tracker = client_mod.ResponseTracker.init(allocator) };
+    }
+
+    pub fn initWithConfig(allocator: std.mem.Allocator, config: ClientRunnerConfig) ClientRunner {
+        return .{ .tracker = client_mod.ResponseTracker.initWithConfig(allocator, config.response_tracker) };
     }
 
     pub fn deinit(self: *ClientRunner) void {
@@ -74,7 +86,7 @@ pub const ClientRunner = struct {
     pub fn observe(
         self: *ClientRunner,
         event: session_mod.Event,
-    ) std.mem.Allocator.Error!ClientObservation {
+    ) client_mod.ResponseTrackerError!ClientObservation {
         const response_event = client_mod.ResponseEvent.from(event) orelse return .ignored;
         return self.observeResponseEvent(response_event);
     }
@@ -82,7 +94,7 @@ pub const ClientRunner = struct {
     pub fn observeResponseEvent(
         self: *ClientRunner,
         event: client_mod.ResponseEvent,
-    ) std.mem.Allocator.Error!ClientObservation {
+    ) client_mod.ResponseTrackerError!ClientObservation {
         switch (event) {
             .settings => |settings| {
                 self.peer_settings = settings;
@@ -116,7 +128,7 @@ pub const ClientRunner = struct {
         self: *ClientRunner,
         events: []const session_mod.Event,
         completed: ?*std.ArrayList(*client_mod.ResponseState),
-    ) std.mem.Allocator.Error!BatchStats {
+    ) client_mod.ResponseTrackerError!BatchStats {
         var stats: BatchStats = .{};
         for (events) |event| {
             try noteClientObservation(try self.observe(event), self.tracker.allocator, &stats, completed);
@@ -135,6 +147,10 @@ pub const ServerRunner = struct {
         return .{ .tracker = server_mod.RequestTracker.init(allocator) };
     }
 
+    pub fn initWithConfig(allocator: std.mem.Allocator, config: ServerRunnerConfig) ServerRunner {
+        return .{ .tracker = server_mod.RequestTracker.initWithConfig(allocator, config.request_tracker) };
+    }
+
     pub fn deinit(self: *ServerRunner) void {
         self.tracker.deinit();
     }
@@ -146,7 +162,7 @@ pub const ServerRunner = struct {
     pub fn observe(
         self: *ServerRunner,
         event: session_mod.Event,
-    ) std.mem.Allocator.Error!ServerObservation {
+    ) server_mod.RequestTrackerError!ServerObservation {
         const request_event = server_mod.RequestEvent.from(event) orelse return .ignored;
         return self.observeRequestEvent(request_event);
     }
@@ -154,7 +170,7 @@ pub const ServerRunner = struct {
     pub fn observeRequestEvent(
         self: *ServerRunner,
         event: server_mod.RequestEvent,
-    ) std.mem.Allocator.Error!ServerObservation {
+    ) server_mod.RequestTrackerError!ServerObservation {
         switch (event) {
             .settings => |settings| {
                 self.peer_settings = settings;
@@ -188,7 +204,7 @@ pub const ServerRunner = struct {
         self: *ServerRunner,
         events: []const session_mod.Event,
         completed: ?*std.ArrayList(*server_mod.RequestState),
-    ) std.mem.Allocator.Error!BatchStats {
+    ) server_mod.RequestTrackerError!BatchStats {
         var stats: BatchStats = .{};
         for (events) |event| {
             try noteServerObservation(try self.observe(event), self.tracker.allocator, &stats, completed);

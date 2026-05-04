@@ -202,6 +202,7 @@ pub fn codeForError(err: anyerror) u64 {
         error.BufferTooSmall,
         error.WriteStalled,
         error.SendBufferFull,
+        error.BodyTooLarge,
         error.DatagramTooLarge,
         error.InsertCountOverflow,
         error.ReferenceCountOverflow,
@@ -262,6 +263,7 @@ fn scopeForError(err: anyerror, app: ApplicationError) Scope {
     return switch (err) {
         error.RequestBlockedByGoaway => .stream,
         error.SendBufferFull => .stream,
+        error.BodyTooLarge => .stream,
         else => app.default_scope,
     };
 }
@@ -274,6 +276,7 @@ fn categoryForError(err: anyerror, app: ApplicationError) Category {
         error.UnsupportedCipherSuite,
         error.InboxOverflow,
         error.SendBufferFull,
+        error.BodyTooLarge,
         error.PeerDcidNotSet,
         error.PathLimitExceeded,
         => .transport,
