@@ -42,7 +42,8 @@ Datagrams / capsules), and the QUIC RFCs already tracked by `nullq`.
 - Done: `nullq` connection-close events are surfaced through the typed
   session/client/server event model with copied reasons and HTTP/3 application
   error metadata when available.
-- Next: richer higher-level client/server request APIs over session events.
+- Done: higher-level client/server event runners over session events and
+  lifecycle trackers.
 
 ## Phase 2: QPACK Complete
 
@@ -86,6 +87,9 @@ Datagrams / capsules), and the QUIC RFCs already tracked by `nullq`.
 - Done: reader-side response/request convenience handles via
   `client.ResponseTracker` / `ResponseReader` and
   `server.RequestTracker` / `RequestReader`.
+- Done: `ClientRunner` and `ServerRunner` compose session-event
+  classification, owned lifecycle tracking, and batch completion summaries for
+  applications and interop harnesses.
 - Done: optional curl HTTP/3 interop harness with localhost UDP server
   coverage for GET, request metadata, POST echo, large response, client-side
   cancellation, response reset, connection-close-after-response, and GOAWAY.

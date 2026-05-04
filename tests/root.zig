@@ -385,6 +385,99 @@ test "response tracker owns client response lifecycle" {
     try std.testing.expect(tracker.get(0) == null);
 }
 
+test "server runner classifies and tracks request batches" {
+    const allocator = std.testing.allocator;
+    var runner = null3.ServerRunner.init(allocator);
+    defer runner.deinit();
+
+    var fields = [_]null3.FieldLine{
+        .{ .name = ":method", .value = "POST" },
+        .{ .name = ":scheme", .value = "https" },
+        .{ .name = ":path", .value = "/runner" },
+        .{ .name = ":authority", .value = "localhost" },
+    };
+    var body = [_]u8{ 'o', 'k' };
+    const events = [_]null3.session.Event{
+        .{ .peer_settings = .{ .h3_datagram = true } },
+        .{ .headers = .{
+            .stream_id = 0,
+            .kind = null3.message.Kind.request,
+            .fields = &fields,
+        } },
+        .{ .data = .{
+            .stream_id = 0,
+            .kind = null3.message.Kind.request,
+            .data = &body,
+        } },
+        .{ .stream_finished = .{
+            .stream_id = 0,
+            .kind = null3.message.Kind.request,
+        } },
+    };
+    var completed: std.ArrayList(*null3.RequestState) = .empty;
+    defer completed.deinit(allocator);
+
+    const stats = try runner.observeBatch(&events, &completed);
+    try std.testing.expectEqual(@as(usize, 4), stats.observed);
+    try std.testing.expectEqual(@as(usize, 1), stats.settings);
+    try std.testing.expectEqual(@as(usize, 2), stats.state_updates);
+    try std.testing.expectEqual(@as(usize, 1), stats.completions);
+    try std.testing.expectEqual(@as(usize, 1), completed.items.len);
+    try std.testing.expect(runner.peer_settings.?.h3_datagram);
+
+    const request = completed.items[0].reader();
+    try std.testing.expectEqual(@as(u64, 0), request.streamId());
+    try std.testing.expect(request.complete());
+    try std.testing.expectEqualStrings("POST", request.method().?);
+    try std.testing.expectEqualStrings("/runner", request.path().?);
+    try std.testing.expectEqualStrings("ok", request.body());
+}
+
+test "client runner classifies and tracks response batches" {
+    const allocator = std.testing.allocator;
+    var runner = null3.ClientRunner.init(allocator);
+    defer runner.deinit();
+
+    var fields = [_]null3.FieldLine{
+        .{ .name = ":status", .value = "204" },
+        .{ .name = "x-runner", .value = "yes" },
+    };
+    var body = [_]u8{ 'd', 'o', 'n', 'e' };
+    const events = [_]null3.session.Event{
+        .{ .headers = .{
+            .stream_id = 0,
+            .kind = null3.message.Kind.response,
+            .fields = &fields,
+        } },
+        .{ .data = .{
+            .stream_id = 0,
+            .kind = null3.message.Kind.response,
+            .data = &body,
+        } },
+        .{ .stream_finished = .{
+            .stream_id = 0,
+            .kind = null3.message.Kind.response,
+        } },
+        .{ .goaway = 4 },
+    };
+    var completed: std.ArrayList(*null3.ResponseState) = .empty;
+    defer completed.deinit(allocator);
+
+    const stats = try runner.observeBatch(&events, &completed);
+    try std.testing.expectEqual(@as(usize, 4), stats.observed);
+    try std.testing.expectEqual(@as(usize, 2), stats.state_updates);
+    try std.testing.expectEqual(@as(usize, 1), stats.completions);
+    try std.testing.expectEqual(@as(usize, 1), stats.goaways);
+    try std.testing.expectEqual(@as(?u64, 4), runner.last_goaway);
+    try std.testing.expectEqual(@as(usize, 1), completed.items.len);
+
+    const response = completed.items[0].reader();
+    try std.testing.expectEqual(@as(u64, 0), response.streamId());
+    try std.testing.expect(response.complete());
+    try std.testing.expectEqualStrings("204", response.status().?);
+    try std.testing.expectEqualStrings("done", response.body());
+}
+
 test "session exchanges HTTP/3 request and response over nullq streams" {
     const allocator = std.testing.allocator;
 

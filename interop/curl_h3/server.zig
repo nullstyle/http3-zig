@@ -18,7 +18,7 @@ const Options = struct {
 
 const App = struct {
     allocator: std.mem.Allocator,
-    tracker: null3.RequestTracker,
+    runner: null3.ServerRunner,
     responded: std.AutoHashMapUnmanaged(u64, void) = .empty,
     responses_sent: u64 = 0,
     close_after_poll: bool = false,
@@ -26,25 +26,31 @@ const App = struct {
     fn init(allocator: std.mem.Allocator) App {
         return .{
             .allocator = allocator,
-            .tracker = null3.RequestTracker.init(allocator),
+            .runner = null3.ServerRunner.init(allocator),
         };
     }
 
     fn deinit(self: *App) void {
-        self.tracker.deinit();
+        self.runner.deinit();
         self.responded.deinit(self.allocator);
     }
 
     fn observe(self: *App, server: *null3.Server, event: null3.session.Event) !void {
-        const request_event = server.classify(event) orelse return;
-        switch (request_event) {
-            .reset => |reset| {
-                std.debug.print(
-                    "OBSERVED request reset stream={d} code={d} final={d}\n",
-                    .{ reset.stream_id, reset.error_code, reset.final_size },
-                );
-                self.responses_sent += 1;
-                return;
+        switch (try self.runner.observe(event)) {
+            .request_complete => |request| {
+                if (request.reset) |reset| {
+                    std.debug.print(
+                        "OBSERVED request reset stream={d} code={d} final={d}\n",
+                        .{ reset.stream_id, reset.error_code, reset.final_size },
+                    );
+                    self.responses_sent += 1;
+                    return;
+                }
+                if (request.rejected != null) {
+                    self.responses_sent += 1;
+                    return;
+                }
+                try self.respondOnce(server, request);
             },
             .connection_closed => |closed| {
                 std.debug.print(
@@ -61,8 +67,9 @@ const App = struct {
             },
             else => {},
         }
+    }
 
-        const request = (try self.tracker.observe(request_event)) orelse return;
+    fn respondOnce(self: *App, server: *null3.Server, request: *const null3.RequestState) !void {
         if (!request.complete or request.headers == null) return;
         if (self.responded.contains(request.stream_id)) return;
 

@@ -15,8 +15,8 @@ transport-free message codecs, critical stream setup, SETTINGS exchange,
 opt-in dynamic QPACK stream integration, GOAWAY handling, graceful-drain state,
 reset events, transport close events, structured HTTP/3/QPACK error
 classification, HTTP/3 DATAGRAM send/receive groundwork, reusable transport
-driver helpers, request lifecycle tracking, response lifecycle tracking, and
-lightweight client/server request-response facades.
+driver helpers, request lifecycle tracking, response lifecycle tracking,
+client/server event runners, and lightweight request-response facades.
 
 ```sh
 mise install
@@ -60,6 +60,9 @@ just test
 - `driver`: small `nullq`/`null3` transport-driving helpers for tests,
   examples, and interop peers. It keeps socket and clock ownership with the
   embedder while centralizing the handle/poll/tick/session-drain order.
+- `runner`: client/server event runners that compose raw `session.Event`
+  classification with owned request/response lifecycle trackers and batch
+  completion summaries.
 - `session`: HTTP/3 session state over `nullq.Connection`, including control
   streams, peer SETTINGS, request stream draining, response writes, FIN
   validation, optional dynamic QPACK encoder/decoder stream processing,
@@ -73,7 +76,9 @@ just test
   `Server.startResponse` return streaming writers for incremental bodies and
   trailers, `Client.request` / `Server.respond` provide one-shot helpers, and
   `client.ResponseTracker` / `server.RequestTracker` build owned per-stream
-  reader state that can outlive the drained event batch.
+  reader state that can outlive the drained event batch. `ClientRunner` and
+  `ServerRunner` wrap the trackers for applications that want batch-oriented
+  event processing.
 
 ## Verified
 
@@ -97,6 +102,7 @@ just test
   request metadata, POST echo, large response, client-side cancellation,
   response reset, connection-close-after-response, and GOAWAY scenarios.
   The server and in-process integration tests share the reusable transport
-  driver helper instead of open-coding the packet pump.
+  driver helper instead of open-coding the packet pump, and the server uses
+  `ServerRunner` for request lifecycle assembly.
 
 See [ROADMAP.md](ROADMAP.md) for the production plan.
