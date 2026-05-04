@@ -12,7 +12,12 @@ pub const Error = error{
     DuplicatePseudoHeader,
     MissingPseudoHeader,
     InvalidPseudoHeader,
+    ExtendedConnectNotEnabled,
     ConnectionSpecificField,
+};
+
+pub const RequestValidationOptions = struct {
+    enable_connect_protocol: bool = false,
 };
 
 pub fn validateTrailers(fields: []const FieldLine) Error!void {
@@ -24,12 +29,16 @@ pub fn validateTrailers(fields: []const FieldLine) Error!void {
 }
 
 pub fn validateRequest(fields: []const FieldLine) Error!void {
+    try validateRequestWithOptions(fields, .{});
+}
+
+pub fn validateRequestWithOptions(fields: []const FieldLine, options: RequestValidationOptions) Error!void {
     var seen_regular = false;
-    var method = false;
+    var method_value: ?[]const u8 = null;
     var scheme = false;
     var path = false;
     var authority = false;
-    var protocol_pseudo = false;
+    var protocol_value: ?[]const u8 = null;
 
     for (fields) |field| {
         try validateName(field.name);
@@ -42,8 +51,8 @@ pub fn validateRequest(fields: []const FieldLine) Error!void {
         }
 
         if (std.mem.eql(u8, field.name, ":method")) {
-            if (method) return Error.DuplicatePseudoHeader;
-            method = true;
+            if (method_value != null) return Error.DuplicatePseudoHeader;
+            method_value = field.value;
         } else if (std.mem.eql(u8, field.name, ":scheme")) {
             if (scheme) return Error.DuplicatePseudoHeader;
             scheme = true;
@@ -54,14 +63,29 @@ pub fn validateRequest(fields: []const FieldLine) Error!void {
             if (authority) return Error.DuplicatePseudoHeader;
             authority = true;
         } else if (std.mem.eql(u8, field.name, ":protocol")) {
-            if (protocol_pseudo) return Error.DuplicatePseudoHeader;
-            protocol_pseudo = true;
+            if (protocol_value != null) return Error.DuplicatePseudoHeader;
+            protocol_value = field.value;
         } else {
             return Error.InvalidPseudoHeader;
         }
     }
 
-    if (!method or !scheme or !path) return Error.MissingPseudoHeader;
+    const method = method_value orelse return Error.MissingPseudoHeader;
+    if (!scheme or !path) return Error.MissingPseudoHeader;
+
+    if (protocol_value) |value| {
+        if (!options.enable_connect_protocol) return Error.ExtendedConnectNotEnabled;
+        if (!std.mem.eql(u8, method, "CONNECT")) return Error.InvalidPseudoHeader;
+        if (value.len == 0) return Error.InvalidPseudoHeader;
+    }
+}
+
+pub fn requestProtocol(fields: []const FieldLine) ?[]const u8 {
+    return fieldValue(fields, ":protocol");
+}
+
+pub fn isExtendedConnect(fields: []const FieldLine) bool {
+    return requestProtocol(fields) != null;
 }
 
 pub fn validateResponse(fields: []const FieldLine) Error!void {
@@ -100,6 +124,13 @@ fn isConnectionSpecific(name: []const u8) bool {
         std.ascii.eqlIgnoreCase(name, "upgrade");
 }
 
+fn fieldValue(fields: []const FieldLine, name: []const u8) ?[]const u8 {
+    for (fields) |field| {
+        if (std.mem.eql(u8, field.name, name)) return field.value;
+    }
+    return null;
+}
+
 test "valid request pseudo-header block" {
     const fields = [_]FieldLine{
         .{ .name = ":method", .value = "GET" },
@@ -109,4 +140,31 @@ test "valid request pseudo-header block" {
         .{ .name = "accept", .value = "*/*" },
     };
     try validateRequest(&fields);
+}
+
+test "extended CONNECT request requires SETTINGS opt-in and CONNECT method" {
+    const fields = [_]FieldLine{
+        .{ .name = ":method", .value = "CONNECT" },
+        .{ .name = ":scheme", .value = "https" },
+        .{ .name = ":path", .value = "/chat" },
+        .{ .name = ":authority", .value = "example.com" },
+        .{ .name = ":protocol", .value = "websocket" },
+    };
+
+    try std.testing.expectError(Error.ExtendedConnectNotEnabled, validateRequest(&fields));
+    try validateRequestWithOptions(&fields, .{ .enable_connect_protocol = true });
+    try std.testing.expectEqualStrings("websocket", requestProtocol(&fields).?);
+    try std.testing.expect(isExtendedConnect(&fields));
+
+    const bad_method = [_]FieldLine{
+        .{ .name = ":method", .value = "GET" },
+        .{ .name = ":scheme", .value = "https" },
+        .{ .name = ":path", .value = "/chat" },
+        .{ .name = ":authority", .value = "example.com" },
+        .{ .name = ":protocol", .value = "websocket" },
+    };
+    try std.testing.expectError(
+        Error.InvalidPseudoHeader,
+        validateRequestWithOptions(&bad_method, .{ .enable_connect_protocol = true }),
+    );
 }

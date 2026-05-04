@@ -32,11 +32,12 @@ pub const StreamType = struct {
     pub const qpack_decoder: u64 = 0x03;
 };
 
-/// HTTP/3 SETTINGS IDs (RFC 9114 §7.2.4, RFC 9204 §5, RFC 9297 §2.1).
+/// HTTP/3 SETTINGS IDs (RFC 9114 §7.2.4, RFC 9204 §5, RFC 9220 §3, RFC 9297 §2.1).
 pub const SettingId = struct {
     pub const qpack_max_table_capacity: u64 = 0x01;
     pub const max_field_section_size: u64 = 0x06;
     pub const qpack_blocked_streams: u64 = 0x07;
+    pub const enable_connect_protocol: u64 = 0x08;
     pub const h3_datagram: u64 = 0x33;
 };
 

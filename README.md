@@ -16,7 +16,8 @@ opt-in dynamic QPACK stream integration, GOAWAY handling, graceful-drain state,
 reset events, transport close events, structured HTTP/3/QPACK error
 classification, HTTP/3 DATAGRAM send/receive groundwork, reusable transport
 driver helpers, request lifecycle tracking, response lifecycle tracking,
-client/server event runners, and lightweight request-response facades.
+client/server event runners, Extended CONNECT negotiation and request metadata,
+and lightweight request-response facades.
 
 ```sh
 mise install
@@ -38,7 +39,9 @@ just test
 ## Current Modules
 
 - `protocol`: RFC constants and GREASE helpers.
-- `settings`: HTTP/3 SETTINGS parser/encoder.
+- `settings`: HTTP/3 SETTINGS parser/encoder, including QPACK limits,
+  `SETTINGS_ENABLE_CONNECT_PROTOCOL`, max field section size, and HTTP/3
+  DATAGRAM negotiation.
 - `frame`: HTTP/3 frame parser/encoder, including RFC 9218 PRIORITY_UPDATE.
 - `qpack`: QPACK primitives plus static-table/literal field-section codecs,
   RFC 7541 Huffman string literal support, and a transport-free dynamic table
@@ -50,6 +53,7 @@ just test
   instructions, plus Known Received Count, blocked-stream, acknowledgment,
   cancellation, and field-section prefix accounting helpers.
 - `headers`: HTTP field validation for request/response scaffolding.
+  Extended CONNECT `:protocol` validation is gated by negotiated support.
 - `priority`: RFC 9218 urgency/incremental parameter parsing.
 - `errors`: structured HTTP/3 application error code metadata plus local
   cause, connection-close, and stream-reset classification helpers.
@@ -66,8 +70,9 @@ just test
 - `session`: HTTP/3 session state over `nullq.Connection`, including control
   streams, peer SETTINGS, request stream draining, response writes, FIN
   validation, optional dynamic QPACK encoder/decoder stream processing,
-  GOAWAY policy enforcement, HTTP/3 DATAGRAM events over QUIC DATAGRAM frames,
-  reset/close events, and deep-owned application events.
+  GOAWAY policy enforcement, Extended CONNECT negotiation checks, HTTP/3
+  DATAGRAM events over QUIC DATAGRAM frames, reset/close events, and deep-owned
+  application events.
 - `connection`: `nullq.Connection` adapter for control stream, optional QPACK
   streams, and request/data frame writes.
 - `client` / `server`: BoringSSL TLS context helpers with ALPN set to `h3`,
@@ -78,7 +83,9 @@ just test
   `client.ResponseTracker` / `server.RequestTracker` build owned per-stream
   reader state that can outlive the drained event batch. `ClientRunner` and
   `ServerRunner` wrap the trackers for applications that want batch-oriented
-  event processing.
+  event processing. `RequestHeadOptions.connect_protocol` opens the Extended
+  CONNECT path once the peer advertises support, and `RequestReader.protocol`
+  exposes the received protocol token.
 
 ## Verified
 
@@ -95,6 +102,8 @@ just test
   acknowledgments, cancellations, and eviction, an opt-in dynamic QPACK
   response header over the in-process `nullq` exchange, plus exact-byte
   quic-go/qpack interop vectors for the shared static/literal/Huffman profile.
+  Extended CONNECT coverage checks SETTINGS negotiation, client-side gating,
+  and server-side `:protocol` request metadata.
 - `just qpack-interop` runs the optional Go-side fixture harness against
   `github.com/quic-go/qpack`.
 - `just curl-h3-interop` builds a small localhost `null3` HTTP/3 server and

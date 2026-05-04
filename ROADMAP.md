@@ -44,6 +44,9 @@ Datagrams / capsules), and the QUIC RFCs already tracked by `nullq`.
   error metadata when available.
 - Done: higher-level client/server event runners over session events and
   lifecycle trackers.
+- Done: Extended CONNECT foundation with `SETTINGS_ENABLE_CONNECT_PROTOCOL`,
+  `:protocol` validation, client request construction, server request metadata,
+  and in-process negotiation coverage.
 
 ## Phase 2: QPACK Complete
 
@@ -108,8 +111,8 @@ Datagrams / capsules), and the QUIC RFCs already tracked by `nullq`.
   RFC 9297 quarter-stream-id payload codec, SETTINGS/transport negotiation
   checks, typed session/client/server datagram events, and bidirectional
   in-process coverage.
-- Next: Extended CONNECT, WebSocket-over-H3, context-aware HTTP datagrams, and
-  capsule protocol.
+- Done: Extended CONNECT foundation with negotiated `:protocol` support.
+- Next: WebSocket-over-H3, context-aware HTTP datagrams, and capsule protocol.
 - Observability hooks: keylog passthrough, qlog-friendly events, metrics counters.
 
 ## Phase 5: Hardening

@@ -15,6 +15,7 @@ pub const Settings = struct {
     qpack_max_table_capacity: u64 = 0,
     qpack_blocked_streams: u64 = 0,
     max_field_section_size: ?u64 = null,
+    enable_connect_protocol: bool = false,
     h3_datagram: bool = false,
 
     pub fn encodedLen(self: Settings) usize {
@@ -23,6 +24,9 @@ pub const Settings = struct {
         n += settingEncodedLen(protocol.SettingId.qpack_blocked_streams, self.qpack_blocked_streams);
         if (self.max_field_section_size) |v| {
             n += settingEncodedLen(protocol.SettingId.max_field_section_size, v);
+        }
+        if (self.enable_connect_protocol) {
+            n += settingEncodedLen(protocol.SettingId.enable_connect_protocol, 1);
         }
         if (self.h3_datagram) {
             n += settingEncodedLen(protocol.SettingId.h3_datagram, 1);
@@ -37,6 +41,9 @@ pub const Settings = struct {
         if (self.max_field_section_size) |v| {
             pos += try put(dst[pos..], protocol.SettingId.max_field_section_size, v);
         }
+        if (self.enable_connect_protocol) {
+            pos += try put(dst[pos..], protocol.SettingId.enable_connect_protocol, 1);
+        }
         if (self.h3_datagram) {
             pos += try put(dst[pos..], protocol.SettingId.h3_datagram, 1);
         }
@@ -48,6 +55,7 @@ pub const Settings = struct {
         var seen_qpack_max = false;
         var seen_qpack_blocked = false;
         var seen_max_field = false;
+        var seen_enable_connect_protocol = false;
         var seen_h3_datagram = false;
 
         var pos: usize = 0;
@@ -76,6 +84,12 @@ pub const Settings = struct {
                     if (seen_max_field) return Error.DuplicateSetting;
                     seen_max_field = true;
                     out.max_field_section_size = value;
+                },
+                protocol.SettingId.enable_connect_protocol => {
+                    if (seen_enable_connect_protocol) return Error.DuplicateSetting;
+                    if (value > 1) return Error.InvalidSettingValue;
+                    seen_enable_connect_protocol = true;
+                    out.enable_connect_protocol = value == 1;
                 },
                 protocol.SettingId.h3_datagram => {
                     if (seen_h3_datagram) return Error.DuplicateSetting;
@@ -107,6 +121,7 @@ test "SETTINGS round-trip" {
         .qpack_max_table_capacity = 4096,
         .qpack_blocked_streams = 16,
         .max_field_section_size = 65536,
+        .enable_connect_protocol = true,
         .h3_datagram = true,
     };
     var buf: [64]u8 = undefined;
@@ -116,5 +131,6 @@ test "SETTINGS round-trip" {
     try std.testing.expectEqual(@as(u64, 4096), got.qpack_max_table_capacity);
     try std.testing.expectEqual(@as(u64, 16), got.qpack_blocked_streams);
     try std.testing.expectEqual(@as(?u64, 65536), got.max_field_section_size);
+    try std.testing.expect(got.enable_connect_protocol);
     try std.testing.expect(got.h3_datagram);
 }

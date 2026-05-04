@@ -11,6 +11,7 @@ const nullq = @import("nullq");
 const errors_mod = @import("errors.zig");
 const datagram_mod = @import("datagram.zig");
 const frame_mod = @import("frame.zig");
+const headers_mod = @import("headers.zig");
 const message_mod = @import("message.zig");
 const protocol = @import("protocol.zig");
 const qpack = @import("qpack/root.zig");
@@ -264,6 +265,7 @@ pub const Session = struct {
     pub fn openRequest(self: *Session, fields: []const qpack.FieldLine) Error!u64 {
         if (self.role != .client) return Error.InvalidRole;
         try self.start();
+        try self.ensureExtendedConnectAllowed(fields);
 
         const id = self.nextLocalBidiId(0);
         if (!self.peerAllowsRequest(id)) return Error.RequestBlockedByGoaway;
@@ -461,6 +463,7 @@ pub const Session = struct {
         while (self.quic.pollEvent()) |event| {
             switch (event) {
                 .close => |close_event| try self.observeConnectionClose(close_event, events),
+                .flow_blocked => {},
             }
         }
         self.syncShutdownState();
@@ -665,6 +668,7 @@ pub const Session = struct {
             if (state.message_decoder == null) {
                 state.message_decoder = message_mod.Decoder.init(.push, .{
                     .max_field_section_size = self.config.max_field_section_size,
+                    .enable_connect_protocol = false,
                 });
             }
         }
@@ -946,9 +950,7 @@ pub const Session = struct {
         if (state.message_decoder) |decoder| {
             if (decoder.kind != decoder_kind) return Error.WrongMessageKind;
         } else {
-            state.message_decoder = message_mod.Decoder.init(decoder_kind, .{
-                .max_field_section_size = self.config.max_field_section_size,
-            });
+            state.message_decoder = message_mod.Decoder.init(decoder_kind, self.messageDecodeOptions(decoder_kind));
         }
 
         _ = try self.ensureEncoder(state, encoder_kind);
@@ -961,11 +963,31 @@ pub const Session = struct {
             return encoder;
         }
 
-        state.message_encoder = message_mod.Encoder.init(kind, .{
-            .max_field_section_size = self.config.max_field_section_size,
-        });
+        state.message_encoder = message_mod.Encoder.init(kind, self.messageEncodeOptions(kind));
         if (state.message_encoder) |*encoder| return encoder;
         unreachable;
+    }
+
+    fn messageEncodeOptions(self: *const Session, kind: message_mod.Kind) message_mod.EncodeOptions {
+        return .{
+            .max_field_section_size = self.config.max_field_section_size,
+            .enable_connect_protocol = kind == .request and
+                self.peer_settings != null and
+                self.peer_settings.?.enable_connect_protocol,
+        };
+    }
+
+    fn messageDecodeOptions(self: *const Session, kind: message_mod.Kind) message_mod.DecodeOptions {
+        return .{
+            .max_field_section_size = self.config.max_field_section_size,
+            .enable_connect_protocol = kind == .request and self.local_settings.enable_connect_protocol,
+        };
+    }
+
+    fn ensureExtendedConnectAllowed(self: *const Session, fields: []const qpack.FieldLine) Error!void {
+        if (headers_mod.requestProtocol(fields) == null) return;
+        const peer = self.peer_settings orelse return Error.MissingSettings;
+        if (!peer.enable_connect_protocol) return Error.ExtendedConnectNotEnabled;
     }
 
     fn getState(self: *Session, stream_id: u64) Error!*StreamState {

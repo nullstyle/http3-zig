@@ -34,10 +34,12 @@ pub const Kind = enum {
 
 pub const EncodeOptions = struct {
     max_field_section_size: ?usize = null,
+    enable_connect_protocol: bool = false,
 };
 
 pub const DecodeOptions = struct {
     max_field_section_size: ?usize = null,
+    enable_connect_protocol: bool = false,
 };
 
 pub const Event = union(enum) {
@@ -67,7 +69,10 @@ pub const Encoder = struct {
 
     pub fn encodeHeaders(self: *Encoder, dst: []u8, fields: []const qpack.FieldLine) Error!usize {
         if (self.sent_headers) return Error.DuplicateHeaders;
-        try validateFields(self.kind, fields);
+        try validateFields(self.kind, fields, .{
+            .max_field_section_size = self.options.max_field_section_size,
+            .enable_connect_protocol = self.options.enable_connect_protocol,
+        });
         const n = try encodeHeadersFrame(dst, fields, self.options);
         self.sent_headers = true;
         return n;
@@ -80,7 +85,10 @@ pub const Encoder = struct {
         field_section: []const u8,
     ) Error!usize {
         if (self.sent_headers) return Error.DuplicateHeaders;
-        try validateFields(self.kind, fields);
+        try validateFields(self.kind, fields, .{
+            .max_field_section_size = self.options.max_field_section_size,
+            .enable_connect_protocol = self.options.enable_connect_protocol,
+        });
         const n = try encodeHeadersFrameFromBlock(dst, field_section, self.options);
         self.sent_headers = true;
         return n;
@@ -172,7 +180,7 @@ pub const Decoder = struct {
         try self.validator.observe(protocol.FrameType.headers);
         if (self.seen_trailers) return Error.DuplicateHeaders;
         if (!self.seen_headers) {
-            try validateFields(self.kind, fields);
+            try validateFields(self.kind, fields, self.options);
             self.seen_headers = true;
             return .{ .headers = fields };
         }
@@ -246,9 +254,11 @@ pub fn encodeDataFrame(dst: []u8, data: []const u8) Error!usize {
     return pos + data.len;
 }
 
-fn validateFields(kind: Kind, fields: []const qpack.FieldLine) headers_mod.Error!void {
+fn validateFields(kind: Kind, fields: []const qpack.FieldLine, options: DecodeOptions) headers_mod.Error!void {
     switch (kind) {
-        .request => try headers_mod.validateRequest(fields),
+        .request => try headers_mod.validateRequestWithOptions(fields, .{
+            .enable_connect_protocol = options.enable_connect_protocol,
+        }),
         .response, .push => try headers_mod.validateResponse(fields),
     }
 }

@@ -60,6 +60,7 @@ pub const RequestOptions = struct {
     scheme: []const u8 = "https",
     authority: []const u8 = "",
     path: []const u8 = "/",
+    connect_protocol: ?[]const u8 = null,
     headers: []const qpack.FieldLine = &.{},
     body: ?[]const u8 = null,
     trailers: []const qpack.FieldLine = &.{},
@@ -71,6 +72,7 @@ pub const RequestHeadOptions = struct {
     scheme: []const u8 = "https",
     authority: []const u8 = "",
     path: []const u8 = "/",
+    connect_protocol: ?[]const u8 = null,
     headers: []const qpack.FieldLine = &.{},
 };
 
@@ -407,6 +409,7 @@ pub const Client = struct {
             .scheme = options.scheme,
             .authority = options.authority,
             .path = options.path,
+            .connect_protocol = options.connect_protocol,
             .headers = options.headers,
         });
 
@@ -442,12 +445,18 @@ fn buildRequestFields(
     allocator: std.mem.Allocator,
     options: RequestHeadOptions,
 ) session_mod.Error![]qpack.FieldLine {
-    const fields = try allocator.alloc(qpack.FieldLine, 4 + options.headers.len);
+    const protocol_len: usize = if (options.connect_protocol != null) 1 else 0;
+    const fields = try allocator.alloc(qpack.FieldLine, 4 + protocol_len + options.headers.len);
     fields[0] = .{ .name = ":method", .value = options.method };
     fields[1] = .{ .name = ":scheme", .value = options.scheme };
     fields[2] = .{ .name = ":path", .value = options.path };
     fields[3] = .{ .name = ":authority", .value = options.authority };
-    for (options.headers, 0..) |header, i| fields[4 + i] = header;
+    var pos: usize = 4;
+    if (options.connect_protocol) |connect_protocol| {
+        fields[pos] = .{ .name = ":protocol", .value = connect_protocol };
+        pos += 1;
+    }
+    for (options.headers, 0..) |header, i| fields[pos + i] = header;
     return fields;
 }
 

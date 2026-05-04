@@ -91,6 +91,7 @@ test "HTTP/3 SETTINGS frame round-trip" {
         .qpack_max_table_capacity = 4096,
         .qpack_blocked_streams = 8,
         .max_field_section_size = 1 << 20,
+        .enable_connect_protocol = true,
         .h3_datagram = true,
     };
     var buf: [128]u8 = undefined;
@@ -102,6 +103,7 @@ test "HTTP/3 SETTINGS frame round-trip" {
             try std.testing.expectEqual(@as(u64, 4096), got.qpack_max_table_capacity);
             try std.testing.expectEqual(@as(u64, 8), got.qpack_blocked_streams);
             try std.testing.expectEqual(@as(?u64, 1 << 20), got.max_field_section_size);
+            try std.testing.expect(got.enable_connect_protocol);
             try std.testing.expect(got.h3_datagram);
         },
         else => return error.TestExpectedEqual,
@@ -143,6 +145,33 @@ test "static QPACK field section uses indexed representation" {
     try null3.headers.validateRequest(decoded);
     try std.testing.expectEqualStrings("GET", decoded[0].value);
     try std.testing.expectEqualStrings("/search", decoded[2].value);
+}
+
+test "extended CONNECT header validation requires opt-in" {
+    const fields = [_]null3.FieldLine{
+        .{ .name = ":method", .value = "CONNECT" },
+        .{ .name = ":scheme", .value = "https" },
+        .{ .name = ":path", .value = "/socket" },
+        .{ .name = ":authority", .value = "example.com" },
+        .{ .name = ":protocol", .value = "websocket" },
+    };
+
+    try std.testing.expectError(error.ExtendedConnectNotEnabled, null3.headers.validateRequest(&fields));
+    try null3.headers.validateRequestWithOptions(&fields, .{ .enable_connect_protocol = true });
+    try std.testing.expectEqualStrings("websocket", null3.headers.requestProtocol(&fields).?);
+    try std.testing.expect(null3.headers.isExtendedConnect(&fields));
+
+    const bad_method = [_]null3.FieldLine{
+        .{ .name = ":method", .value = "GET" },
+        .{ .name = ":scheme", .value = "https" },
+        .{ .name = ":path", .value = "/socket" },
+        .{ .name = ":authority", .value = "example.com" },
+        .{ .name = ":protocol", .value = "websocket" },
+    };
+    try std.testing.expectError(
+        error.InvalidPseudoHeader,
+        null3.headers.validateRequestWithOptions(&bad_method, .{ .enable_connect_protocol = true }),
+    );
 }
 
 test "PRIORITY_UPDATE request frame round-trip" {
@@ -476,6 +505,129 @@ test "client runner classifies and tracks response batches" {
     try std.testing.expect(response.complete());
     try std.testing.expectEqualStrings("204", response.status().?);
     try std.testing.expectEqualStrings("done", response.body());
+}
+
+test "session negotiates and surfaces extended CONNECT requests" {
+    const allocator = std.testing.allocator;
+
+    var client_tls = try null3.client.initTlsContext(.{ .verify = .none });
+    defer client_tls.deinit();
+    var server_tls = try null3.server.initTlsContext(
+        .{},
+        test_cert_pem,
+        test_key_pem,
+    );
+    defer server_tls.deinit();
+
+    var client: nullq.Connection = undefined;
+    var server: nullq.Connection = undefined;
+    try initConnectedQuic(allocator, client_tls, server_tls, &client, &server);
+    defer client.deinit();
+    defer server.deinit();
+
+    const h3_settings: null3.Settings = .{ .enable_connect_protocol = true };
+    var client_h3 = null3.Session.init(allocator, .client, &client, .{
+        .settings = h3_settings,
+    });
+    defer client_h3.deinit();
+    var server_h3 = null3.Session.init(allocator, .server, &server, .{
+        .settings = h3_settings,
+    });
+    defer server_h3.deinit();
+
+    try client_h3.start();
+    try server_h3.start();
+    var h3_client = null3.Client.init(&client_h3);
+
+    try std.testing.expectError(
+        null3.session.Error.MissingSettings,
+        h3_client.startRequest(allocator, .{
+            .method = "CONNECT",
+            .authority = "localhost",
+            .path = "/socket",
+            .connect_protocol = "websocket",
+        }),
+    );
+
+    var client_events: std.ArrayList(null3.session.Event) = .empty;
+    defer {
+        clearSessionEvents(allocator, &client_events);
+        client_events.deinit(allocator);
+    }
+    var server_events: std.ArrayList(null3.session.Event) = .empty;
+    defer {
+        clearSessionEvents(allocator, &server_events);
+        server_events.deinit(allocator);
+    }
+
+    var client_saw_settings = false;
+    var now_us: u64 = 1_000_000;
+    var iters: u32 = 0;
+    while (!client_saw_settings) : (iters += 1) {
+        try std.testing.expect(iters < 20_000);
+        try pumpH3(
+            &client,
+            &server,
+            &client_h3,
+            &server_h3,
+            &client_events,
+            &server_events,
+            &now_us,
+        );
+
+        for (client_events.items) |event| {
+            const response_event = h3_client.classify(event) orelse continue;
+            switch (response_event) {
+                .settings => |settings| {
+                    try std.testing.expect(settings.enable_connect_protocol);
+                    client_saw_settings = true;
+                },
+                else => {},
+            }
+        }
+        clearSessionEvents(allocator, &client_events);
+        clearSessionEvents(allocator, &server_events);
+    }
+
+    var writer = try h3_client.startRequest(allocator, .{
+        .method = "CONNECT",
+        .authority = "localhost",
+        .path = "/socket",
+        .connect_protocol = "websocket",
+    });
+    const stream_id = writer.stream_id;
+    try writer.finish();
+
+    var server_runner = null3.ServerRunner.init(allocator);
+    defer server_runner.deinit();
+    var completed: std.ArrayList(*null3.RequestState) = .empty;
+    defer completed.deinit(allocator);
+
+    iters = 0;
+    while (completed.items.len == 0) : (iters += 1) {
+        try std.testing.expect(iters < 20_000);
+        try pumpH3(
+            &client,
+            &server,
+            &client_h3,
+            &server_h3,
+            &client_events,
+            &server_events,
+            &now_us,
+        );
+
+        _ = try server_runner.observeBatch(server_events.items, &completed);
+        clearSessionEvents(allocator, &server_events);
+        clearSessionEvents(allocator, &client_events);
+    }
+
+    const request = completed.items[0].reader();
+    try std.testing.expectEqual(stream_id, request.streamId());
+    try std.testing.expect(request.complete());
+    try std.testing.expect(request.isExtendedConnect());
+    try std.testing.expectEqualStrings("CONNECT", request.method().?);
+    try std.testing.expectEqualStrings("/socket", request.path().?);
+    try std.testing.expectEqualStrings("websocket", request.protocol().?);
 }
 
 test "session exchanges HTTP/3 request and response over nullq streams" {

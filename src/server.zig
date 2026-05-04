@@ -144,6 +144,14 @@ pub const RequestReader = struct {
         return self.request.path();
     }
 
+    pub fn protocol(self: RequestReader) ?[]const u8 {
+        return self.request.protocol();
+    }
+
+    pub fn isExtendedConnect(self: RequestReader) bool {
+        return self.request.isExtendedConnect();
+    }
+
     pub fn complete(self: RequestReader) bool {
         return self.request.complete;
     }
@@ -339,6 +347,14 @@ pub const RequestState = struct {
 
     pub fn path(self: *const RequestState) ?[]const u8 {
         return fieldValue(self.headerFields(), ":path");
+    }
+
+    pub fn protocol(self: *const RequestState) ?[]const u8 {
+        return fieldValue(self.headerFields(), ":protocol");
+    }
+
+    pub fn isExtendedConnect(self: *const RequestState) bool {
+        return self.protocol() != null;
     }
 
     fn setHeaders(

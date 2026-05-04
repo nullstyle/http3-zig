@@ -160,6 +160,7 @@ pub fn codeForError(err: anyerror) u64 {
         error.DuplicatePseudoHeader,
         error.MissingPseudoHeader,
         error.InvalidPseudoHeader,
+        error.ExtendedConnectNotEnabled,
         error.ConnectionSpecificField,
         => protocol.ErrorCode.message_error,
         error.HuffmanUnsupported,
