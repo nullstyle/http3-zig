@@ -56,7 +56,10 @@ Datagrams / capsules), and the QUIC RFCs already tracked by `nullq`.
 - Done: RFC 9204 Appendix B exact-byte fixture coverage for literal field
   sections, dynamic table inserts, acknowledgments, duplicates, stream
   cancellations, and eviction.
-- Cross-implementation QPACK fixture tests.
+- Done: quic-go/qpack cross-implementation fixture coverage for the shared
+  static/literal/Huffman profile.
+- Cross-implementation dynamic-table QPACK fixture tests with a peer that
+  supports dynamic QPACK.
 
 ## Phase 3: Client and Server APIs
 

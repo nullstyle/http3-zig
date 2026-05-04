@@ -77,6 +77,9 @@ just test
   request streams, and the server rejects a deliberately non-compliant request
   stream above its GOAWAY limit. It also covers RFC 9204 Appendix B exact-byte
   QPACK examples for dynamic table insertion, field-section references,
-  acknowledgments, cancellations, and eviction.
+  acknowledgments, cancellations, and eviction, plus exact-byte quic-go/qpack
+  interop vectors for the shared static/literal/Huffman profile.
+- `just qpack-interop` runs the optional Go-side fixture harness against
+  `github.com/quic-go/qpack`.
 
 See [ROADMAP.md](ROADMAP.md) for the production plan.

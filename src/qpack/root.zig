@@ -1048,6 +1048,49 @@ test "RFC 9204 Appendix B.1 literal field line with static name reference" {
     try std.testing.expectEqualStrings("/index.html", decoded[0].value);
 }
 
+test "quic-go qpack fixture request static and literal block" {
+    const fields = [_]FieldLine{
+        .{ .name = ":method", .value = "GET" },
+        .{ .name = ":scheme", .value = "https" },
+        .{ .name = ":path", .value = "/search" },
+        .{ .name = ":authority", .value = "example.com" },
+        .{ .name = "user-agent", .value = "null3-test" },
+    };
+    const block = "\x00\x00\xd1\xd7\x51\x85\x61\x05\x1d\x84\x9f\x50\x88\x2f\x91\xd3\x5d\x05\x5c\x87\xa7\x5f\x50\x87\xaa\xda\x28\x65\x64\x95\x09";
+
+    var buf: [128]u8 = undefined;
+    const n = try encodeFieldSectionWithOptions(&buf, &fields, .{ .huffman = true });
+    try std.testing.expectEqualSlices(u8, block, buf[0..n]);
+    try expectDecodedFields(block, &fields);
+}
+
+test "quic-go qpack fixture response static and literal block" {
+    const fields = [_]FieldLine{
+        .{ .name = ":status", .value = "200" },
+        .{ .name = "content-type", .value = "text/plain" },
+        .{ .name = "cache-control", .value = "no-cache" },
+        .{ .name = "x-trace-id", .value = "abcdef" },
+    };
+    const block = "\x00\x00\xd9\xf5\xe7\x2f\x00\xf2\xb2\x6c\x19\x0a\xb1\xa4\x85\x1c\x64\x90\xb2\xff";
+
+    var buf: [128]u8 = undefined;
+    const n = try encodeFieldSectionWithOptions(&buf, &fields, .{ .huffman = true });
+    try std.testing.expectEqualSlices(u8, block, buf[0..n]);
+    try expectDecodedFields(block, &fields);
+}
+
+test "quic-go qpack fixture literal without name reference block" {
+    const fields = [_]FieldLine{
+        .{ .name = "x-custom-key", .value = "x-custom-value" },
+    };
+    const block = "\x00\x00\x2f\x02\xf2\xb1\x2d\x42\x4f\x4a\xdd\x4b\xeb\x8a\xf2\xb1\x2d\x42\x4f\x4a\xdd\xc7\x45\xa5";
+
+    var buf: [128]u8 = undefined;
+    const n = try encodeFieldSectionWithOptions(&buf, &fields, .{ .huffman = true });
+    try std.testing.expectEqualSlices(u8, block, buf[0..n]);
+    try expectDecodedFields(block, &fields);
+}
+
 test "RFC 9204 Appendix B.2 dynamic table field section and acknowledgment" {
     const encoder_stream = "\x3f\xbd\x01\xc0\x0fwww.example.com\xc1\x0c/sample/path";
     const field_section = "\x03\x81\x10\x11";
@@ -1218,5 +1261,16 @@ fn applyEncoderStreamFixture(
         _ = try decoder_state.applyEncoderInstruction(table, decoded.instruction);
         instructions.freeDecodedEncoderInstruction(std.testing.allocator, decoded);
         pos += decoded.bytes_read;
+    }
+}
+
+fn expectDecodedFields(block: []const u8, expected: []const FieldLine) anyerror!void {
+    const decoded = try decodeFieldSection(std.testing.allocator, block);
+    defer freeFieldSection(std.testing.allocator, decoded);
+    try std.testing.expectEqual(expected.len, decoded.len);
+    for (expected, decoded) |want, got| {
+        try std.testing.expectEqualStrings(want.name, got.name);
+        try std.testing.expectEqualStrings(want.value, got.value);
+        try std.testing.expectEqual(want.sensitive, got.sensitive);
     }
 }
