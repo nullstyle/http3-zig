@@ -84,7 +84,8 @@ just test
   drain can also cap emitted event count and owned event payload bytes before
   DATA, DATAGRAM, capsule, push, or close-reason payloads are copied. QPACK
   decode can cap decoded field-line count and decoded field storage separately
-  from encoded HEADERS payload size.
+  from encoded HEADERS payload size, and outgoing reliable capsules can be
+  capped before their DATA-frame payload is allocated.
 - `connection`: `nullq.Connection` adapter for control stream, optional QPACK
   streams, and request/data frame writes.
 - `client` / `server`: BoringSSL TLS context helpers with ALPN set to `h3`,
@@ -114,8 +115,9 @@ just test
   session/client/server APIs. It also covers negotiated HTTP/3 DATAGRAM exchange
   in both directions over `nullq` DATAGRAM frames, including tracked send IDs
   and DATAGRAM ACK propagation, nullq connection-ID replenishment events,
-  send-buffer cap enforcement, tracker body-budget enforcement, session
-  event-budget and QPACK decoded-field budget enforcement, RFC 9204 Appendix B exact-byte
+  send-buffer cap enforcement, tracker body-budget enforcement, capsule
+  send-budget enforcement, session event-budget and QPACK decoded-field budget
+  enforcement, RFC 9204 Appendix B exact-byte
   QPACK examples for dynamic table insertion, field-section references,
   acknowledgments, cancellations, and eviction, an opt-in dynamic QPACK
   response header over the in-process `nullq` exchange, plus exact-byte

@@ -44,6 +44,7 @@ pub const Error = nullq.conn.state.Error ||
         RequestBlockedByGoaway,
         DatagramNotEnabled,
         DatagramTooLarge,
+        CapsuleTooLarge,
         SendBufferFull,
         EventPayloadTooLarge,
         EventQueueFull,
@@ -73,6 +74,9 @@ pub const Config = struct {
     read_chunk_size: usize = 4096,
     max_data_frame_payload: usize = 16 * 1024,
     max_datagram_payload_size: usize = 64 * 1024,
+    /// Optional cap on outgoing Capsule Protocol value bytes before reliable
+    /// DATA-frame capsule payloads are allocated.
+    max_capsule_value_size: ?usize = null,
     /// Optional cap on per-stream bytes buffered in nullq but not yet
     /// acknowledged. Leave null to preserve unbounded legacy behavior.
     max_stream_send_buffered: ?usize = null,
@@ -369,7 +373,9 @@ pub const Session = struct {
         context_id: u64,
         payload: []const u8,
     ) Error!void {
-        const value_len = datagram_mod.contextPayloadEncodedLen(context_id, payload.len);
+        if (self.role != .client) return Error.InvalidRole;
+        const value_len = try contextPayloadEncodedLenChecked(context_id, payload.len);
+        try self.validateCapsuleValueSize(value_len);
         const value = try self.allocator.alloc(u8, value_len);
         defer self.allocator.free(value);
         const n = try datagram_mod.encodeContextPayload(value, context_id, payload);
@@ -414,7 +420,9 @@ pub const Session = struct {
         context_id: u64,
         payload: []const u8,
     ) Error!void {
-        const value_len = datagram_mod.contextPayloadEncodedLen(context_id, payload.len);
+        if (self.role != .server) return Error.InvalidRole;
+        const value_len = try contextPayloadEncodedLenChecked(context_id, payload.len);
+        try self.validateCapsuleValueSize(value_len);
         const value = try self.allocator.alloc(u8, value_len);
         defer self.allocator.free(value);
         const n = try datagram_mod.encodeContextPayload(value, context_id, payload);
@@ -1452,16 +1460,24 @@ pub const Session = struct {
         capsule_type: u64,
         value: []const u8,
     ) Error!void {
+        try self.validateCapsuleValueSize(value.len);
         const state = switch (kind) {
             .request => try self.getState(stream_id),
             .response => try self.ensureMessageState(stream_id, .request, .response),
             .push => return Error.InvalidRole,
         };
-        const encoded = try self.allocator.alloc(u8, capsule_mod.encodedLen(capsule_type, value.len));
+        const encoded_len = try capsuleEncodedLenChecked(capsule_type, value.len);
+        const encoder = try self.ensureEncoder(state, kind);
+        try self.ensureStreamSendCapacity(stream_id, self.dataFramesEncodedLen(encoded_len));
+        const encoded = try self.allocator.alloc(u8, encoded_len);
         defer self.allocator.free(encoded);
         const n = try capsule_mod.encode(encoded, capsule_type, value);
-        const encoder = try self.ensureEncoder(state, kind);
         try self.writeDataWithEncoder(stream_id, encoder, encoded[0..n]);
+    }
+
+    fn validateCapsuleValueSize(self: *const Session, value_len: usize) Error!void {
+        const max = self.config.max_capsule_value_size orelse return;
+        if (value_len > max) return Error.CapsuleTooLarge;
     }
 
     fn writeTrailersWithEncoder(
@@ -1754,6 +1770,25 @@ fn fieldsOwnedBytes(fields: []const qpack.FieldLine) usize {
     return total;
 }
 
+fn contextPayloadEncodedLenChecked(context_id: u64, payload_len: usize) Error!usize {
+    const context_len = try varintEncodedLenChecked(context_id);
+    return std.math.add(usize, context_len, payload_len) catch Error.ValueTooLarge;
+}
+
+fn capsuleEncodedLenChecked(capsule_type: u64, value_len: usize) Error!usize {
+    const type_len = try varintEncodedLenChecked(capsule_type);
+    const value_len_u64 = std.math.cast(u64, value_len) orelse return Error.ValueTooLarge;
+    const length_len = try varintEncodedLenChecked(value_len_u64);
+    const prefix_len = std.math.add(usize, type_len, length_len) catch return Error.ValueTooLarge;
+    return std.math.add(usize, prefix_len, value_len) catch Error.ValueTooLarge;
+}
+
+fn varintEncodedLenChecked(value: u64) Error!usize {
+    const len = varint.encodedLen(value);
+    if (len == 0) return Error.ValueTooLarge;
+    return len;
+}
+
 fn validateClientBidiStreamId(id: u64) Error!void {
     if (stream_mod.isUnidirectional(id) or !stream_mod.isClientInitiated(id)) {
         return Error.InvalidGoawayId;
@@ -1901,6 +1936,27 @@ test "session event budget resumes pending trailers" {
         else => return error.TestExpectedEqual,
     }
     try std.testing.expectEqual(@as(usize, 0), state.rx.items.len);
+}
+
+test "session caps outgoing capsule values before allocation" {
+    const allocator = std.testing.allocator;
+    var client_quic: nullq.Connection = undefined;
+
+    var session = Session.init(allocator, .client, &client_quic, .{
+        .max_capsule_value_size = 1,
+    });
+    defer session.deinit();
+
+    _ = try session.ensureMessageState(0, .response, .request);
+
+    try std.testing.expectError(
+        Error.CapsuleTooLarge,
+        session.sendRequestCapsule(0, capsule_mod.Type.datagram, "xx"),
+    );
+    try std.testing.expectError(
+        Error.CapsuleTooLarge,
+        session.sendRequestDatagramContextCapsule(0, 0, "x"),
+    );
 }
 
 test "session validates GOAWAY stream ids by role" {

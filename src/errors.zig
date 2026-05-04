@@ -205,6 +205,7 @@ pub fn codeForError(err: anyerror) u64 {
         error.WriteStalled,
         error.SendBufferFull,
         error.BodyTooLarge,
+        error.CapsuleTooLarge,
         error.EventPayloadTooLarge,
         error.EventQueueFull,
         error.DatagramTooLarge,
@@ -268,6 +269,7 @@ fn scopeForError(err: anyerror, app: ApplicationError) Scope {
         error.RequestBlockedByGoaway => .stream,
         error.SendBufferFull => .stream,
         error.BodyTooLarge => .stream,
+        error.CapsuleTooLarge => .stream,
         else => app.default_scope,
     };
 }
@@ -277,6 +279,7 @@ fn categoryForError(err: anyerror, app: ApplicationError) Category {
         error.OutOfMemory,
         error.SendBufferFull,
         error.BodyTooLarge,
+        error.CapsuleTooLarge,
         error.EventPayloadTooLarge,
         error.EventQueueFull,
         error.DecodedFieldSectionTooLarge,
@@ -330,4 +333,9 @@ test "local causes map to close codes and cause categories" {
     const decoded_fields = classify(error.DecodedFieldSectionTooLarge);
     try std.testing.expectEqual(protocol.ErrorCode.message_error, decoded_fields.application.code);
     try std.testing.expectEqual(Category.resource, decoded_fields.category);
+
+    const capsule = classify(error.CapsuleTooLarge);
+    try std.testing.expectEqual(protocol.ErrorCode.internal_error, capsule.application.code);
+    try std.testing.expectEqual(Scope.stream, capsule.scope);
+    try std.testing.expectEqual(Category.resource, capsule.category);
 }
