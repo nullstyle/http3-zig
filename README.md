@@ -13,9 +13,9 @@ instruction codecs, state-sync accounting, and configurable indexing policy,
 header validation, priority parameter parsing, TLS context helpers,
 transport-free message codecs, critical stream setup, SETTINGS exchange,
 opt-in dynamic QPACK stream integration, GOAWAY handling, graceful-drain state,
-reset events, structured HTTP/3/QPACK error classification, request lifecycle
-tracking, response lifecycle tracking, and lightweight client/server
-request-response facades.
+reset events, transport close events, structured HTTP/3/QPACK error
+classification, request lifecycle tracking, response lifecycle tracking, and
+lightweight client/server request-response facades.
 
 ```sh
 mise install
@@ -58,7 +58,8 @@ just test
 - `session`: HTTP/3 session state over `nullq.Connection`, including control
   streams, peer SETTINGS, request stream draining, response writes, FIN
   validation, optional dynamic QPACK encoder/decoder stream processing,
-  GOAWAY policy enforcement, reset events, and deep-owned application events.
+  GOAWAY policy enforcement, reset/close events, and deep-owned application
+  events.
 - `connection`: `nullq.Connection` adapter for control stream, optional QPACK
   streams, and request/data frame writes.
 - `client` / `server`: BoringSSL TLS context helpers with ALPN set to `h3`,
@@ -75,8 +76,10 @@ just test
   where a `null3.Session` client sends a request over `nullq` streams, a
   `null3.Server` tracks and returns a response, the `null3.Client` tracks the
   response lifecycle, the server sends GOAWAY, the client refuses excluded
-  request streams, and the server rejects a deliberately non-compliant request
-  stream above its GOAWAY limit. It also covers RFC 9204 Appendix B exact-byte
+  request streams, the server rejects a deliberately non-compliant request
+  stream above its GOAWAY limit, and send-side RESET_STREAM plus CONNECTION_CLOSE
+  events surface through the typed session/client/server APIs. It also covers
+  RFC 9204 Appendix B exact-byte
   QPACK examples for dynamic table insertion, field-section references,
   acknowledgments, cancellations, and eviction, an opt-in dynamic QPACK
   response header over the in-process `nullq` exchange, plus exact-byte

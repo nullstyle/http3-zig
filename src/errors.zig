@@ -191,6 +191,7 @@ pub fn codeForError(err: anyerror) u64 {
         error.UnexpectedStream,
         error.StreamAlreadyOpen,
         error.StreamNotFound,
+        error.StreamClosed,
         => protocol.ErrorCode.stream_creation_error,
         error.InvalidGoawayId => protocol.ErrorCode.id_error,
         error.RequestBlockedByGoaway => protocol.ErrorCode.request_rejected,

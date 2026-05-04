@@ -55,6 +55,7 @@ pub const StreamReset = struct {
 
 pub const RequestRejected = session_mod.RequestRejectedEvent;
 pub const UnknownFrame = session_mod.UnknownFrameEvent;
+pub const ConnectionClosed = session_mod.ConnectionClosedEvent;
 
 pub const ResponseOptions = struct {
     status: []const u8 = "200",
@@ -87,6 +88,14 @@ pub const ResponseWriter = struct {
 
     pub fn finish(self: *ResponseWriter) session_mod.Error!void {
         try self.server.finish(self.stream_id);
+    }
+
+    pub fn reset(self: *ResponseWriter, error_code: u64) session_mod.Error!void {
+        try self.server.reset(self.stream_id, error_code);
+    }
+
+    pub fn abort(self: *ResponseWriter) session_mod.Error!void {
+        try self.reset(protocol.ErrorCode.internal_error);
     }
 };
 
@@ -151,6 +160,7 @@ pub const RequestEvent = union(enum) {
     reset: StreamReset,
     rejected: RequestRejected,
     goaway: u64,
+    connection_closed: ConnectionClosed,
     ignored_unknown_frame: UnknownFrame,
 
     pub fn from(event: session_mod.Event) ?RequestEvent {
@@ -177,6 +187,7 @@ pub const RequestEvent = union(enum) {
             } else null,
             .request_rejected => |rejected| .{ .rejected = rejected },
             .goaway => |id| .{ .goaway = id },
+            .connection_closed => |closed| .{ .connection_closed = closed },
             .ignored_unknown_frame => |unknown| .{ .ignored_unknown_frame = unknown },
             .push_promise => null,
         };
@@ -204,6 +215,14 @@ pub const Server = struct {
 
     pub fn finish(self: *Server, stream_id: u64) session_mod.Error!void {
         try self.session.finishStream(stream_id);
+    }
+
+    pub fn reset(self: *Server, stream_id: u64, error_code: u64) session_mod.Error!void {
+        try self.session.resetResponse(stream_id, error_code);
+    }
+
+    pub fn abort(self: *Server, stream_id: u64) session_mod.Error!void {
+        try self.reset(stream_id, protocol.ErrorCode.internal_error);
     }
 
     pub fn reject(self: *Server, stream_id: u64) session_mod.Error!void {
@@ -387,7 +406,7 @@ pub const RequestTracker = struct {
                 request.complete = true;
                 return request;
             },
-            .settings, .goaway, .ignored_unknown_frame => return null,
+            .settings, .goaway, .connection_closed, .ignored_unknown_frame => return null,
         }
     }
 

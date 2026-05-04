@@ -47,6 +47,7 @@ pub const StreamReset = struct {
 };
 
 pub const UnknownFrame = session_mod.UnknownFrameEvent;
+pub const ConnectionClosed = session_mod.ConnectionClosedEvent;
 
 pub const RequestOptions = struct {
     method: []const u8 = "GET",
@@ -85,6 +86,14 @@ pub const RequestWriter = struct {
 
     pub fn finish(self: *RequestWriter) session_mod.Error!void {
         try self.client.finish(self.stream_id);
+    }
+
+    pub fn reset(self: *RequestWriter, error_code: u64) session_mod.Error!void {
+        try self.client.reset(self.stream_id, error_code);
+    }
+
+    pub fn abort(self: *RequestWriter) session_mod.Error!void {
+        try self.reset(protocol.ErrorCode.request_cancelled);
     }
 
     pub fn cancel(self: *RequestWriter) session_mod.Error!void {
@@ -146,6 +155,7 @@ pub const ResponseEvent = union(enum) {
     finished: StreamFinished,
     reset: StreamReset,
     goaway: u64,
+    connection_closed: ConnectionClosed,
     ignored_unknown_frame: UnknownFrame,
 
     pub fn from(event: session_mod.Event) ?ResponseEvent {
@@ -172,6 +182,7 @@ pub const ResponseEvent = union(enum) {
                 },
             } else null,
             .goaway => |id| .{ .goaway = id },
+            .connection_closed => |closed| .{ .connection_closed = closed },
             .ignored_unknown_frame => |unknown| .{ .ignored_unknown_frame = unknown },
             .request_rejected => null,
         };
@@ -316,7 +327,7 @@ pub const ResponseTracker = struct {
                 response.complete = true;
                 return response;
             },
-            .settings, .goaway, .ignored_unknown_frame => return null,
+            .settings, .goaway, .connection_closed, .ignored_unknown_frame => return null,
         }
     }
 
@@ -352,6 +363,14 @@ pub const Client = struct {
 
     pub fn finish(self: *Client, stream_id: u64) session_mod.Error!void {
         try self.session.finishStream(stream_id);
+    }
+
+    pub fn reset(self: *Client, stream_id: u64, error_code: u64) session_mod.Error!void {
+        try self.session.resetRequest(stream_id, error_code);
+    }
+
+    pub fn abort(self: *Client, stream_id: u64) session_mod.Error!void {
+        try self.reset(stream_id, protocol.ErrorCode.request_cancelled);
     }
 
     pub fn cancel(self: *Client, stream_id: u64) session_mod.Error!void {

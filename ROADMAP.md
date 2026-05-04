@@ -36,8 +36,13 @@ Datagrams / capsules), and the QUIC RFCs already tracked by `nullq`.
 - Done: opt-in dynamic QPACK encoder/decoder stream processing in
   `session.Session`, including dynamic response field-section references and
   decoder feedback over the in-process `nullq` exchange.
-- Next: send-side RESET_STREAM convenience once `nullq` exposes it publicly,
-  plus higher-level client/server request APIs over session events.
+- Done: send-side RESET_STREAM convenience over `nullq.streamReset`, including
+  client request aborts, server response aborts, and QPACK blocked-stream
+  cancellation cleanup.
+- Done: `nullq` connection-close events are surfaced through the typed
+  session/client/server event model with copied reasons and HTTP/3 application
+  error metadata when available.
+- Next: richer higher-level client/server request APIs over session events.
 
 ## Phase 2: QPACK Complete
 
@@ -84,8 +89,7 @@ Datagrams / capsules), and the QUIC RFCs already tracked by `nullq`.
 - Done: optional curl HTTP/3 interop harness with localhost UDP server
   coverage for GET, request metadata, POST echo, large response, and GOAWAY.
 - Next: integration harness against `go-quic-peer` once `nullq` upload interop
-  lands, plus send-side RESET_STREAM convenience once `nullq` exposes it
-  publicly.
+  lands, plus broader close/reset coverage in the curl interop harness.
 
 ## Phase 4: Production Extensions
 

@@ -34,6 +34,7 @@ pub const ResponseWriter = server.ResponseWriter;
 pub const RequestState = server.RequestState;
 pub const RequestReader = server.RequestReader;
 pub const RequestTracker = server.RequestTracker;
+pub const ConnectionClosedEvent = session.ConnectionClosedEvent;
 pub const Connection = connection.Connection;
 pub const Settings = settings.Settings;
 pub const Frame = frame.Frame;

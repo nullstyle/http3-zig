@@ -101,6 +101,27 @@ pub const RequestRejectedEvent = struct {
     }
 };
 
+pub const ConnectionClosedEvent = struct {
+    source: nullq.CloseSource,
+    error_space: nullq.CloseErrorSpace,
+    error_code: u64,
+    frame_type: u64,
+    reason: []u8,
+    reason_truncated: bool,
+    at_us: ?u64,
+    draining_deadline_us: ?u64,
+    application: ?errors_mod.ApplicationError,
+
+    pub fn deinit(self: ConnectionClosedEvent, allocator: std.mem.Allocator) void {
+        allocator.free(self.reason);
+    }
+
+    pub fn applicationError(self: ConnectionClosedEvent) ?errors_mod.ApplicationError {
+        if (self.error_space != .application) return null;
+        return self.application orelse errors_mod.applicationError(self.error_code);
+    }
+};
+
 pub const UnknownFrameEvent = struct {
     stream_id: u64,
     frame_type: u64,
@@ -122,6 +143,7 @@ pub const Event = union(enum) {
     stream_finished: StreamFinishedEvent,
     stream_reset: StreamResetEvent,
     request_rejected: RequestRejectedEvent,
+    connection_closed: ConnectionClosedEvent,
     ignored_unknown_frame: UnknownFrameEvent,
 
     pub fn deinit(self: Event, allocator: std.mem.Allocator) void {
@@ -130,6 +152,7 @@ pub const Event = union(enum) {
             .trailers => |event| freeFields(allocator, event.fields),
             .data => |event| allocator.free(event.data),
             .push_promise => |event| allocator.free(event.field_section),
+            .connection_closed => |event| event.deinit(allocator),
             else => {},
         }
     }
@@ -280,6 +303,21 @@ pub const Session = struct {
         try self.quic.streamFinish(stream_id);
     }
 
+    pub fn resetStream(self: *Session, stream_id: u64, application_error_code: u64) Error!void {
+        self.qpack_encoder_state.cancelStream(stream_id);
+        try self.quic.streamReset(stream_id, application_error_code);
+    }
+
+    pub fn resetRequest(self: *Session, stream_id: u64, application_error_code: u64) Error!void {
+        if (self.role != .client) return Error.InvalidRole;
+        try self.resetStream(stream_id, application_error_code);
+    }
+
+    pub fn resetResponse(self: *Session, stream_id: u64, application_error_code: u64) Error!void {
+        if (self.role != .server) return Error.InvalidRole;
+        try self.resetStream(stream_id, application_error_code);
+    }
+
     pub fn sendGoaway(self: *Session, id: u64) Error!void {
         try self.validateLocalGoawayId(id);
         if (self.sent_goaway_id) |previous| {
@@ -321,6 +359,8 @@ pub const Session = struct {
     }
 
     pub fn drain(self: *Session, events: *std.ArrayList(Event)) Error!void {
+        try self.drainConnectionEvents(events);
+
         const read_chunk_size = if (self.config.read_chunk_size == 0) 4096 else self.config.read_chunk_size;
         const tmp = try self.allocator.alloc(u8, read_chunk_size);
         defer self.allocator.free(tmp);
@@ -361,6 +401,61 @@ pub const Session = struct {
                 self.closeForError(err);
                 return err;
             };
+        }
+    }
+
+    fn drainConnectionEvents(self: *Session, events: *std.ArrayList(Event)) Error!void {
+        while (self.quic.pollEvent()) |event| {
+            switch (event) {
+                .close => |close_event| try self.observeConnectionClose(close_event, events),
+            }
+        }
+        self.syncShutdownState();
+    }
+
+    fn observeConnectionClose(
+        self: *Session,
+        close_event: nullq.CloseEvent,
+        events: *std.ArrayList(Event),
+    ) Error!void {
+        const application = if (close_event.error_space == .application)
+            errors_mod.applicationError(close_event.error_code)
+        else
+            null;
+        const reason = try self.allocator.dupe(u8, close_event.reason);
+
+        if (application) |app| {
+            if (errorSourceFromCloseSource(close_event.source)) |source| {
+                self.last_close_error = .{
+                    .source = source,
+                    .application = app,
+                };
+            }
+        }
+
+        self.syncShutdownState();
+        try appendEvent(self.allocator, events, .{
+            .connection_closed = .{
+                .source = close_event.source,
+                .error_space = close_event.error_space,
+                .error_code = close_event.error_code,
+                .frame_type = close_event.frame_type,
+                .reason = reason,
+                .reason_truncated = close_event.reason_truncated,
+                .at_us = close_event.at_us,
+                .draining_deadline_us = close_event.draining_deadline_us,
+                .application = application,
+            },
+        });
+    }
+
+    fn syncShutdownState(self: *Session) void {
+        switch (self.quic.closeState()) {
+            .open => {},
+            .closing, .draining => if (self.shutdown_state != .closed) {
+                self.shutdown_state = .draining;
+            },
+            .closed => self.shutdown_state = .closed,
         }
     }
 
@@ -638,6 +733,7 @@ pub const Session = struct {
         events: *std.ArrayList(Event),
     ) Error!void {
         if (state.recv_reset_seen) return;
+        try self.cancelQpackDecodeForStream(state.id);
         state.rx.clearRetainingCapacity();
         state.recv_reset_seen = true;
         state.recv_finished = true;
@@ -657,6 +753,15 @@ pub const Session = struct {
                 .final_size = final_size,
             },
         });
+    }
+
+    fn cancelQpackDecodeForStream(self: *Session, stream_id: u64) Error!void {
+        if (!self.qpack_decoder_state.isStreamBlocked(stream_id)) return;
+
+        const instruction = self.qpack_decoder_state.cancelStream(stream_id);
+        if (self.qpack_decoder_stream_id != null) {
+            try self.writeQpackDecoderInstruction(instruction);
+        }
     }
 
     fn appendMessageEvent(
@@ -1143,6 +1248,14 @@ pub const Session = struct {
     }
 };
 
+fn errorSourceFromCloseSource(source: nullq.CloseSource) ?errors_mod.Source {
+    return switch (source) {
+        .local => .local,
+        .peer => .peer,
+        else => null,
+    };
+}
+
 fn appendEvent(allocator: std.mem.Allocator, events: *std.ArrayList(Event), event: Event) Error!void {
     events.append(allocator, event) catch |err| {
         event.deinit(allocator);
@@ -1297,4 +1410,42 @@ test "session emits stream reset once" {
         else => return error.TestExpectedEqual,
     }
     try std.testing.expect(state.recv_finished);
+}
+
+test "session clears blocked QPACK state when a stream resets" {
+    const allocator = std.testing.allocator;
+    var client_quic: nullq.Connection = undefined;
+
+    var session = Session.init(allocator, .client, &client_quic, .{
+        .settings = .{
+            .qpack_max_table_capacity = 256,
+            .qpack_blocked_streams = 1,
+        },
+    });
+    defer session.deinit();
+
+    const state = try session.ensureMessageState(0, .response, .request);
+    try std.testing.expectEqual(
+        qpack.state.FieldSectionStatus.blocked,
+        try session.qpack_decoder_state.beginFieldSection(0, 1),
+    );
+    try std.testing.expect(session.qpack_decoder_state.isStreamBlocked(0));
+
+    var events: std.ArrayList(Event) = .empty;
+    defer {
+        for (events.items) |event| event.deinit(allocator);
+        events.deinit(allocator);
+    }
+
+    try session.observeReset(state, protocol.ErrorCode.request_cancelled, 0, &events);
+
+    try std.testing.expect(!session.qpack_decoder_state.isStreamBlocked(0));
+    try std.testing.expectEqual(@as(usize, 1), events.items.len);
+    switch (events.items[0]) {
+        .stream_reset => |event| {
+            try std.testing.expectEqual(@as(u64, 0), event.stream_id);
+            try std.testing.expectEqual(protocol.ErrorCode.request_cancelled, event.error_code);
+        },
+        else => return error.TestExpectedEqual,
+    }
 }
