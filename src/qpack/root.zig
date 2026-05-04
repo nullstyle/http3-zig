@@ -6,14 +6,18 @@ pub const integer = @import("integer.zig");
 pub const huffman = @import("huffman.zig");
 pub const dynamic_table = @import("dynamic_table.zig");
 pub const instructions = @import("instructions.zig");
+pub const state = @import("state.zig");
 pub const static_table = @import("static_table.zig");
 
 pub const DynamicTable = dynamic_table.DynamicTable;
 pub const DynamicEntry = dynamic_table.Entry;
 pub const EncoderInstruction = instructions.EncoderInstruction;
 pub const DecoderInstruction = instructions.DecoderInstruction;
+pub const QpackEncoderState = state.EncoderState;
+pub const QpackDecoderState = state.DecoderState;
+pub const FieldSectionPrefix = state.FieldSectionPrefix;
 
-pub const Error = integer.Error || huffman.Error || dynamic_table.Error || instructions.Error || error{
+pub const Error = integer.Error || huffman.Error || dynamic_table.Error || instructions.Error || state.Error || error{
     BufferTooSmall,
     OutOfMemory,
     HuffmanUnsupported,

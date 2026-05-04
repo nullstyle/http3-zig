@@ -44,7 +44,10 @@ Datagrams / capsules), and the QUIC RFCs already tracked by `nullq`.
   relative/post-base lookup helpers.
 - Done: encoder/decoder stream instruction codecs, including dynamic-table
   application of encoder stream instructions.
-- Blocked stream accounting, acknowledgments, cancellations, and capacity changes.
+- Done: transport-free QPACK state synchronization for Required Insert Count
+  wrapping, field-section prefix base handling, blocked stream accounting,
+  Known Received Count, acknowledgments, cancellations, and insert-count
+  increments.
 - Configurable indexing policy with safe defaults for sensitive fields.
 - RFC 9204 examples and cross-implementation fixture tests.
 
