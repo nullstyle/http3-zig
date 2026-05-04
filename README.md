@@ -14,11 +14,11 @@ header validation, priority parameter parsing, TLS context helpers,
 transport-free message codecs, critical stream setup, SETTINGS exchange,
 opt-in dynamic QPACK stream integration, GOAWAY handling, graceful-drain state,
 reset events, transport close events, structured HTTP/3/QPACK error
-classification, HTTP/3 DATAGRAM send/receive groundwork, reusable transport
-driver helpers, request lifecycle tracking, response lifecycle tracking,
-client/server event runners, Extended CONNECT negotiation and request metadata,
-Capsule Protocol codecs, context-aware DATAGRAM helpers, and lightweight
-request-response facades.
+classification, QUIC flow-control blocked observability, HTTP/3 DATAGRAM
+send/receive groundwork, reusable transport driver helpers, request lifecycle
+tracking, response lifecycle tracking, client/server event runners, Extended
+CONNECT negotiation and request metadata, Capsule Protocol codecs,
+context-aware DATAGRAM helpers, and lightweight request-response facades.
 
 ```sh
 mise install
@@ -75,7 +75,8 @@ just test
   validation, optional dynamic QPACK encoder/decoder stream processing,
   GOAWAY policy enforcement, Extended CONNECT negotiation checks, HTTP/3
   DATAGRAM events over QUIC DATAGRAM frames, DATAGRAM capsule send helpers,
-  reset/close events, and deep-owned application events.
+  nullq flow-control blocked events, reset/close events, and deep-owned
+  application events.
 - `connection`: `nullq.Connection` adapter for control stream, optional QPACK
   streams, and request/data frame writes.
 - `client` / `server`: BoringSSL TLS context helpers with ALPN set to `h3`,
@@ -99,8 +100,9 @@ just test
   response lifecycle, the server sends GOAWAY, the client refuses excluded
   request streams, the server rejects a deliberately non-compliant request
   stream above its GOAWAY limit, and send-side RESET_STREAM plus CONNECTION_CLOSE
-  events surface through the typed session/client/server APIs. It also covers
-  negotiated HTTP/3 DATAGRAM exchange in both directions over `nullq` DATAGRAM
+  and flow-control blocked events surface through the typed
+  session/client/server APIs. It also covers negotiated HTTP/3 DATAGRAM exchange
+  in both directions over `nullq` DATAGRAM
   frames, including tracked send IDs and DATAGRAM ACK propagation, RFC 9204
   Appendix B exact-byte
   QPACK examples for dynamic table insertion, field-section references,

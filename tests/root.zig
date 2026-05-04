@@ -629,6 +629,29 @@ test "client and server facades classify session events" {
         },
         else => return error.TestExpectedEqual,
     }
+
+    const flow_blocked: null3.session.Event = .{ .flow_blocked = .{
+        .source = .local,
+        .kind = .streams,
+        .limit = 0,
+        .bidi = true,
+    } };
+    switch (null3.client.ResponseEvent.from(flow_blocked).?) {
+        .flow_blocked => |event| {
+            try std.testing.expectEqual(null3.FlowBlockedSource.local, event.source);
+            try std.testing.expectEqual(null3.FlowBlockedKind.streams, event.kind);
+            try std.testing.expectEqual(@as(?bool, true), event.bidi);
+        },
+        else => return error.TestExpectedEqual,
+    }
+    switch (null3.server.RequestEvent.from(flow_blocked).?) {
+        .flow_blocked => |event| {
+            try std.testing.expectEqual(null3.FlowBlockedSource.local, event.source);
+            try std.testing.expectEqual(null3.FlowBlockedKind.streams, event.kind);
+            try std.testing.expectEqual(@as(u64, 0), event.limit);
+        },
+        else => return error.TestExpectedEqual,
+    }
 }
 
 test "request tracker owns server request lifecycle" {
@@ -751,6 +774,12 @@ test "server runner classifies and tracks request batches" {
             .id = 8,
             .len = 21,
         } },
+        .{ .flow_blocked = .{
+            .source = .peer,
+            .kind = .stream_data,
+            .limit = 64,
+            .stream_id = 0,
+        } },
         .{ .headers = .{
             .stream_id = 0,
             .kind = null3.message.Kind.request,
@@ -770,10 +799,11 @@ test "server runner classifies and tracks request batches" {
     defer completed.deinit(allocator);
 
     const stats = try runner.observeBatch(&events, &completed);
-    try std.testing.expectEqual(@as(usize, 6), stats.observed);
+    try std.testing.expectEqual(@as(usize, 7), stats.observed);
     try std.testing.expectEqual(@as(usize, 1), stats.settings);
     try std.testing.expectEqual(@as(usize, 1), stats.datagram_acks);
     try std.testing.expectEqual(@as(usize, 1), stats.datagram_losses);
+    try std.testing.expectEqual(@as(usize, 1), stats.flow_blocked);
     try std.testing.expectEqual(@as(usize, 2), stats.state_updates);
     try std.testing.expectEqual(@as(usize, 1), stats.completions);
     try std.testing.expectEqual(@as(usize, 1), completed.items.len);
@@ -806,6 +836,11 @@ test "client runner classifies and tracks response batches" {
             .id = 4,
             .len = 11,
         } },
+        .{ .flow_blocked = .{
+            .source = .local,
+            .kind = .data,
+            .limit = 128,
+        } },
         .{ .headers = .{
             .stream_id = 0,
             .kind = null3.message.Kind.response,
@@ -826,9 +861,10 @@ test "client runner classifies and tracks response batches" {
     defer completed.deinit(allocator);
 
     const stats = try runner.observeBatch(&events, &completed);
-    try std.testing.expectEqual(@as(usize, 6), stats.observed);
+    try std.testing.expectEqual(@as(usize, 7), stats.observed);
     try std.testing.expectEqual(@as(usize, 1), stats.datagram_acks);
     try std.testing.expectEqual(@as(usize, 1), stats.datagram_losses);
+    try std.testing.expectEqual(@as(usize, 1), stats.flow_blocked);
     try std.testing.expectEqual(@as(usize, 2), stats.state_updates);
     try std.testing.expectEqual(@as(usize, 1), stats.completions);
     try std.testing.expectEqual(@as(usize, 1), stats.goaways);
@@ -1163,6 +1199,47 @@ test "session rejects push streams sent to servers" {
     try expectPairH3Error(allocator, &pair, error.UnexpectedStream);
     try std.testing.expectEqual(null3.session.ShutdownState.closed, pair.server_h3.shutdownState());
     try expectLastCloseCode(&pair.server_h3, null3.protocol.ErrorCode.stream_creation_error);
+}
+
+test "session surfaces nullq flow blocked events" {
+    const allocator = std.testing.allocator;
+
+    var pair: H3Pair = undefined;
+    try pair.initStarted(allocator, .{}, .{});
+    defer pair.deinit();
+
+    pair.client.peer_max_streams_bidi = 0;
+
+    const fields = [_]null3.FieldLine{
+        .{ .name = ":method", .value = "GET" },
+        .{ .name = ":scheme", .value = "https" },
+        .{ .name = ":path", .value = "/blocked" },
+        .{ .name = ":authority", .value = "localhost" },
+    };
+    try std.testing.expectError(error.StreamLimitExceeded, pair.client_h3.openRequest(&fields));
+
+    var events: std.ArrayList(null3.session.Event) = .empty;
+    defer {
+        clearSessionEvents(allocator, &events);
+        events.deinit(allocator);
+    }
+    try pair.client_h3.drain(&events);
+
+    var saw_flow_blocked = false;
+    for (events.items) |event| {
+        switch (event) {
+            .flow_blocked => |blocked| {
+                saw_flow_blocked = true;
+                try std.testing.expectEqual(null3.FlowBlockedSource.local, blocked.source);
+                try std.testing.expectEqual(null3.FlowBlockedKind.streams, blocked.kind);
+                try std.testing.expectEqual(@as(u64, 0), blocked.limit);
+                try std.testing.expectEqual(@as(?bool, true), blocked.bidi);
+                try std.testing.expectEqual(@as(?u64, null), blocked.stream_id);
+            },
+            else => {},
+        }
+    }
+    try std.testing.expect(saw_flow_blocked);
 }
 
 test "session rejects disabled DATAGRAM sends after SETTINGS" {

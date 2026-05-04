@@ -91,6 +91,9 @@ pub const DatagramEvent = struct {
 };
 
 pub const DatagramSendEvent = nullq.conn.DatagramSendEvent;
+pub const FlowBlockedEvent = nullq.conn.FlowBlockedInfo;
+pub const FlowBlockedKind = nullq.conn.FlowBlockedKind;
+pub const FlowBlockedSource = nullq.conn.FlowBlockedSource;
 
 pub const StreamFinishedEvent = struct {
     stream_id: u64,
@@ -156,6 +159,7 @@ pub const Event = union(enum) {
     datagram: DatagramEvent,
     datagram_acked: DatagramSendEvent,
     datagram_lost: DatagramSendEvent,
+    flow_blocked: FlowBlockedEvent,
     trailers: FieldEvent,
     push_promise: PushPromiseEvent,
     goaway: u64,
@@ -544,7 +548,7 @@ pub const Session = struct {
                 .close => |close_event| try self.observeConnectionClose(close_event, events),
                 .datagram_acked => |acked| try appendEvent(self.allocator, events, .{ .datagram_acked = acked }),
                 .datagram_lost => |lost| try appendEvent(self.allocator, events, .{ .datagram_lost = lost }),
-                .flow_blocked => {},
+                .flow_blocked => |blocked| try appendEvent(self.allocator, events, .{ .flow_blocked = blocked }),
             }
         }
         self.syncShutdownState();

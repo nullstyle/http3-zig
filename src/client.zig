@@ -69,6 +69,7 @@ pub const StreamReset = struct {
 pub const UnknownFrame = session_mod.UnknownFrameEvent;
 pub const ConnectionClosed = session_mod.ConnectionClosedEvent;
 pub const DatagramSend = session_mod.DatagramSendEvent;
+pub const FlowBlocked = session_mod.FlowBlockedEvent;
 
 pub const RequestOptions = struct {
     method: []const u8 = "GET",
@@ -212,6 +213,7 @@ pub const ResponseEvent = union(enum) {
     datagram: Datagram,
     datagram_acked: DatagramSend,
     datagram_lost: DatagramSend,
+    flow_blocked: FlowBlocked,
     trailers: Headers,
     push_promise: session_mod.PushPromiseEvent,
     finished: StreamFinished,
@@ -236,6 +238,7 @@ pub const ResponseEvent = union(enum) {
             } },
             .datagram_acked => |acked| .{ .datagram_acked = acked },
             .datagram_lost => |lost| .{ .datagram_lost = lost },
+            .flow_blocked => |blocked| .{ .flow_blocked = blocked },
             .trailers => |trailers| if (trailers.kind == .response) .{
                 .trailers = .{ .stream_id = trailers.stream_id, .fields = trailers.fields },
             } else null,
@@ -400,6 +403,7 @@ pub const ResponseTracker = struct {
             .datagram,
             .datagram_acked,
             .datagram_lost,
+            .flow_blocked,
             .goaway,
             .connection_closed,
             .ignored_unknown_frame,

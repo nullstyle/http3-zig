@@ -42,6 +42,8 @@ Datagrams / capsules), and the QUIC RFCs already tracked by `nullq`.
 - Done: `nullq` connection-close events are surfaced through the typed
   session/client/server event model with copied reasons and HTTP/3 application
   error metadata when available.
+- Done: `nullq` flow-control blocked events are surfaced through the typed
+  session/client/server event model and runner batch summaries.
 - Done: higher-level client/server event runners over session events and
   lifecycle trackers.
 - Done: Extended CONNECT foundation with `SETTINGS_ENABLE_CONNECT_PROTOCOL`,
