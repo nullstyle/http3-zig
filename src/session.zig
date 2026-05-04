@@ -10,6 +10,7 @@
 const std = @import("std");
 const nullq = @import("nullq");
 
+const errors_mod = @import("errors.zig");
 const frame_mod = @import("frame.zig");
 const message_mod = @import("message.zig");
 const protocol = @import("protocol.zig");
@@ -79,11 +80,19 @@ pub const StreamResetEvent = struct {
     kind: ?message_mod.Kind = null,
     error_code: u64,
     final_size: u64,
+
+    pub fn errorInfo(self: StreamResetEvent) errors_mod.StreamError {
+        return errors_mod.peerStreamError(self.stream_id, self.error_code, self.final_size);
+    }
 };
 
 pub const RequestRejectedEvent = struct {
     stream_id: u64,
     error_code: u64,
+
+    pub fn errorInfo(self: RequestRejectedEvent) errors_mod.StreamError {
+        return errors_mod.localStreamError(self.stream_id, self.error_code, null);
+    }
 };
 
 pub const UnknownFrameEvent = struct {
@@ -154,6 +163,7 @@ pub const Session = struct {
     sent_goaway_id: ?u64 = null,
     peer_goaway_id: ?u64 = null,
     shutdown_state: ShutdownState = .active,
+    last_close_error: ?errors_mod.ConnectionError = null,
 
     streams: std.AutoHashMapUnmanaged(u64, *StreamState) = .empty,
 
@@ -276,8 +286,13 @@ pub const Session = struct {
         return self.shutdown_state;
     }
 
+    pub fn lastCloseError(self: *const Session) ?errors_mod.ConnectionError {
+        return self.last_close_error;
+    }
+
     pub fn close(self: *Session, error_code: u64, reason: []const u8) void {
         self.shutdown_state = .closed;
+        self.last_close_error = errors_mod.localConnectionCode(error_code);
         self.quic.close(false, error_code, reason);
     }
 
@@ -497,7 +512,7 @@ pub const Session = struct {
         if (state.uni_kind) |kind| {
             switch (kind) {
                 .control, .qpack_encoder, .qpack_decoder => {
-                    self.quic.close(false, protocol.ErrorCode.closed_critical_stream, "closed critical stream");
+                    self.closeForError(Error.ClosedCriticalStream);
                     return Error.ClosedCriticalStream;
                 },
                 else => {},
@@ -831,39 +846,10 @@ pub const Session = struct {
     }
 
     fn closeForError(self: *Session, err: anyerror) void {
-        const code: u64 = switch (err) {
-            error.MissingSettings => protocol.ErrorCode.missing_settings,
-            error.DuplicateSettings,
-            error.ReservedSetting,
-            error.InvalidSettingValue,
-            => protocol.ErrorCode.settings_error,
-            error.FrameUnexpected => protocol.ErrorCode.frame_unexpected,
-            error.InvalidFramePayload,
-            error.InsufficientBytes,
-            => protocol.ErrorCode.frame_error,
-            error.HeaderSectionTooLarge,
-            error.DataBeforeHeaders,
-            error.DuplicateHeaders,
-            error.DataAfterTrailers,
-            error.UnexpectedPushPromise,
-            error.MissingHeaders,
-            => protocol.ErrorCode.message_error,
-            error.HuffmanUnsupported,
-            error.DynamicTableUnsupported,
-            error.UnsupportedRepresentation,
-            error.MalformedFieldSection,
-            error.InvalidStaticIndex,
-            => protocol.ErrorCode.qpack_decompression_failed,
-            error.ClosedCriticalStream => protocol.ErrorCode.closed_critical_stream,
-            error.CriticalStreamAlreadyOpen,
-            error.UnexpectedStream,
-            => protocol.ErrorCode.stream_creation_error,
-            error.InvalidGoawayId => protocol.ErrorCode.id_error,
-            error.RequestBlockedByGoaway => protocol.ErrorCode.request_rejected,
-            else => protocol.ErrorCode.general_protocol_error,
-        };
+        const close_error = errors_mod.localConnectionError(err);
         self.shutdown_state = .closed;
-        self.quic.close(false, code, @errorName(err));
+        self.last_close_error = close_error;
+        self.quic.close(false, close_error.application.code, close_error.reason());
     }
 };
 
@@ -1003,6 +989,10 @@ test "session emits stream reset once" {
             try std.testing.expectEqual(message_mod.Kind.response, event.kind.?);
             try std.testing.expectEqual(protocol.ErrorCode.request_cancelled, event.error_code);
             try std.testing.expectEqual(@as(u64, 42), event.final_size);
+            const info = event.errorInfo();
+            try std.testing.expectEqual(errors_mod.Source.peer, info.source);
+            try std.testing.expectEqual(errors_mod.Category.request, info.application.category);
+            try std.testing.expectEqual(errors_mod.Scope.stream, info.application.default_scope);
         },
         else => return error.TestExpectedEqual,
     }

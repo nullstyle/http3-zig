@@ -55,8 +55,9 @@ Datagrams / capsules), and the QUIC RFCs already tracked by `nullq`.
   `ResponseWriter`) for incremental body, trailer, and finish sends.
 - Done: `server.RequestTracker` for owned request lifecycle state assembled
   from session events.
-- Next: structured error model for H3 connection errors, stream errors, and
-  application errors, plus reader-side response/request convenience handles.
+- Done: structured error model for HTTP/3/QPACK application codes, local causes,
+  connection-close state, and stream reset/rejection events.
+- Next: reader-side response/request convenience handles.
 - Integration harness against `go-quic-peer` once `nullq` upload interop lands.
 
 ## Phase 4: Production Extensions

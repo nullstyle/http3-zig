@@ -10,8 +10,8 @@ constants, SETTINGS and frame codecs, non-blocking QPACK field-section
 encoding/decoding with static-table support, header validation, priority
 parameter parsing, TLS context helpers, transport-free message codecs, critical
 stream setup, SETTINGS exchange, GOAWAY handling, graceful-drain state, reset
-events, request lifecycle tracking, and lightweight client/server
-request-response facades.
+events, structured HTTP/3/QPACK error classification, request lifecycle
+tracking, and lightweight client/server request-response facades.
 
 ```sh
 mise install
@@ -38,6 +38,8 @@ just test
 - `qpack`: QPACK primitives plus static-table/literal field-section codecs.
 - `headers`: HTTP field validation for request/response scaffolding.
 - `priority`: RFC 9218 urgency/incremental parameter parsing.
+- `errors`: structured HTTP/3 application error code metadata plus local
+  cause, connection-close, and stream-reset classification helpers.
 - `stream`: stream type helpers plus frame-context validation.
 - `message`: transport-free request/response HEADERS, DATA, and trailer
   encoding/decoding with stream-order validation.

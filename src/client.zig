@@ -2,6 +2,7 @@
 
 const std = @import("std");
 const boringssl = @import("boringssl");
+const errors_mod = @import("errors.zig");
 const protocol = @import("protocol.zig");
 const qpack = @import("qpack/root.zig");
 const session_mod = @import("session.zig");
@@ -39,6 +40,10 @@ pub const StreamReset = struct {
     stream_id: u64,
     error_code: u64,
     final_size: u64,
+
+    pub fn errorInfo(self: StreamReset) errors_mod.StreamError {
+        return errors_mod.peerStreamError(self.stream_id, self.error_code, self.final_size);
+    }
 };
 
 pub const UnknownFrame = session_mod.UnknownFrameEvent;

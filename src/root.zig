@@ -12,6 +12,7 @@ pub const headers = @import("headers.zig");
 pub const stream = @import("stream.zig");
 pub const priority = @import("priority.zig");
 pub const message = @import("message.zig");
+pub const errors = @import("errors.zig");
 pub const session = @import("session.zig");
 pub const connection = @import("connection.zig");
 pub const client = @import("client.zig");
@@ -35,6 +36,12 @@ pub const FieldLine = qpack.FieldLine;
 pub const Priority = priority.Priority;
 pub const MessageEncoder = message.Encoder;
 pub const MessageDecoder = message.Decoder;
+pub const ErrorScope = errors.Scope;
+pub const ErrorSource = errors.Source;
+pub const ErrorCategory = errors.Category;
+pub const ApplicationError = errors.ApplicationError;
+pub const ConnectionError = errors.ConnectionError;
+pub const StreamError = errors.StreamError;
 
 pub fn version() []const u8 {
     return "0.0.0";
@@ -51,6 +58,7 @@ test {
     _ = stream;
     _ = priority;
     _ = message;
+    _ = errors;
     _ = session;
     _ = connection;
     _ = client;

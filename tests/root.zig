@@ -538,6 +538,10 @@ test "session exchanges HTTP/3 request and response over nullq streams" {
                     server_saw_rejection = true;
                     try std.testing.expectEqual(ignored_stream_id, rejected.stream_id);
                     try std.testing.expectEqual(null3.protocol.ErrorCode.request_rejected, rejected.error_code);
+                    const info = rejected.errorInfo();
+                    try std.testing.expectEqual(null3.ErrorSource.local, info.source);
+                    try std.testing.expectEqual(null3.ErrorCategory.request, info.application.category);
+                    try std.testing.expectEqual(null3.ErrorScope.stream, info.application.default_scope);
                 },
                 .headers => |headers| {
                     try std.testing.expect(headers.stream_id != ignored_stream_id);
