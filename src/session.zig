@@ -90,6 +90,8 @@ pub const DatagramEvent = struct {
     arrived_in_early_data: bool = false,
 };
 
+pub const DatagramSendEvent = nullq.conn.DatagramSendEvent;
+
 pub const StreamFinishedEvent = struct {
     stream_id: u64,
     kind: ?message_mod.Kind = null,
@@ -152,6 +154,8 @@ pub const Event = union(enum) {
     headers: FieldEvent,
     data: DataEvent,
     datagram: DatagramEvent,
+    datagram_acked: DatagramSendEvent,
+    datagram_lost: DatagramSendEvent,
     trailers: FieldEvent,
     push_promise: PushPromiseEvent,
     goaway: u64,
@@ -365,13 +369,17 @@ pub const Session = struct {
     }
 
     pub fn sendDatagram(self: *Session, stream_id: u64, payload: []const u8) Error!void {
+        _ = try self.sendDatagramTracked(stream_id, payload);
+    }
+
+    pub fn sendDatagramTracked(self: *Session, stream_id: u64, payload: []const u8) Error!u64 {
         try self.validateDatagramSend(stream_id, payload.len);
 
         const len = try datagram_mod.encodedLen(stream_id, payload.len);
         const encoded = try self.allocator.alloc(u8, len);
         defer self.allocator.free(encoded);
         const n = try datagram_mod.encode(encoded, stream_id, payload);
-        try self.quic.sendDatagram(encoded[0..n]);
+        return try self.quic.sendDatagramTracked(encoded[0..n]);
     }
 
     pub fn sendDatagramWithContext(
@@ -380,6 +388,15 @@ pub const Session = struct {
         context_id: u64,
         payload: []const u8,
     ) Error!void {
+        _ = try self.sendDatagramWithContextTracked(stream_id, context_id, payload);
+    }
+
+    pub fn sendDatagramWithContextTracked(
+        self: *Session,
+        stream_id: u64,
+        context_id: u64,
+        payload: []const u8,
+    ) Error!u64 {
         const payload_len = datagram_mod.contextPayloadEncodedLen(context_id, payload.len);
         try self.validateDatagramSend(stream_id, payload_len);
 
@@ -387,7 +404,7 @@ pub const Session = struct {
         const encoded = try self.allocator.alloc(u8, len);
         defer self.allocator.free(encoded);
         const n = try datagram_mod.encodeWithContext(encoded, stream_id, context_id, payload);
-        try self.quic.sendDatagram(encoded[0..n]);
+        return try self.quic.sendDatagramTracked(encoded[0..n]);
     }
 
     pub fn resetStream(self: *Session, stream_id: u64, application_error_code: u64) Error!void {
@@ -525,7 +542,9 @@ pub const Session = struct {
         while (self.quic.pollEvent()) |event| {
             switch (event) {
                 .close => |close_event| try self.observeConnectionClose(close_event, events),
-                .flow_blocked, .datagram_acked, .datagram_lost => {},
+                .datagram_acked => |acked| try appendEvent(self.allocator, events, .{ .datagram_acked = acked }),
+                .datagram_lost => |lost| try appendEvent(self.allocator, events, .{ .datagram_lost = lost }),
+                .flow_blocked => {},
             }
         }
         self.syncShutdownState();

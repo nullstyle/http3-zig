@@ -743,6 +743,14 @@ test "server runner classifies and tracks request batches" {
     var body = [_]u8{ 'o', 'k' };
     const events = [_]null3.session.Event{
         .{ .peer_settings = .{ .h3_datagram = true } },
+        .{ .datagram_acked = .{
+            .id = 7,
+            .len = 13,
+        } },
+        .{ .datagram_lost = .{
+            .id = 8,
+            .len = 21,
+        } },
         .{ .headers = .{
             .stream_id = 0,
             .kind = null3.message.Kind.request,
@@ -762,8 +770,10 @@ test "server runner classifies and tracks request batches" {
     defer completed.deinit(allocator);
 
     const stats = try runner.observeBatch(&events, &completed);
-    try std.testing.expectEqual(@as(usize, 4), stats.observed);
+    try std.testing.expectEqual(@as(usize, 6), stats.observed);
     try std.testing.expectEqual(@as(usize, 1), stats.settings);
+    try std.testing.expectEqual(@as(usize, 1), stats.datagram_acks);
+    try std.testing.expectEqual(@as(usize, 1), stats.datagram_losses);
     try std.testing.expectEqual(@as(usize, 2), stats.state_updates);
     try std.testing.expectEqual(@as(usize, 1), stats.completions);
     try std.testing.expectEqual(@as(usize, 1), completed.items.len);
@@ -788,6 +798,14 @@ test "client runner classifies and tracks response batches" {
     };
     var body = [_]u8{ 'd', 'o', 'n', 'e' };
     const events = [_]null3.session.Event{
+        .{ .datagram_acked = .{
+            .id = 3,
+            .len = 9,
+        } },
+        .{ .datagram_lost = .{
+            .id = 4,
+            .len = 11,
+        } },
         .{ .headers = .{
             .stream_id = 0,
             .kind = null3.message.Kind.response,
@@ -808,7 +826,9 @@ test "client runner classifies and tracks response batches" {
     defer completed.deinit(allocator);
 
     const stats = try runner.observeBatch(&events, &completed);
-    try std.testing.expectEqual(@as(usize, 4), stats.observed);
+    try std.testing.expectEqual(@as(usize, 6), stats.observed);
+    try std.testing.expectEqual(@as(usize, 1), stats.datagram_acks);
+    try std.testing.expectEqual(@as(usize, 1), stats.datagram_losses);
     try std.testing.expectEqual(@as(usize, 2), stats.state_updates);
     try std.testing.expectEqual(@as(usize, 1), stats.completions);
     try std.testing.expectEqual(@as(usize, 1), stats.goaways);
@@ -1634,11 +1654,12 @@ test "session exchanges HTTP/3 datagrams over nullq datagram frames" {
         .path = "/datagram",
     });
     const stream_id = writer.stream_id;
-    try writer.datagram("from-client");
+    const tracked_client_datagram_id = try writer.datagramTracked("from-client");
 
     var server_saw_datagram = false;
+    var client_saw_datagram_ack = false;
     iters = 0;
-    while (!server_saw_datagram) : (iters += 1) {
+    while (!server_saw_datagram or !client_saw_datagram_ack) : (iters += 1) {
         try std.testing.expect(iters < 20_000);
         try pumpH3(
             &client,
@@ -1658,6 +1679,19 @@ test "session exchanges HTTP/3 datagrams over nullq datagram frames" {
                     try std.testing.expectEqual(stream_id, datagram.stream_id);
                     try std.testing.expectEqualStrings("from-client", datagram.payload);
                     try std.testing.expect(!datagram.arrived_in_early_data);
+                },
+                else => {},
+            }
+        }
+        for (client_events.items) |event| {
+            const response_event = h3_client.classify(event) orelse continue;
+            switch (response_event) {
+                .datagram_acked => |acked| {
+                    client_saw_datagram_ack = true;
+                    try std.testing.expectEqual(tracked_client_datagram_id, acked.id);
+                    try std.testing.expect(acked.len >= "from-client".len);
+                    try std.testing.expectEqual(@as(u32, 0), acked.path_id);
+                    try std.testing.expect(!acked.arrived_in_early_data);
                 },
                 else => {},
             }
@@ -1699,11 +1733,12 @@ test "session exchanges HTTP/3 datagrams over nullq datagram frames" {
         clearSessionEvents(allocator, &client_events);
     }
 
-    try h3_server.sendDatagram(stream_id, "from-server");
+    const tracked_server_datagram_id = try h3_server.sendDatagramTracked(stream_id, "from-server");
 
     var client_saw_datagram = false;
+    var server_saw_datagram_ack = false;
     iters = 0;
-    while (!client_saw_datagram) : (iters += 1) {
+    while (!client_saw_datagram or !server_saw_datagram_ack) : (iters += 1) {
         try std.testing.expect(iters < 20_000);
         try pumpH3(
             &client,
@@ -1723,6 +1758,19 @@ test "session exchanges HTTP/3 datagrams over nullq datagram frames" {
                     try std.testing.expectEqual(stream_id, datagram.stream_id);
                     try std.testing.expectEqualStrings("from-server", datagram.payload);
                     try std.testing.expect(!datagram.arrived_in_early_data);
+                },
+                else => {},
+            }
+        }
+        for (server_events.items) |event| {
+            const request_event = h3_server.classify(event) orelse continue;
+            switch (request_event) {
+                .datagram_acked => |acked| {
+                    server_saw_datagram_ack = true;
+                    try std.testing.expectEqual(tracked_server_datagram_id, acked.id);
+                    try std.testing.expect(acked.len >= "from-server".len);
+                    try std.testing.expectEqual(@as(u32, 0), acked.path_id);
+                    try std.testing.expect(!acked.arrived_in_early_data);
                 },
                 else => {},
             }

@@ -15,6 +15,8 @@ pub const BatchStats = struct {
     ignored: usize = 0,
     settings: usize = 0,
     datagrams: usize = 0,
+    datagram_acks: usize = 0,
+    datagram_losses: usize = 0,
     goaways: usize = 0,
     connection_closes: usize = 0,
     ignored_unknown_frames: usize = 0,
@@ -28,6 +30,8 @@ pub const ClientObservation = union(enum) {
     response_updated: *client_mod.ResponseState,
     response_complete: *client_mod.ResponseState,
     datagram: client_mod.Datagram,
+    datagram_acked: client_mod.DatagramSend,
+    datagram_lost: client_mod.DatagramSend,
     goaway: u64,
     connection_closed: client_mod.ConnectionClosed,
     ignored_unknown_frame: client_mod.UnknownFrame,
@@ -39,6 +43,8 @@ pub const ServerObservation = union(enum) {
     request_updated: *server_mod.RequestState,
     request_complete: *server_mod.RequestState,
     datagram: server_mod.Datagram,
+    datagram_acked: server_mod.DatagramSend,
+    datagram_lost: server_mod.DatagramSend,
     goaway: u64,
     connection_closed: server_mod.ConnectionClosed,
     ignored_unknown_frame: server_mod.UnknownFrame,
@@ -80,6 +86,8 @@ pub const ClientRunner = struct {
                 return .{ .settings = settings };
             },
             .datagram => |datagram| return .{ .datagram = datagram },
+            .datagram_acked => |acked| return .{ .datagram_acked = acked },
+            .datagram_lost => |lost| return .{ .datagram_lost = lost },
             .goaway => |id| {
                 self.last_goaway = id;
                 return .{ .goaway = id };
@@ -149,6 +157,8 @@ pub const ServerRunner = struct {
                 return .{ .settings = settings };
             },
             .datagram => |datagram| return .{ .datagram = datagram },
+            .datagram_acked => |acked| return .{ .datagram_acked = acked },
+            .datagram_lost => |lost| return .{ .datagram_lost = lost },
             .goaway => |id| {
                 self.last_goaway = id;
                 return .{ .goaway = id };
@@ -198,6 +208,8 @@ fn noteClientObservation(
             if (completed) |out| try out.append(allocator, response);
         },
         .datagram => stats.datagrams += 1,
+        .datagram_acked => stats.datagram_acks += 1,
+        .datagram_lost => stats.datagram_losses += 1,
         .goaway => stats.goaways += 1,
         .connection_closed => stats.connection_closes += 1,
         .ignored_unknown_frame => stats.ignored_unknown_frames += 1,
@@ -220,6 +232,8 @@ fn noteServerObservation(
             if (completed) |out| try out.append(allocator, request);
         },
         .datagram => stats.datagrams += 1,
+        .datagram_acked => stats.datagram_acks += 1,
+        .datagram_lost => stats.datagram_losses += 1,
         .goaway => stats.goaways += 1,
         .connection_closed => stats.connection_closes += 1,
         .ignored_unknown_frame => stats.ignored_unknown_frames += 1,

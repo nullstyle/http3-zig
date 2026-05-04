@@ -76,6 +76,7 @@ pub const StreamReset = struct {
 pub const RequestRejected = session_mod.RequestRejectedEvent;
 pub const UnknownFrame = session_mod.UnknownFrameEvent;
 pub const ConnectionClosed = session_mod.ConnectionClosedEvent;
+pub const DatagramSend = session_mod.DatagramSendEvent;
 
 pub const ResponseOptions = struct {
     status: []const u8 = "200",
@@ -106,8 +107,20 @@ pub const ResponseWriter = struct {
         try self.server.sendDatagram(self.stream_id, payload);
     }
 
+    pub fn datagramTracked(self: *ResponseWriter, payload: []const u8) session_mod.Error!u64 {
+        return try self.server.sendDatagramTracked(self.stream_id, payload);
+    }
+
     pub fn datagramWithContext(self: *ResponseWriter, context_id: u64, payload: []const u8) session_mod.Error!void {
         try self.server.sendDatagramWithContext(self.stream_id, context_id, payload);
+    }
+
+    pub fn datagramWithContextTracked(
+        self: *ResponseWriter,
+        context_id: u64,
+        payload: []const u8,
+    ) session_mod.Error!u64 {
+        return try self.server.sendDatagramWithContextTracked(self.stream_id, context_id, payload);
     }
 
     pub fn capsule(self: *ResponseWriter, capsule_type: u64, value: []const u8) session_mod.Error!void {
@@ -208,6 +221,8 @@ pub const RequestEvent = union(enum) {
     headers: Headers,
     data: Data,
     datagram: Datagram,
+    datagram_acked: DatagramSend,
+    datagram_lost: DatagramSend,
     trailers: Headers,
     finished: StreamFinished,
     reset: StreamReset,
@@ -230,6 +245,8 @@ pub const RequestEvent = union(enum) {
                 .payload = datagram.payload,
                 .arrived_in_early_data = datagram.arrived_in_early_data,
             } },
+            .datagram_acked => |acked| .{ .datagram_acked = acked },
+            .datagram_lost => |lost| .{ .datagram_lost = lost },
             .trailers => |trailers| if (trailers.kind == .request) .{
                 .trailers = .{ .stream_id = trailers.stream_id, .fields = trailers.fields },
             } else null,
@@ -271,6 +288,10 @@ pub const Server = struct {
         try self.session.sendDatagram(stream_id, payload);
     }
 
+    pub fn sendDatagramTracked(self: *Server, stream_id: u64, payload: []const u8) session_mod.Error!u64 {
+        return try self.session.sendDatagramTracked(stream_id, payload);
+    }
+
     pub fn sendDatagramWithContext(
         self: *Server,
         stream_id: u64,
@@ -278,6 +299,15 @@ pub const Server = struct {
         payload: []const u8,
     ) session_mod.Error!void {
         try self.session.sendDatagramWithContext(stream_id, context_id, payload);
+    }
+
+    pub fn sendDatagramWithContextTracked(
+        self: *Server,
+        stream_id: u64,
+        context_id: u64,
+        payload: []const u8,
+    ) session_mod.Error!u64 {
+        return try self.session.sendDatagramWithContextTracked(stream_id, context_id, payload);
     }
 
     pub fn sendCapsule(
@@ -507,7 +537,14 @@ pub const RequestTracker = struct {
                 request.complete = true;
                 return request;
             },
-            .settings, .datagram, .goaway, .connection_closed, .ignored_unknown_frame => return null,
+            .settings,
+            .datagram,
+            .datagram_acked,
+            .datagram_lost,
+            .goaway,
+            .connection_closed,
+            .ignored_unknown_frame,
+            => return null,
         }
     }
 

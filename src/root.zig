@@ -53,6 +53,7 @@ pub const Priority = priority.Priority;
 pub const MessageEncoder = message.Encoder;
 pub const MessageDecoder = message.Decoder;
 pub const DatagramEvent = session.DatagramEvent;
+pub const DatagramSendEvent = session.DatagramSendEvent;
 pub const Capsule = capsule.Capsule;
 pub const CapsuleDecoded = capsule.Decoded;
 pub const DatagramContextPayload = datagram.ContextPayload;

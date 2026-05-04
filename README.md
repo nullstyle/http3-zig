@@ -101,7 +101,8 @@ just test
   stream above its GOAWAY limit, and send-side RESET_STREAM plus CONNECTION_CLOSE
   events surface through the typed session/client/server APIs. It also covers
   negotiated HTTP/3 DATAGRAM exchange in both directions over `nullq` DATAGRAM
-  frames, RFC 9204 Appendix B exact-byte
+  frames, including tracked send IDs and DATAGRAM ACK propagation, RFC 9204
+  Appendix B exact-byte
   QPACK examples for dynamic table insertion, field-section references,
   acknowledgments, cancellations, and eviction, an opt-in dynamic QPACK
   response header over the in-process `nullq` exchange, plus exact-byte

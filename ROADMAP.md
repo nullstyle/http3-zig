@@ -109,8 +109,8 @@ Datagrams / capsules), and the QUIC RFCs already tracked by `nullq`.
 - Server push APIs with `MAX_PUSH_ID`, `PUSH_PROMISE`, cancellation, and disable knobs.
 - Done: HTTP/3 DATAGRAM groundwork over `nullq` DATAGRAM frames, including
   RFC 9297 quarter-stream-id payload codec, SETTINGS/transport negotiation
-  checks, typed session/client/server datagram events, and bidirectional
-  in-process coverage.
+  checks, typed session/client/server datagram events, tracked send outcome
+  propagation, and bidirectional in-process coverage.
 - Done: Extended CONNECT foundation with negotiated `:protocol` support.
 - Done: Capsule Protocol and context-aware DATAGRAM helpers, including
   DATAGRAM capsule codecs, Context ID payload helpers, request/response writer
