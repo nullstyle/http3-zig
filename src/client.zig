@@ -2,6 +2,8 @@
 
 const std = @import("std");
 const boringssl = @import("boringssl");
+const capsule_mod = @import("capsule.zig");
+const datagram_mod = @import("datagram.zig");
 const errors_mod = @import("errors.zig");
 const protocol = @import("protocol.zig");
 const qpack = @import("qpack/root.zig");
@@ -30,12 +32,24 @@ pub const Headers = struct {
 pub const Data = struct {
     stream_id: u64,
     bytes: []const u8,
+
+    pub fn capsule(self: Data) capsule_mod.Error!capsule_mod.Decoded {
+        return capsule_mod.decode(self.bytes);
+    }
+
+    pub fn capsuleIterator(self: Data) capsule_mod.Iterator {
+        return capsule_mod.iter(self.bytes);
+    }
 };
 
 pub const Datagram = struct {
     stream_id: u64,
     payload: []const u8,
     arrived_in_early_data: bool = false,
+
+    pub fn context(self: Datagram) datagram_mod.Error!datagram_mod.ContextPayload {
+        return datagram_mod.decodeContextPayload(self.payload);
+    }
 };
 
 pub const StreamFinished = struct {
@@ -90,6 +104,26 @@ pub const RequestWriter = struct {
 
     pub fn datagram(self: *RequestWriter, payload: []const u8) session_mod.Error!void {
         try self.client.sendDatagram(self.stream_id, payload);
+    }
+
+    pub fn datagramWithContext(self: *RequestWriter, context_id: u64, payload: []const u8) session_mod.Error!void {
+        try self.client.sendDatagramWithContext(self.stream_id, context_id, payload);
+    }
+
+    pub fn capsule(self: *RequestWriter, capsule_type: u64, value: []const u8) session_mod.Error!void {
+        try self.client.sendCapsule(self.stream_id, capsule_type, value);
+    }
+
+    pub fn datagramCapsule(self: *RequestWriter, payload: []const u8) session_mod.Error!void {
+        try self.client.sendDatagramCapsule(self.stream_id, payload);
+    }
+
+    pub fn datagramContextCapsule(
+        self: *RequestWriter,
+        context_id: u64,
+        payload: []const u8,
+    ) session_mod.Error!void {
+        try self.client.sendDatagramContextCapsule(self.stream_id, context_id, payload);
     }
 
     pub fn trailers(self: *RequestWriter, fields: []const qpack.FieldLine) session_mod.Error!void {
@@ -377,6 +411,37 @@ pub const Client = struct {
 
     pub fn sendDatagram(self: *Client, stream_id: u64, payload: []const u8) session_mod.Error!void {
         try self.session.sendDatagram(stream_id, payload);
+    }
+
+    pub fn sendDatagramWithContext(
+        self: *Client,
+        stream_id: u64,
+        context_id: u64,
+        payload: []const u8,
+    ) session_mod.Error!void {
+        try self.session.sendDatagramWithContext(stream_id, context_id, payload);
+    }
+
+    pub fn sendCapsule(
+        self: *Client,
+        stream_id: u64,
+        capsule_type: u64,
+        value: []const u8,
+    ) session_mod.Error!void {
+        try self.session.sendRequestCapsule(stream_id, capsule_type, value);
+    }
+
+    pub fn sendDatagramCapsule(self: *Client, stream_id: u64, payload: []const u8) session_mod.Error!void {
+        try self.session.sendRequestDatagramCapsule(stream_id, payload);
+    }
+
+    pub fn sendDatagramContextCapsule(
+        self: *Client,
+        stream_id: u64,
+        context_id: u64,
+        payload: []const u8,
+    ) session_mod.Error!void {
+        try self.session.sendRequestDatagramContextCapsule(stream_id, context_id, payload);
     }
 
     pub fn sendTrailers(self: *Client, stream_id: u64, fields: []const qpack.FieldLine) session_mod.Error!void {

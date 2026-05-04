@@ -174,6 +174,26 @@ test "extended CONNECT header validation requires opt-in" {
     );
 }
 
+test "capsule and context datagram codecs round-trip" {
+    var context_buf: [64]u8 = undefined;
+    const context_len = try null3.datagram.encodeContextPayload(&context_buf, 42, "ctx");
+    const context = try null3.datagram.decodeContextPayload(context_buf[0..context_len]);
+    try std.testing.expectEqual(@as(u64, 42), context.context_id);
+    try std.testing.expectEqualStrings("ctx", context.payload);
+
+    var capsule_buf: [64]u8 = undefined;
+    const capsule_len = try null3.capsule.encodeDatagram(&capsule_buf, context_buf[0..context_len]);
+    const capsule = try null3.capsule.decode(capsule_buf[0..capsule_len]);
+    try std.testing.expect(capsule.capsule.isDatagram());
+    const capsule_context = try null3.datagram.decodeContextPayload(capsule.capsule.value);
+    try std.testing.expectEqual(@as(u64, 42), capsule_context.context_id);
+    try std.testing.expectEqualStrings("ctx", capsule_context.payload);
+
+    var iter = null3.capsule.iter(capsule_buf[0..capsule_len]);
+    try std.testing.expect((try iter.next()) != null);
+    try std.testing.expect((try iter.next()) == null);
+}
+
 test "PRIORITY_UPDATE request frame round-trip" {
     var buf: [64]u8 = undefined;
     const n = try null3.frame.encode(&buf, .{
@@ -1046,6 +1066,39 @@ test "session exchanges HTTP/3 datagrams over nullq datagram frames" {
         clearSessionEvents(allocator, &client_events);
     }
 
+    try writer.datagramWithContext(7, "ctx-client");
+
+    var server_saw_context_datagram = false;
+    iters = 0;
+    while (!server_saw_context_datagram) : (iters += 1) {
+        try std.testing.expect(iters < 20_000);
+        try pumpH3(
+            &client,
+            &server,
+            &client_h3,
+            &server_h3,
+            &client_events,
+            &server_events,
+            &now_us,
+        );
+
+        for (server_events.items) |event| {
+            const request_event = h3_server.classify(event) orelse continue;
+            switch (request_event) {
+                .datagram => |datagram| {
+                    server_saw_context_datagram = true;
+                    try std.testing.expectEqual(stream_id, datagram.stream_id);
+                    const context = try datagram.context();
+                    try std.testing.expectEqual(@as(u64, 7), context.context_id);
+                    try std.testing.expectEqualStrings("ctx-client", context.payload);
+                },
+                else => {},
+            }
+        }
+        clearSessionEvents(allocator, &server_events);
+        clearSessionEvents(allocator, &client_events);
+    }
+
     try h3_server.sendDatagram(stream_id, "from-server");
 
     var client_saw_datagram = false;
@@ -1070,6 +1123,114 @@ test "session exchanges HTTP/3 datagrams over nullq datagram frames" {
                     try std.testing.expectEqual(stream_id, datagram.stream_id);
                     try std.testing.expectEqualStrings("from-server", datagram.payload);
                     try std.testing.expect(!datagram.arrived_in_early_data);
+                },
+                else => {},
+            }
+        }
+        clearSessionEvents(allocator, &client_events);
+        clearSessionEvents(allocator, &server_events);
+    }
+
+    try h3_server.sendDatagramWithContext(stream_id, 9, "ctx-server");
+
+    var client_saw_context_datagram = false;
+    iters = 0;
+    while (!client_saw_context_datagram) : (iters += 1) {
+        try std.testing.expect(iters < 20_000);
+        try pumpH3(
+            &client,
+            &server,
+            &client_h3,
+            &server_h3,
+            &client_events,
+            &server_events,
+            &now_us,
+        );
+
+        for (client_events.items) |event| {
+            const response_event = h3_client.classify(event) orelse continue;
+            switch (response_event) {
+                .datagram => |datagram| {
+                    client_saw_context_datagram = true;
+                    try std.testing.expectEqual(stream_id, datagram.stream_id);
+                    const context = try datagram.context();
+                    try std.testing.expectEqual(@as(u64, 9), context.context_id);
+                    try std.testing.expectEqualStrings("ctx-server", context.payload);
+                },
+                else => {},
+            }
+        }
+        clearSessionEvents(allocator, &client_events);
+        clearSessionEvents(allocator, &server_events);
+    }
+
+    try writer.datagramContextCapsule(11, "capsule-client");
+
+    var server_saw_datagram_capsule = false;
+    iters = 0;
+    while (!server_saw_datagram_capsule) : (iters += 1) {
+        try std.testing.expect(iters < 20_000);
+        try pumpH3(
+            &client,
+            &server,
+            &client_h3,
+            &server_h3,
+            &client_events,
+            &server_events,
+            &now_us,
+        );
+
+        for (server_events.items) |event| {
+            const request_event = h3_server.classify(event) orelse continue;
+            switch (request_event) {
+                .data => |data| {
+                    server_saw_datagram_capsule = true;
+                    const decoded_capsule = try data.capsule();
+                    try std.testing.expect(decoded_capsule.capsule.isDatagram());
+                    const context = try null3.datagram.decodeContextPayload(decoded_capsule.capsule.value);
+                    try std.testing.expectEqual(@as(u64, 11), context.context_id);
+                    try std.testing.expectEqualStrings("capsule-client", context.payload);
+                },
+                else => {},
+            }
+        }
+        clearSessionEvents(allocator, &server_events);
+        clearSessionEvents(allocator, &client_events);
+    }
+
+    const capsule_headers = [_]null3.FieldLine{
+        .{ .name = "capsule-protocol", .value = "?1" },
+    };
+    var response_writer = try h3_server.startResponse(allocator, stream_id, .{
+        .status = "200",
+        .headers = &capsule_headers,
+    });
+    try response_writer.datagramContextCapsule(13, "capsule-server");
+
+    var client_saw_datagram_capsule = false;
+    iters = 0;
+    while (!client_saw_datagram_capsule) : (iters += 1) {
+        try std.testing.expect(iters < 20_000);
+        try pumpH3(
+            &client,
+            &server,
+            &client_h3,
+            &server_h3,
+            &client_events,
+            &server_events,
+            &now_us,
+        );
+
+        for (client_events.items) |event| {
+            const response_event = h3_client.classify(event) orelse continue;
+            switch (response_event) {
+                .data => |data| {
+                    client_saw_datagram_capsule = true;
+                    const decoded_capsule = try data.capsule();
+                    try std.testing.expect(decoded_capsule.capsule.isDatagram());
+                    const context = try null3.datagram.decodeContextPayload(decoded_capsule.capsule.value);
+                    try std.testing.expectEqual(@as(u64, 13), context.context_id);
+                    try std.testing.expectEqualStrings("capsule-server", context.payload);
                 },
                 else => {},
             }

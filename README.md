@@ -17,7 +17,8 @@ reset events, transport close events, structured HTTP/3/QPACK error
 classification, HTTP/3 DATAGRAM send/receive groundwork, reusable transport
 driver helpers, request lifecycle tracking, response lifecycle tracking,
 client/server event runners, Extended CONNECT negotiation and request metadata,
-and lightweight request-response facades.
+Capsule Protocol codecs, context-aware DATAGRAM helpers, and lightweight
+request-response facades.
 
 ```sh
 mise install
@@ -60,7 +61,9 @@ just test
 - `stream`: stream type helpers plus frame-context validation.
 - `message`: transport-free request/response HEADERS, DATA, and trailer
   encoding/decoding with stream-order validation.
-- `datagram`: RFC 9297 HTTP/3 DATAGRAM quarter-stream-id payload codec.
+- `datagram`: RFC 9297 HTTP/3 DATAGRAM quarter-stream-id payload codec plus
+  reusable Context ID payload helpers for datagram-using extensions.
+- `capsule`: RFC 9297 Capsule Protocol TLV codec, including DATAGRAM capsules.
 - `driver`: small `nullq`/`null3` transport-driving helpers for tests,
   examples, and interop peers. It keeps socket and clock ownership with the
   embedder while centralizing the handle/poll/tick/session-drain order.
@@ -71,8 +74,8 @@ just test
   streams, peer SETTINGS, request stream draining, response writes, FIN
   validation, optional dynamic QPACK encoder/decoder stream processing,
   GOAWAY policy enforcement, Extended CONNECT negotiation checks, HTTP/3
-  DATAGRAM events over QUIC DATAGRAM frames, reset/close events, and deep-owned
-  application events.
+  DATAGRAM events over QUIC DATAGRAM frames, DATAGRAM capsule send helpers,
+  reset/close events, and deep-owned application events.
 - `connection`: `nullq.Connection` adapter for control stream, optional QPACK
   streams, and request/data frame writes.
 - `client` / `server`: BoringSSL TLS context helpers with ALPN set to `h3`,
@@ -85,7 +88,8 @@ just test
   `ServerRunner` wrap the trackers for applications that want batch-oriented
   event processing. `RequestHeadOptions.connect_protocol` opens the Extended
   CONNECT path once the peer advertises support, and `RequestReader.protocol`
-  exposes the received protocol token.
+  exposes the received protocol token. Request/response writers can send
+  context-aware unreliable datagrams and reliable DATAGRAM capsules.
 
 ## Verified
 
@@ -103,7 +107,9 @@ just test
   response header over the in-process `nullq` exchange, plus exact-byte
   quic-go/qpack interop vectors for the shared static/literal/Huffman profile.
   Extended CONNECT coverage checks SETTINGS negotiation, client-side gating,
-  and server-side `:protocol` request metadata.
+  and server-side `:protocol` request metadata. Capsule coverage includes
+  DATAGRAM capsules and context-aware payloads over both QUIC DATAGRAM frames
+  and DATA-frame capsules.
 - `just qpack-interop` runs the optional Go-side fixture harness against
   `github.com/quic-go/qpack`.
 - `just curl-h3-interop` builds a small localhost `null3` HTTP/3 server and

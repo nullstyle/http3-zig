@@ -9,6 +9,7 @@ const std = @import("std");
 const nullq = @import("nullq");
 
 const errors_mod = @import("errors.zig");
+const capsule_mod = @import("capsule.zig");
 const datagram_mod = @import("datagram.zig");
 const frame_mod = @import("frame.zig");
 const headers_mod = @import("headers.zig");
@@ -22,6 +23,7 @@ const varint = nullq.wire.varint;
 
 pub const Error = nullq.conn.state.Error ||
     frame_mod.Error ||
+    capsule_mod.Error ||
     datagram_mod.Error ||
     message_mod.Error ||
     stream_mod.FrameValidationError ||
@@ -284,6 +286,28 @@ pub const Session = struct {
         try self.writeDataWithEncoder(stream_id, encoder, data);
     }
 
+    pub fn sendRequestCapsule(self: *Session, stream_id: u64, capsule_type: u64, value: []const u8) Error!void {
+        if (self.role != .client) return Error.InvalidRole;
+        try self.sendCapsuleData(stream_id, .request, capsule_type, value);
+    }
+
+    pub fn sendRequestDatagramCapsule(self: *Session, stream_id: u64, payload: []const u8) Error!void {
+        try self.sendRequestCapsule(stream_id, capsule_mod.Type.datagram, payload);
+    }
+
+    pub fn sendRequestDatagramContextCapsule(
+        self: *Session,
+        stream_id: u64,
+        context_id: u64,
+        payload: []const u8,
+    ) Error!void {
+        const value_len = datagram_mod.contextPayloadEncodedLen(context_id, payload.len);
+        const value = try self.allocator.alloc(u8, value_len);
+        defer self.allocator.free(value);
+        const n = try datagram_mod.encodeContextPayload(value, context_id, payload);
+        try self.sendRequestDatagramCapsule(stream_id, value[0..n]);
+    }
+
     pub fn sendRequestTrailers(self: *Session, stream_id: u64, fields: []const qpack.FieldLine) Error!void {
         if (self.role != .client) return Error.InvalidRole;
         const state = try self.getState(stream_id);
@@ -307,6 +331,28 @@ pub const Session = struct {
         try self.writeDataWithEncoder(stream_id, encoder, data);
     }
 
+    pub fn sendResponseCapsule(self: *Session, stream_id: u64, capsule_type: u64, value: []const u8) Error!void {
+        if (self.role != .server) return Error.InvalidRole;
+        try self.sendCapsuleData(stream_id, .response, capsule_type, value);
+    }
+
+    pub fn sendResponseDatagramCapsule(self: *Session, stream_id: u64, payload: []const u8) Error!void {
+        try self.sendResponseCapsule(stream_id, capsule_mod.Type.datagram, payload);
+    }
+
+    pub fn sendResponseDatagramContextCapsule(
+        self: *Session,
+        stream_id: u64,
+        context_id: u64,
+        payload: []const u8,
+    ) Error!void {
+        const value_len = datagram_mod.contextPayloadEncodedLen(context_id, payload.len);
+        const value = try self.allocator.alloc(u8, value_len);
+        defer self.allocator.free(value);
+        const n = try datagram_mod.encodeContextPayload(value, context_id, payload);
+        try self.sendResponseDatagramCapsule(stream_id, value[0..n]);
+    }
+
     pub fn sendResponseTrailers(self: *Session, stream_id: u64, fields: []const qpack.FieldLine) Error!void {
         if (self.role != .server) return Error.InvalidRole;
         const state = try self.ensureMessageState(stream_id, .request, .response);
@@ -325,6 +371,22 @@ pub const Session = struct {
         const encoded = try self.allocator.alloc(u8, len);
         defer self.allocator.free(encoded);
         const n = try datagram_mod.encode(encoded, stream_id, payload);
+        try self.quic.sendDatagram(encoded[0..n]);
+    }
+
+    pub fn sendDatagramWithContext(
+        self: *Session,
+        stream_id: u64,
+        context_id: u64,
+        payload: []const u8,
+    ) Error!void {
+        const payload_len = datagram_mod.contextPayloadEncodedLen(context_id, payload.len);
+        try self.validateDatagramSend(stream_id, payload_len);
+
+        const len = try datagram_mod.encodedLenWithContext(stream_id, context_id, payload.len);
+        const encoded = try self.allocator.alloc(u8, len);
+        defer self.allocator.free(encoded);
+        const n = try datagram_mod.encodeWithContext(encoded, stream_id, context_id, payload);
         try self.quic.sendDatagram(encoded[0..n]);
     }
 
@@ -463,7 +525,7 @@ pub const Session = struct {
         while (self.quic.pollEvent()) |event| {
             switch (event) {
                 .close => |close_event| try self.observeConnectionClose(close_event, events),
-                .flow_blocked => {},
+                .flow_blocked, .datagram_acked, .datagram_lost => {},
             }
         }
         self.syncShutdownState();
@@ -1102,6 +1164,25 @@ pub const Session = struct {
             try self.writeAll(stream_id, buf[0..n]);
             offset = end;
         }
+    }
+
+    fn sendCapsuleData(
+        self: *Session,
+        stream_id: u64,
+        kind: message_mod.Kind,
+        capsule_type: u64,
+        value: []const u8,
+    ) Error!void {
+        const state = switch (kind) {
+            .request => try self.getState(stream_id),
+            .response => try self.ensureMessageState(stream_id, .request, .response),
+            .push => return Error.InvalidRole,
+        };
+        const encoded = try self.allocator.alloc(u8, capsule_mod.encodedLen(capsule_type, value.len));
+        defer self.allocator.free(encoded);
+        const n = try capsule_mod.encode(encoded, capsule_type, value);
+        const encoder = try self.ensureEncoder(state, kind);
+        try self.writeDataWithEncoder(stream_id, encoder, encoded[0..n]);
     }
 
     fn writeTrailersWithEncoder(

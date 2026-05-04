@@ -112,7 +112,12 @@ Datagrams / capsules), and the QUIC RFCs already tracked by `nullq`.
   checks, typed session/client/server datagram events, and bidirectional
   in-process coverage.
 - Done: Extended CONNECT foundation with negotiated `:protocol` support.
-- Next: WebSocket-over-H3, context-aware HTTP datagrams, and capsule protocol.
+- Done: Capsule Protocol and context-aware DATAGRAM helpers, including
+  DATAGRAM capsule codecs, Context ID payload helpers, request/response writer
+  send paths, and in-process coverage over both QUIC DATAGRAM frames and
+  reliable DATA-frame capsules.
+- Next: WebSocket-over-H3 and concrete MASQUE-style protocols layered on
+  Extended CONNECT, capsules, and context-aware datagrams.
 - Observability hooks: keylog passthrough, qlog-friendly events, metrics counters.
 
 ## Phase 5: Hardening
