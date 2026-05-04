@@ -53,7 +53,10 @@ Datagrams / capsules), and the QUIC RFCs already tracked by `nullq`.
   encoder-side outstanding reference tracking.
 - Done: configurable indexing policy with safe defaults for sensitive fields,
   non-blocking or tracked dynamic references, and opt-in dynamic insertions.
-- RFC 9204 examples and cross-implementation fixture tests.
+- Done: RFC 9204 Appendix B exact-byte fixture coverage for literal field
+  sections, dynamic table inserts, acknowledgments, duplicates, stream
+  cancellations, and eviction.
+- Cross-implementation QPACK fixture tests.
 
 ## Phase 3: Client and Server APIs
 

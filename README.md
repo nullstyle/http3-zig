@@ -75,6 +75,8 @@ just test
   `null3.Server` tracks and returns a response, the `null3.Client` tracks the
   response lifecycle, the server sends GOAWAY, the client refuses excluded
   request streams, and the server rejects a deliberately non-compliant request
-  stream above its GOAWAY limit.
+  stream above its GOAWAY limit. It also covers RFC 9204 Appendix B exact-byte
+  QPACK examples for dynamic table insertion, field-section references,
+  acknowledgments, cancellations, and eviction.
 
 See [ROADMAP.md](ROADMAP.md) for the production plan.

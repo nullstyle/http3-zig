@@ -1030,3 +1030,193 @@ test "dynamic field decoder reports sections waiting on encoder stream inserts" 
         decodeDynamicFieldSection(std.testing.allocator, &table, table.max_capacity, buf[0..n]),
     );
 }
+
+test "RFC 9204 Appendix B.1 literal field line with static name reference" {
+    const fields = [_]FieldLine{
+        .{ .name = ":path", .value = "/index.html" },
+    };
+    const expected = "\x00\x00\x51\x0b/index.html";
+
+    var buf: [32]u8 = undefined;
+    const n = try encodeFieldSection(&buf, &fields);
+    try std.testing.expectEqualSlices(u8, expected, buf[0..n]);
+
+    const decoded = try decodeFieldSection(std.testing.allocator, expected);
+    defer freeFieldSection(std.testing.allocator, decoded);
+    try std.testing.expectEqual(@as(usize, 1), decoded.len);
+    try std.testing.expectEqualStrings(":path", decoded[0].name);
+    try std.testing.expectEqualStrings("/index.html", decoded[0].value);
+}
+
+test "RFC 9204 Appendix B.2 dynamic table field section and acknowledgment" {
+    const encoder_stream = "\x3f\xbd\x01\xc0\x0fwww.example.com\xc1\x0c/sample/path";
+    const field_section = "\x03\x81\x10\x11";
+
+    var buf: [64]u8 = undefined;
+    var pos: usize = 0;
+    pos += try instructions.encodeEncoderInstruction(buf[pos..], .{ .set_capacity = 220 });
+    pos += try instructions.encodeEncoderInstruction(buf[pos..], .{ .insert_name_ref = .{
+        .table = .static,
+        .index = 0,
+        .value = "www.example.com",
+    } });
+    pos += try instructions.encodeEncoderInstruction(buf[pos..], .{ .insert_name_ref = .{
+        .table = .static,
+        .index = 1,
+        .value = "/sample/path",
+    } });
+    try std.testing.expectEqualSlices(u8, encoder_stream, buf[0..pos]);
+
+    var table = DynamicTable.init(std.testing.allocator, 220);
+    defer table.deinit();
+    var decoder_state = state.DecoderState.init(std.testing.allocator, 4);
+    defer decoder_state.deinit();
+    try applyEncoderStreamFixture(&table, &decoder_state, encoder_stream);
+
+    try std.testing.expectEqual(@as(usize, 2), table.len());
+    try std.testing.expectEqual(@as(usize, 106), table.size);
+    try std.testing.expectEqualStrings(":authority", table.getAbsolute(0).?.name);
+    try std.testing.expectEqualStrings("www.example.com", table.getAbsolute(0).?.value);
+    try std.testing.expectEqualStrings(":path", table.getAbsolute(1).?.name);
+    try std.testing.expectEqualStrings("/sample/path", table.getAbsolute(1).?.value);
+
+    const decoded = try decodeDynamicFieldSection(std.testing.allocator, &table, 220, field_section);
+    defer freeFieldSection(std.testing.allocator, decoded);
+    try std.testing.expectEqual(@as(usize, 2), decoded.len);
+    try std.testing.expectEqualStrings(":authority", decoded[0].name);
+    try std.testing.expectEqualStrings("www.example.com", decoded[0].value);
+    try std.testing.expectEqualStrings(":path", decoded[1].name);
+    try std.testing.expectEqualStrings("/sample/path", decoded[1].value);
+
+    const ack_instruction = try decoder_state.completeFieldSection(4, 2);
+    try std.testing.expectEqual(@as(u64, 4), ack_instruction.?.section_ack);
+    var ack_buf: [8]u8 = undefined;
+    const ack_n = try instructions.encodeDecoderInstruction(&ack_buf, ack_instruction.?);
+    try std.testing.expectEqualSlices(u8, "\x84", ack_buf[0..ack_n]);
+}
+
+test "RFC 9204 Appendix B.3 speculative literal insert and insert count increment" {
+    var table = DynamicTable.init(std.testing.allocator, 220);
+    defer table.deinit();
+    var decoder_state = state.DecoderState.init(std.testing.allocator, 4);
+    defer decoder_state.deinit();
+    try applyEncoderStreamFixture(
+        &table,
+        &decoder_state,
+        "\x3f\xbd\x01\xc0\x0fwww.example.com\xc1\x0c/sample/path",
+    );
+    _ = try decoder_state.completeFieldSection(4, 2);
+
+    const encoder_stream = "\x4acustom-key\x0ccustom-value";
+    var buf: [64]u8 = undefined;
+    const n = try instructions.encodeEncoderInstruction(&buf, .{ .insert_literal = .{
+        .name = "custom-key",
+        .value = "custom-value",
+    } });
+    try std.testing.expectEqualSlices(u8, encoder_stream, buf[0..n]);
+    try applyEncoderStreamFixture(&table, &decoder_state, encoder_stream);
+
+    try std.testing.expectEqual(@as(usize, 3), table.len());
+    try std.testing.expectEqual(@as(usize, 160), table.size);
+    try std.testing.expectEqualStrings("custom-key", table.getAbsolute(2).?.name);
+    try std.testing.expectEqualStrings("custom-value", table.getAbsolute(2).?.value);
+
+    const increment = decoder_state.takeInsertCountIncrement().?;
+    var increment_buf: [8]u8 = undefined;
+    const increment_n = try instructions.encodeDecoderInstruction(&increment_buf, increment);
+    try std.testing.expectEqualSlices(u8, "\x01", increment_buf[0..increment_n]);
+}
+
+test "RFC 9204 Appendix B.4 duplicate instruction and stream cancellation" {
+    var table = DynamicTable.init(std.testing.allocator, 220);
+    defer table.deinit();
+    var decoder_state = state.DecoderState.init(std.testing.allocator, 4);
+    defer decoder_state.deinit();
+    try applyEncoderStreamFixture(
+        &table,
+        &decoder_state,
+        "\x3f\xbd\x01\xc0\x0fwww.example.com\xc1\x0c/sample/path\x4acustom-key\x0ccustom-value",
+    );
+
+    var encoder_state = state.EncoderState.init(std.testing.allocator, 4);
+    defer encoder_state.deinit();
+    encoder_state.recordInsertCount(3);
+    try encoder_state.receiveDecoderInstruction(.{ .insert_count_increment = 3 });
+
+    var duplicate_buf: [8]u8 = undefined;
+    const duplicate_n = try instructions.encodeEncoderInstruction(&duplicate_buf, .{ .duplicate = 2 });
+    try std.testing.expectEqualSlices(u8, "\x02", duplicate_buf[0..duplicate_n]);
+    try applyEncoderStreamFixture(&table, &decoder_state, "\x02");
+    try encoder_state.recordInsert(3);
+    try std.testing.expectEqual(@as(usize, 217), table.size);
+    try std.testing.expectEqualStrings(":authority", table.getAbsolute(3).?.name);
+    try std.testing.expectEqualStrings("www.example.com", table.getAbsolute(3).?.value);
+
+    const field_section = "\x05\x00\x80\xc1\x81";
+    const decoded = try decodeDynamicFieldSection(std.testing.allocator, &table, 220, field_section);
+    defer freeFieldSection(std.testing.allocator, decoded);
+    try std.testing.expectEqual(@as(usize, 3), decoded.len);
+    try std.testing.expectEqualStrings(":authority", decoded[0].name);
+    try std.testing.expectEqualStrings("www.example.com", decoded[0].value);
+    try std.testing.expectEqualStrings(":path", decoded[1].name);
+    try std.testing.expectEqualStrings("/", decoded[1].value);
+    try std.testing.expectEqualStrings("custom-key", decoded[2].name);
+    try std.testing.expectEqualStrings("custom-value", decoded[2].value);
+
+    try std.testing.expectEqual(@as(u64, 4), try encoder_state.trackFieldSection(8, &.{ 3, 2 }));
+    try std.testing.expectEqual(@as(u64, 1), encoder_state.referenceCount(3));
+    try std.testing.expectEqual(@as(u64, 1), encoder_state.referenceCount(2));
+    try encoder_state.receiveDecoderInstruction(.{ .stream_cancel = 8 });
+    try std.testing.expectEqual(@as(u64, 0), encoder_state.referenceCount(3));
+    try std.testing.expectEqual(@as(u64, 0), encoder_state.referenceCount(2));
+
+    const cancellation = decoder_state.cancelStream(8);
+    var cancellation_buf: [8]u8 = undefined;
+    const cancellation_n = try instructions.encodeDecoderInstruction(&cancellation_buf, cancellation);
+    try std.testing.expectEqualSlices(u8, "\x48", cancellation_buf[0..cancellation_n]);
+}
+
+test "RFC 9204 Appendix B.5 dynamic insert and eviction" {
+    var table = DynamicTable.init(std.testing.allocator, 220);
+    defer table.deinit();
+    var decoder_state = state.DecoderState.init(std.testing.allocator, 4);
+    defer decoder_state.deinit();
+    try applyEncoderStreamFixture(
+        &table,
+        &decoder_state,
+        "\x3f\xbd\x01\xc0\x0fwww.example.com\xc1\x0c/sample/path\x4acustom-key\x0ccustom-value\x02",
+    );
+
+    const encoder_stream = "\x81\x0dcustom-value2";
+    var buf: [32]u8 = undefined;
+    const n = try instructions.encodeEncoderInstruction(&buf, .{ .insert_name_ref = .{
+        .table = .dynamic,
+        .index = 1,
+        .value = "custom-value2",
+    } });
+    try std.testing.expectEqualSlices(u8, encoder_stream, buf[0..n]);
+    try applyEncoderStreamFixture(&table, &decoder_state, encoder_stream);
+
+    try std.testing.expectEqual(@as(usize, 4), table.len());
+    try std.testing.expectEqual(@as(u64, 1), table.dropped_count);
+    try std.testing.expectEqual(@as(usize, 215), table.size);
+    try std.testing.expect(table.getAbsolute(0) == null);
+    try std.testing.expectEqualStrings(":path", table.getAbsolute(1).?.name);
+    try std.testing.expectEqualStrings("custom-key", table.getAbsolute(4).?.name);
+    try std.testing.expectEqualStrings("custom-value2", table.getAbsolute(4).?.value);
+}
+
+fn applyEncoderStreamFixture(
+    table: *DynamicTable,
+    decoder_state: *state.DecoderState,
+    src: []const u8,
+) Error!void {
+    var pos: usize = 0;
+    while (pos < src.len) {
+        const decoded = try instructions.decodeEncoderInstruction(std.testing.allocator, src[pos..]);
+        errdefer instructions.freeDecodedEncoderInstruction(std.testing.allocator, decoded);
+        _ = try decoder_state.applyEncoderInstruction(table, decoded.instruction);
+        instructions.freeDecodedEncoderInstruction(std.testing.allocator, decoded);
+        pos += decoded.bytes_read;
+    }
+}
