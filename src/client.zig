@@ -54,8 +54,37 @@ pub const RequestOptions = struct {
     end_stream: bool = true,
 };
 
+pub const RequestHeadOptions = struct {
+    method: []const u8 = "GET",
+    scheme: []const u8 = "https",
+    authority: []const u8 = "",
+    path: []const u8 = "/",
+    headers: []const qpack.FieldLine = &.{},
+};
+
 pub const Request = struct {
     stream_id: u64,
+};
+
+pub const RequestWriter = struct {
+    client: *Client,
+    stream_id: u64,
+
+    pub fn write(self: *RequestWriter, data: []const u8) session_mod.Error!void {
+        if (data.len > 0) try self.client.sendData(self.stream_id, data);
+    }
+
+    pub fn trailers(self: *RequestWriter, fields: []const qpack.FieldLine) session_mod.Error!void {
+        try self.client.sendTrailers(self.stream_id, fields);
+    }
+
+    pub fn finish(self: *RequestWriter) session_mod.Error!void {
+        try self.client.finish(self.stream_id);
+    }
+
+    pub fn cancel(self: *RequestWriter) session_mod.Error!void {
+        try self.client.cancel(self.stream_id);
+    }
 };
 
 /// Client-facing view over `session.Event`.
@@ -135,17 +164,34 @@ pub const Client = struct {
         allocator: std.mem.Allocator,
         options: RequestOptions,
     ) session_mod.Error!Request {
+        var writer = try self.startRequest(allocator, .{
+            .method = options.method,
+            .scheme = options.scheme,
+            .authority = options.authority,
+            .path = options.path,
+            .headers = options.headers,
+        });
+
+        if (options.body) |body| {
+            try writer.write(body);
+        }
+        if (options.trailers.len > 0) try writer.trailers(options.trailers);
+        if (options.end_stream) try writer.finish();
+
+        return .{ .stream_id = writer.stream_id };
+    }
+
+    pub fn startRequest(
+        self: *Client,
+        allocator: std.mem.Allocator,
+        options: RequestHeadOptions,
+    ) session_mod.Error!RequestWriter {
         const fields = try buildRequestFields(allocator, options);
         defer allocator.free(fields);
-
-        const stream_id = try self.open(fields);
-        if (options.body) |body| {
-            if (body.len > 0) try self.sendData(stream_id, body);
-        }
-        if (options.trailers.len > 0) try self.sendTrailers(stream_id, options.trailers);
-        if (options.end_stream) try self.finish(stream_id);
-
-        return .{ .stream_id = stream_id };
+        return .{
+            .client = self,
+            .stream_id = try self.open(fields),
+        };
     }
 
     pub fn classify(self: *const Client, event: session_mod.Event) ?ResponseEvent {
@@ -156,7 +202,7 @@ pub const Client = struct {
 
 fn buildRequestFields(
     allocator: std.mem.Allocator,
-    options: RequestOptions,
+    options: RequestHeadOptions,
 ) session_mod.Error![]qpack.FieldLine {
     const fields = try allocator.alloc(qpack.FieldLine, 4 + options.headers.len);
     fields[0] = .{ .name = ":method", .value = options.method };

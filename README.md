@@ -49,8 +49,9 @@ just test
   streams, and request/data frame writes.
 - `client` / `server`: BoringSSL TLS context helpers with ALPN set to `h3`,
   plus thin `Client` / `Server` facades that classify session events and proxy
-  common request/response operations. `Client.request` assembles request
-  pseudo-headers from options, `Server.respond` assembles response headers, and
+  common request/response operations. `Client.startRequest` and
+  `Server.startResponse` return streaming writers for incremental bodies and
+  trailers, `Client.request` / `Server.respond` provide one-shot helpers, and
   `server.RequestTracker` builds owned per-stream request lifecycle state.
 
 ## Verified

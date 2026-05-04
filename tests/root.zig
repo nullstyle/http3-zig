@@ -354,14 +354,16 @@ test "session exchanges HTTP/3 request and response over nullq streams" {
     const request_headers = [_]null3.FieldLine{
         .{ .name = "content-type", .value = "text/plain" },
     };
-    const request = try h3_client.request(allocator, .{
+    var request_writer = try h3_client.startRequest(allocator, .{
         .method = "POST",
         .authority = "localhost",
         .path = "/echo",
         .headers = &request_headers,
-        .body = "ping",
     });
-    const request_stream_id = request.stream_id;
+    const request_stream_id = request_writer.stream_id;
+    try request_writer.write("pi");
+    try request_writer.write("ng");
+    try request_writer.finish();
 
     var client_events: std.ArrayList(null3.session.Event) = .empty;
     defer {
@@ -373,6 +375,8 @@ test "session exchanges HTTP/3 request and response over nullq streams" {
         clearSessionEvents(allocator, &server_events);
         server_events.deinit(allocator);
     }
+    var response_body: std.ArrayList(u8) = .empty;
+    defer response_body.deinit(allocator);
 
     var client_saw_settings = false;
     var server_saw_settings = false;
@@ -415,8 +419,10 @@ test "session exchanges HTTP/3 request and response over nullq streams" {
                         try std.testing.expectEqualStrings("/echo", request_state.headerFields()[2].value);
                     }
                     if (request_state.bodyBytes().len > 0) {
-                        server_saw_request_body = true;
-                        try std.testing.expectEqualStrings("ping", request_state.bodyBytes());
+                        const body = request_state.bodyBytes();
+                        try std.testing.expect(body.len <= "ping".len);
+                        try std.testing.expectEqualStrings("ping"[0..body.len], body);
+                        if (std.mem.eql(u8, body, "ping")) server_saw_request_body = true;
                     }
                     if (request_state.complete) server_saw_request_finish = true;
                 },
@@ -428,11 +434,13 @@ test "session exchanges HTTP/3 request and response over nullq streams" {
             const response_fields = [_]null3.FieldLine{
                 .{ .name = "content-type", .value = "text/plain" },
             };
-            _ = try h3_server.respond(allocator, request_stream_id, .{
+            var response_writer = try h3_server.startResponse(allocator, request_stream_id, .{
                 .status = "200",
                 .headers = &response_fields,
-                .body = "pong",
             });
+            try response_writer.write("po");
+            try response_writer.write("ng");
+            try response_writer.finish();
             try h3_server.goaway(request_stream_id + 4);
             response_sent = true;
         }
@@ -450,8 +458,10 @@ test "session exchanges HTTP/3 request and response over nullq streams" {
                     try std.testing.expectEqualStrings("200", headers.fields[0].value);
                 },
                 .data => |data| {
-                    client_saw_response_body = true;
-                    try std.testing.expectEqualStrings("pong", data.bytes);
+                    try response_body.appendSlice(allocator, data.bytes);
+                    try std.testing.expect(response_body.items.len <= "pong".len);
+                    try std.testing.expectEqualStrings("pong"[0..response_body.items.len], response_body.items);
+                    if (std.mem.eql(u8, response_body.items, "pong")) client_saw_response_body = true;
                 },
                 .finished => |finished| {
                     try std.testing.expectEqual(request_stream_id, finished.stream_id);

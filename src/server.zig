@@ -59,8 +59,30 @@ pub const ResponseOptions = struct {
     end_stream: bool = true,
 };
 
+pub const ResponseHeadOptions = struct {
+    status: []const u8 = "200",
+    headers: []const qpack.FieldLine = &.{},
+};
+
 pub const Response = struct {
     stream_id: u64,
+};
+
+pub const ResponseWriter = struct {
+    server: *Server,
+    stream_id: u64,
+
+    pub fn write(self: *ResponseWriter, data: []const u8) session_mod.Error!void {
+        if (data.len > 0) try self.server.sendData(self.stream_id, data);
+    }
+
+    pub fn trailers(self: *ResponseWriter, fields: []const qpack.FieldLine) session_mod.Error!void {
+        try self.server.sendTrailers(self.stream_id, fields);
+    }
+
+    pub fn finish(self: *ResponseWriter) session_mod.Error!void {
+        try self.server.finish(self.stream_id);
+    }
 };
 
 /// Server-facing view over `session.Event`.
@@ -145,17 +167,33 @@ pub const Server = struct {
         stream_id: u64,
         options: ResponseOptions,
     ) session_mod.Error!Response {
-        const fields = try buildResponseFields(allocator, options);
-        defer allocator.free(fields);
+        var writer = try self.startResponse(allocator, stream_id, .{
+            .status = options.status,
+            .headers = options.headers,
+        });
 
-        try self.sendHeaders(stream_id, fields);
         if (options.body) |body| {
-            if (body.len > 0) try self.sendData(stream_id, body);
+            try writer.write(body);
         }
-        if (options.trailers.len > 0) try self.sendTrailers(stream_id, options.trailers);
-        if (options.end_stream) try self.finish(stream_id);
+        if (options.trailers.len > 0) try writer.trailers(options.trailers);
+        if (options.end_stream) try writer.finish();
 
         return .{ .stream_id = stream_id };
+    }
+
+    pub fn startResponse(
+        self: *Server,
+        allocator: std.mem.Allocator,
+        stream_id: u64,
+        options: ResponseHeadOptions,
+    ) session_mod.Error!ResponseWriter {
+        const fields = try buildResponseFields(allocator, options);
+        defer allocator.free(fields);
+        try self.sendHeaders(stream_id, fields);
+        return .{
+            .server = self,
+            .stream_id = stream_id,
+        };
     }
 
     pub fn classify(self: *const Server, event: session_mod.Event) ?RequestEvent {
@@ -293,7 +331,7 @@ pub const RequestTracker = struct {
 
 fn buildResponseFields(
     allocator: std.mem.Allocator,
-    options: ResponseOptions,
+    options: ResponseHeadOptions,
 ) session_mod.Error![]qpack.FieldLine {
     const fields = try allocator.alloc(qpack.FieldLine, 1 + options.headers.len);
     fields[0] = .{ .name = ":status", .value = options.status };
