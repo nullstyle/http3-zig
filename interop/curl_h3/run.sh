@@ -81,6 +81,13 @@ stop_server() {
     fi
 }
 
+show_server_log() {
+    if [[ -n "${SERVER_LOG:-}" && -s "$SERVER_LOG" ]]; then
+        echo "server log:" >&2
+        cat "$SERVER_LOG" >&2 || true
+    fi
+}
+
 curl_common() {
     "$CURL_H3" --http3-only --max-time 10 --silent --show-error \
         --cacert "$CERT" \
@@ -146,6 +153,29 @@ if [[ "$(head -c 16 "$large_out")" != "0123456789abcdef" ]]; then
 fi
 stop_server
 echo "PASS large response"
+
+start_server 1
+reset_body="$WORK_DIR/reset.body"
+reset_err="$WORK_DIR/reset.err"
+set +e
+curl_common --output "$reset_body" "https://localhost:${SERVER_PORT}/reset" 2>"$reset_err"
+reset_status="$?"
+set -e
+if [[ "$reset_status" == "0" ]]; then
+    echo "FAIL response reset: curl unexpectedly succeeded" >&2
+    show_server_log
+    exit 1
+fi
+if ! grep -Eiq 'reset|stream|HTTP/3|QUIC' "$reset_err"; then
+    echo "FAIL response reset: curl failed without an HTTP/3 reset-like diagnostic" >&2
+    printf 'curl stderr:\n%s\n' "$(cat "$reset_err")" >&2
+    show_server_log
+    exit 1
+fi
+stop_server
+echo "PASS response reset"
+
+expect_body "connection close" "closing" "/close"
 
 start_server 1
 goaway_body="$(curl_common "https://localhost:${SERVER_PORT}/goaway")"

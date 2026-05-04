@@ -21,6 +21,7 @@ const App = struct {
     tracker: null3.RequestTracker,
     responded: std.AutoHashMapUnmanaged(u64, void) = .empty,
     responses_sent: u64 = 0,
+    close_after_poll: bool = false,
 
     fn init(allocator: std.mem.Allocator) App {
         return .{
@@ -45,6 +46,12 @@ const App = struct {
         self.responses_sent += 1;
     }
 
+    fn afterPoll(self: *App, session: *null3.Session) void {
+        if (!self.close_after_poll) return;
+        self.close_after_poll = false;
+        session.close(null3.protocol.ErrorCode.no_error, "curl close");
+    }
+
     fn respond(self: *App, server: *null3.Server, request: *const null3.RequestState) !void {
         const path = request.path() orelse "/";
         if (std.mem.startsWith(u8, path, "/hello")) {
@@ -55,6 +62,11 @@ const App = struct {
             try self.respondBytes(server, request.stream_id, "200", request.bodyBytes());
         } else if (std.mem.startsWith(u8, path, "/large")) {
             try self.respondLarge(server, request.stream_id, parseBytesQuery(path) orelse 262_144);
+        } else if (std.mem.startsWith(u8, path, "/reset")) {
+            try server.reset(request.stream_id, null3.protocol.ErrorCode.internal_error);
+        } else if (std.mem.startsWith(u8, path, "/close")) {
+            try self.respondText(server, request.stream_id, "200", "closing\n");
+            self.close_after_poll = true;
         } else if (std.mem.startsWith(u8, path, "/goaway")) {
             try self.respondText(server, request.stream_id, "200", "bye\n");
             try server.goaway(request.stream_id + 4);
@@ -243,6 +255,7 @@ pub fn main(init: std.process.Init) !void {
                 try sock.send(io, &p, tx[0..n]);
             } else break;
         }
+        app.afterPoll(&h3);
         try conn.tick(now_us);
         now_us += 1_000;
 
