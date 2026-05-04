@@ -388,13 +388,22 @@ test "session exchanges HTTP/3 request and response over nullq streams" {
     try server.setPeerDcid(&ClientCid);
     try server.setLocalScid(&ServerCid);
 
+    const h3_settings: null3.Settings = .{
+        .qpack_max_table_capacity = 256,
+        .qpack_blocked_streams = 4,
+        .max_field_section_size = 1 << 20,
+    };
     var client_h3 = null3.Session.init(allocator, .client, &client, .{
-        .settings = .{ .max_field_section_size = 1 << 20 },
+        .settings = h3_settings,
+        .qpack_encoder_table_capacity = 256,
+        .qpack_indexing = null3.QpackIndexingPolicy.aggressive,
         .max_field_section_size = 1 << 20,
     });
     defer client_h3.deinit();
     var server_h3 = null3.Session.init(allocator, .server, &server, .{
-        .settings = .{ .max_field_section_size = 1 << 20 },
+        .settings = h3_settings,
+        .qpack_encoder_table_capacity = 256,
+        .qpack_indexing = null3.QpackIndexingPolicy.aggressive,
         .max_field_section_size = 1 << 20,
     });
     defer server_h3.deinit();
@@ -439,13 +448,16 @@ test "session exchanges HTTP/3 request and response over nullq streams" {
     var server_saw_request_finish = false;
     var response_sent = false;
     var client_saw_response_headers = false;
+    var client_saw_dynamic_response_header = false;
     var client_saw_response_body = false;
     var client_saw_response_finish = false;
     var client_saw_goaway = false;
+    var client_applied_dynamic_qpack = false;
+    var server_saw_qpack_ack = false;
     var now_us: u64 = 1_000_000;
     var iters: u32 = 0;
 
-    while (!client_saw_response_finish or !client_saw_goaway) : (iters += 1) {
+    while (!client_saw_response_finish or !client_saw_goaway or !server_saw_qpack_ack) : (iters += 1) {
         try std.testing.expect(iters < 20_000);
         try pumpH3(
             &client,
@@ -456,6 +468,16 @@ test "session exchanges HTTP/3 request and response over nullq streams" {
             &server_events,
             &now_us,
         );
+
+        if (client_h3.qpack_decoder_table.insert_count > 0) {
+            client_applied_dynamic_qpack = true;
+        }
+        if (server_h3.qpack_encoder_table.insert_count > 0 and
+            server_h3.qpack_encoder_state.referenceCount(0) == 0 and
+            server_h3.qpack_encoder_state.known_received_count > 0)
+        {
+            server_saw_qpack_ack = true;
+        }
 
         for (server_events.items) |event| {
             const request_event = h3_server.classify(event) orelse continue;
@@ -485,9 +507,10 @@ test "session exchanges HTTP/3 request and response over nullq streams" {
         }
         clearSessionEvents(allocator, &server_events);
 
-        if (!response_sent and server_saw_request_headers and server_saw_request_body and server_saw_request_finish) {
+        if (!response_sent and server_saw_settings and server_saw_request_headers and server_saw_request_body and server_saw_request_finish) {
             const response_fields = [_]null3.FieldLine{
                 .{ .name = "content-type", .value = "text/plain" },
+                .{ .name = "x-dyn", .value = "one" },
             };
             var response_writer = try h3_server.startResponse(allocator, request_stream_id, .{
                 .status = "200",
@@ -518,6 +541,13 @@ test "session exchanges HTTP/3 request and response over nullq streams" {
                     if (response_reader.headers().len > 0) {
                         client_saw_response_headers = true;
                         try std.testing.expectEqualStrings("200", response_reader.status().?);
+                        for (response_reader.headers()) |field| {
+                            if (std.mem.eql(u8, field.name, "x-dyn") and
+                                std.mem.eql(u8, field.value, "one"))
+                            {
+                                client_saw_dynamic_response_header = true;
+                            }
+                        }
                     }
                     if (response_reader.body().len > 0) {
                         const body = response_reader.body();
@@ -539,9 +569,12 @@ test "session exchanges HTTP/3 request and response over nullq streams" {
     try std.testing.expect(server_saw_request_finish);
     try std.testing.expect(response_sent);
     try std.testing.expect(client_saw_response_headers);
+    try std.testing.expect(client_saw_dynamic_response_header);
     try std.testing.expect(client_saw_response_body);
     try std.testing.expect(client_saw_response_finish);
     try std.testing.expect(client_saw_goaway);
+    try std.testing.expect(client_applied_dynamic_qpack);
+    try std.testing.expect(server_saw_qpack_ack);
     try std.testing.expectEqual(null3.session.ShutdownState.draining, client_h3.shutdownState());
     try std.testing.expectEqual(null3.session.ShutdownState.draining, server_h3.shutdownState());
 

@@ -101,7 +101,7 @@ pub fn decodeEncoderInstruction(
     allocator: std.mem.Allocator,
     src: []const u8,
 ) Error!DecodedEncoderInstruction {
-    if (src.len == 0) return error.MalformedEncoderInstruction;
+    if (src.len == 0) return error.InsufficientBytes;
 
     var pos: usize = 0;
     const first = src[0];
@@ -209,7 +209,7 @@ pub fn encodeDecoderInstruction(dst: []u8, instruction: DecoderInstruction) Erro
 }
 
 pub fn decodeDecoderInstruction(src: []const u8) Error!DecodedDecoderInstruction {
-    if (src.len == 0) return error.MalformedDecoderInstruction;
+    if (src.len == 0) return error.InsufficientBytes;
 
     const first = src[0];
     if ((first & 0x80) != 0) {
@@ -269,13 +269,13 @@ fn readEncoderStringAlloc(
     pos: *usize,
     prefix_bits: u8,
 ) Error!DecodedString {
-    if (pos.* >= src.len) return error.MalformedEncoderInstruction;
+    if (pos.* >= src.len) return error.InsufficientBytes;
     const huffman_mask: u8 = @as(u8, 1) << @intCast(prefix_bits);
     const huffman_encoded = (src[pos.*] & huffman_mask) != 0;
     const len = try decodeEncoderInteger(src[pos.*..], prefix_bits);
     pos.* += len.bytes_read;
     const len_usize: usize = @intCast(len.value);
-    if (src.len - pos.* < len_usize) return error.MalformedEncoderInstruction;
+    if (src.len - pos.* < len_usize) return error.InsufficientBytes;
     const encoded = src[pos.* .. pos.* + len_usize];
     pos.* += len_usize;
     const value = if (huffman_encoded) try huffman.decode(allocator, encoded) else try allocator.dupe(u8, encoded);
@@ -284,14 +284,16 @@ fn readEncoderStringAlloc(
 
 fn decodeEncoderInteger(src: []const u8, prefix_bits: u8) Error!integer.Decoded {
     return integer.decode(src, prefix_bits) catch |err| switch (err) {
-        error.InsufficientBytes, error.ValueTooLarge, error.InvalidPrefix => error.MalformedEncoderInstruction,
+        error.InsufficientBytes => error.InsufficientBytes,
+        error.ValueTooLarge, error.InvalidPrefix => error.MalformedEncoderInstruction,
         error.BufferTooSmall => unreachable,
     };
 }
 
 fn decodeDecoderInteger(src: []const u8, prefix_bits: u8) Error!integer.Decoded {
     return integer.decode(src, prefix_bits) catch |err| switch (err) {
-        error.InsufficientBytes, error.ValueTooLarge, error.InvalidPrefix => error.MalformedDecoderInstruction,
+        error.InsufficientBytes => error.InsufficientBytes,
+        error.ValueTooLarge, error.InvalidPrefix => error.MalformedDecoderInstruction,
         error.BufferTooSmall => unreachable,
     };
 }
@@ -406,11 +408,8 @@ test "decoder stream instruction codec round-trips all instruction shapes" {
 }
 
 test "instruction decoders report malformed or invalid instructions" {
-    try std.testing.expectError(
-        error.MalformedEncoderInstruction,
-        decodeEncoderInstruction(std.testing.allocator, &.{}),
-    );
-    try std.testing.expectError(error.MalformedDecoderInstruction, decodeDecoderInstruction(&.{}));
+    try std.testing.expectError(error.InsufficientBytes, decodeEncoderInstruction(std.testing.allocator, &.{}));
+    try std.testing.expectError(error.InsufficientBytes, decodeDecoderInstruction(&.{}));
 
     const zero_increment = [_]u8{0};
     try std.testing.expectError(error.InsertCountIncrementZero, decodeDecoderInstruction(&zero_increment));

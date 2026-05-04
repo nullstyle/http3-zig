@@ -73,6 +73,19 @@ pub const Encoder = struct {
         return n;
     }
 
+    pub fn encodeHeadersBlock(
+        self: *Encoder,
+        dst: []u8,
+        fields: []const qpack.FieldLine,
+        field_section: []const u8,
+    ) Error!usize {
+        if (self.sent_headers) return Error.DuplicateHeaders;
+        try validateFields(self.kind, fields);
+        const n = try encodeHeadersFrameFromBlock(dst, field_section, self.options);
+        self.sent_headers = true;
+        return n;
+    }
+
     pub fn encodeData(self: *Encoder, dst: []u8, data: []const u8) Error!usize {
         if (!self.sent_headers) return Error.DataBeforeHeaders;
         if (self.sent_trailers) return Error.DataAfterTrailers;
@@ -84,6 +97,20 @@ pub const Encoder = struct {
         if (self.sent_trailers) return Error.DuplicateHeaders;
         try headers_mod.validateTrailers(fields);
         const n = try encodeHeadersFrame(dst, fields, self.options);
+        self.sent_trailers = true;
+        return n;
+    }
+
+    pub fn encodeTrailersBlock(
+        self: *Encoder,
+        dst: []u8,
+        fields: []const qpack.FieldLine,
+        field_section: []const u8,
+    ) Error!usize {
+        if (!self.sent_headers) return Error.MissingHeaders;
+        if (self.sent_trailers) return Error.DuplicateHeaders;
+        try headers_mod.validateTrailers(fields);
+        const n = try encodeHeadersFrameFromBlock(dst, field_section, self.options);
         self.sent_trailers = true;
         return n;
     }
@@ -105,36 +132,53 @@ pub const Decoder = struct {
     }
 
     pub fn observe(self: *Decoder, allocator: std.mem.Allocator, f: frame_mod.Frame) Error!?Event {
-        try self.validator.observe(frame_mod.frameType(f));
         switch (f) {
             .headers => |block| {
-                if (self.seen_trailers) return Error.DuplicateHeaders;
                 if (self.options.max_field_section_size) |max| {
                     if (block.len > max) return Error.HeaderSectionTooLarge;
                 }
                 const fields = try qpack.decodeFieldSection(allocator, block);
-                errdefer allocator.free(fields);
-                if (!self.seen_headers) {
-                    try validateFields(self.kind, fields);
-                    self.seen_headers = true;
-                    return .{ .headers = fields };
-                }
-                try headers_mod.validateTrailers(fields);
-                self.seen_trailers = true;
-                return .{ .trailers = fields };
+                return try self.observeOwnedFieldLines(allocator, fields);
             },
             .data => |bytes| {
+                try self.validator.observe(frame_mod.frameType(f));
                 if (!self.seen_headers) return Error.DataBeforeHeaders;
                 if (self.seen_trailers) return Error.DataAfterTrailers;
                 return .{ .data = bytes };
             },
             .push_promise => |promise| {
+                try self.validator.observe(frame_mod.frameType(f));
                 if (self.kind != .request) return Error.UnexpectedPushPromise;
                 return .{ .push_promise = promise };
             },
-            .unknown => |u| return .{ .ignored_unknown = u.frame_type },
-            else => return null,
+            .unknown => |u| {
+                try self.validator.observe(frame_mod.frameType(f));
+                return .{ .ignored_unknown = u.frame_type };
+            },
+            else => {
+                try self.validator.observe(frame_mod.frameType(f));
+                return null;
+            },
         }
+    }
+
+    pub fn observeOwnedFieldLines(
+        self: *Decoder,
+        allocator: std.mem.Allocator,
+        fields: []qpack.FieldLine,
+    ) Error!Event {
+        errdefer qpack.freeFieldSection(allocator, fields);
+
+        try self.validator.observe(protocol.FrameType.headers);
+        if (self.seen_trailers) return Error.DuplicateHeaders;
+        if (!self.seen_headers) {
+            try validateFields(self.kind, fields);
+            self.seen_headers = true;
+            return .{ .headers = fields };
+        }
+        try headers_mod.validateTrailers(fields);
+        self.seen_trailers = true;
+        return .{ .trailers = fields };
     }
 
     pub fn observeBytes(
@@ -174,6 +218,23 @@ pub fn encodeHeadersFrame(
     pos += try varint.encode(dst[pos..], field_section_len);
     pos += try qpack.encodeFieldSection(dst[pos..], fields);
     return pos;
+}
+
+pub fn encodeHeadersFrameFromBlock(
+    dst: []u8,
+    field_section: []const u8,
+    options: EncodeOptions,
+) Error!usize {
+    if (options.max_field_section_size) |max| {
+        if (field_section.len > max) return Error.HeaderSectionTooLarge;
+    }
+
+    var pos: usize = 0;
+    pos += try varint.encode(dst[pos..], protocol.FrameType.headers);
+    pos += try varint.encode(dst[pos..], field_section.len);
+    if (dst.len - pos < field_section.len) return Error.BufferTooSmall;
+    @memcpy(dst[pos .. pos + field_section.len], field_section);
+    return pos + field_section.len;
 }
 
 pub fn encodeDataFrame(dst: []u8, data: []const u8) Error!usize {

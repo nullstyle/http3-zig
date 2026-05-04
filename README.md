@@ -12,9 +12,10 @@ support plus dynamic field-section representations, encoder/decoder stream
 instruction codecs, state-sync accounting, and configurable indexing policy,
 header validation, priority parameter parsing, TLS context helpers,
 transport-free message codecs, critical stream setup, SETTINGS exchange,
-GOAWAY handling, graceful-drain state, reset events, structured HTTP/3/QPACK
-error classification, request lifecycle tracking, response lifecycle tracking,
-and lightweight client/server request-response facades.
+opt-in dynamic QPACK stream integration, GOAWAY handling, graceful-drain state,
+reset events, structured HTTP/3/QPACK error classification, request lifecycle
+tracking, response lifecycle tracking, and lightweight client/server
+request-response facades.
 
 ```sh
 mise install
@@ -56,8 +57,8 @@ just test
   encoding/decoding with stream-order validation.
 - `session`: HTTP/3 session state over `nullq.Connection`, including control
   streams, peer SETTINGS, request stream draining, response writes, FIN
-  validation, GOAWAY policy enforcement, reset events, and deep-owned
-  application events.
+  validation, optional dynamic QPACK encoder/decoder stream processing,
+  GOAWAY policy enforcement, reset events, and deep-owned application events.
 - `connection`: `nullq.Connection` adapter for control stream, optional QPACK
   streams, and request/data frame writes.
 - `client` / `server`: BoringSSL TLS context helpers with ALPN set to `h3`,
@@ -77,8 +78,9 @@ just test
   request streams, and the server rejects a deliberately non-compliant request
   stream above its GOAWAY limit. It also covers RFC 9204 Appendix B exact-byte
   QPACK examples for dynamic table insertion, field-section references,
-  acknowledgments, cancellations, and eviction, plus exact-byte quic-go/qpack
-  interop vectors for the shared static/literal/Huffman profile.
+  acknowledgments, cancellations, and eviction, an opt-in dynamic QPACK
+  response header over the in-process `nullq` exchange, plus exact-byte
+  quic-go/qpack interop vectors for the shared static/literal/Huffman profile.
 - `just qpack-interop` runs the optional Go-side fixture harness against
   `github.com/quic-go/qpack`.
 

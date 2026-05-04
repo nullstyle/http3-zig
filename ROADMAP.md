@@ -33,6 +33,9 @@ Datagrams / capsules), and the QUIC RFCs already tracked by `nullq`.
 - Done: graceful-drain state, client-side GOAWAY request blocking, and
   server-side rejection/discard of non-compliant request streams above a local
   GOAWAY limit.
+- Done: opt-in dynamic QPACK encoder/decoder stream processing in
+  `session.Session`, including dynamic response field-section references and
+  decoder feedback over the in-process `nullq` exchange.
 - Next: send-side RESET_STREAM convenience once `nullq` exposes it publicly,
   plus higher-level client/server request APIs over session events.
 
@@ -58,8 +61,8 @@ Datagrams / capsules), and the QUIC RFCs already tracked by `nullq`.
   cancellations, and eviction.
 - Done: quic-go/qpack cross-implementation fixture coverage for the shared
   static/literal/Huffman profile.
-- Cross-implementation dynamic-table QPACK fixture tests with a peer that
-  supports dynamic QPACK.
+- Parked: cross-implementation dynamic-table QPACK fixture tests, pending
+  quic-go/qpack dynamic-table support or an agreed alternate peer.
 
 ## Phase 3: Client and Server APIs
 

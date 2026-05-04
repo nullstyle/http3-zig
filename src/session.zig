@@ -2,10 +2,8 @@
 //!
 //! The session owns HTTP/3 stream classification, control stream
 //! SETTINGS, message framing, and request/response convenience APIs.
-//! It intentionally keeps QPACK in the static/literal profile exposed
-//! by `qpack/root.zig`; dynamic-table encoder/decoder streams can be
-//! opened for protocol completeness, but their instructions are not
-//! interpreted yet.
+//! QPACK defaults to the non-blocking static/literal profile, with opt-in
+//! dynamic table state wired through the HTTP/3 QPACK encoder/decoder streams.
 
 const std = @import("std");
 const nullq = @import("nullq");
@@ -43,10 +41,18 @@ pub const Error = nullq.conn.state.Error ||
 
 pub const Config = struct {
     settings: settings_mod.Settings = .{},
-    /// Literal-only QPACK does not require encoder/decoder streams.
-    /// Turn this on for peers or tests that expect the critical
-    /// QPACK unidirectional streams to exist.
+    /// Literal/static QPACK does not require encoder/decoder streams. Dynamic
+    /// QPACK enables them automatically; this flag keeps the explicit stream
+    /// setup available for peers and tests that expect the streams to exist.
     open_qpack_streams: bool = false,
+    /// Maximum dynamic table capacity this endpoint will use as an encoder.
+    /// The effective capacity is also bounded by the peer's
+    /// SETTINGS_QPACK_MAX_TABLE_CAPACITY.
+    qpack_encoder_table_capacity: usize = 0,
+    /// Static-only by default. Set dynamic insert/reference modes to opt into
+    /// QPACK encoder-stream instructions and dynamic field-section references.
+    qpack_indexing: qpack.IndexingPolicy = qpack.IndexingPolicy.static_only,
+    qpack_huffman: bool = false,
     max_field_section_size: ?usize = null,
     read_chunk_size: usize = 4096,
     max_data_frame_payload: usize = 16 * 1024,
@@ -137,6 +143,7 @@ const StreamState = struct {
     control_validator: ?stream_mod.FrameValidator = null,
     message_decoder: ?message_mod.Decoder = null,
     message_encoder: ?message_mod.Encoder = null,
+    blocked_on_qpack: bool = false,
     recv_finished: bool = false,
     recv_reset_seen: bool = false,
     locally_rejected: bool = false,
@@ -165,6 +172,12 @@ pub const Session = struct {
     shutdown_state: ShutdownState = .active,
     last_close_error: ?errors_mod.ConnectionError = null,
 
+    qpack_encoder_table: qpack.DynamicTable,
+    qpack_decoder_table: qpack.DynamicTable,
+    qpack_encoder_state: qpack.QpackEncoderState,
+    qpack_decoder_state: qpack.QpackDecoderState,
+    qpack_encoder_capacity: usize = 0,
+
     streams: std.AutoHashMapUnmanaged(u64, *StreamState) = .empty,
 
     pub fn init(
@@ -179,6 +192,13 @@ pub const Session = struct {
             .quic = quic,
             .config = config,
             .local_settings = config.settings,
+            .qpack_encoder_table = qpack.DynamicTable.init(allocator, config.qpack_encoder_table_capacity),
+            .qpack_decoder_table = qpack.DynamicTable.init(
+                allocator,
+                @intCast(config.settings.qpack_max_table_capacity),
+            ),
+            .qpack_encoder_state = qpack.QpackEncoderState.init(allocator, 0),
+            .qpack_decoder_state = qpack.QpackDecoderState.init(allocator, config.settings.qpack_blocked_streams),
         };
     }
 
@@ -190,11 +210,15 @@ pub const Session = struct {
             self.allocator.destroy(state);
         }
         self.streams.deinit(self.allocator);
+        self.qpack_encoder_table.deinit();
+        self.qpack_decoder_table.deinit();
+        self.qpack_encoder_state.deinit();
+        self.qpack_decoder_state.deinit();
     }
 
     pub fn start(self: *Session) Error!void {
         if (self.control_stream_id == null) try self.openControlStream();
-        if (self.config.open_qpack_streams and
+        if (self.usesQpackStreams() and
             (self.qpack_encoder_stream_id == null or self.qpack_decoder_stream_id == null))
         {
             try self.openQpackStreams();
@@ -332,6 +356,7 @@ pub const Session = struct {
                 self.closeForError(err);
                 return err;
             };
+            if (state.blocked_on_qpack) continue;
             self.observeFin(state, entry.value_ptr.*.recv.fin_seen, events) catch |err| {
                 self.closeForError(err);
                 return err;
@@ -388,7 +413,9 @@ pub const Session = struct {
 
         switch (state.uni_kind.?) {
             .control => try self.processControlState(state, events),
-            .qpack_encoder, .qpack_decoder, .unknown => state.rx.clearRetainingCapacity(),
+            .qpack_encoder => try self.processQpackEncoderState(state),
+            .qpack_decoder => try self.processQpackDecoderState(state),
+            .unknown => state.rx.clearRetainingCapacity(),
             .push => try self.processPushState(state, events),
         }
     }
@@ -410,6 +437,7 @@ pub const Session = struct {
             switch (decoded.frame) {
                 .settings => |peer| {
                     self.peer_settings = peer;
+                    self.qpack_encoder_state.max_blocked_streams = peer.qpack_blocked_streams;
                     try appendEvent(self.allocator, events, .{ .peer_settings = peer });
                 },
                 .goaway => |id| {
@@ -425,6 +453,49 @@ pub const Session = struct {
                 else => {},
             }
 
+            try compactRx(state, decoded.bytes_read);
+        }
+    }
+
+    fn processQpackEncoderState(self: *Session, state: *StreamState) Error!void {
+        while (state.rx.items.len > 0) {
+            const decoded = qpack.instructions.decodeEncoderInstruction(
+                self.allocator,
+                state.rx.items,
+            ) catch |err| {
+                if (err == error.InsufficientBytes) {
+                    try self.flushQpackInsertCountIncrement();
+                    return;
+                }
+                self.closeForError(err);
+                return err;
+            };
+            defer qpack.instructions.freeDecodedEncoderInstruction(self.allocator, decoded);
+
+            _ = try self.qpack_decoder_state.applyEncoderInstruction(
+                &self.qpack_decoder_table,
+                decoded.instruction,
+            );
+            try compactRx(state, decoded.bytes_read);
+        }
+
+        try self.flushQpackInsertCountIncrement();
+    }
+
+    fn flushQpackInsertCountIncrement(self: *Session) Error!void {
+        if (self.qpack_decoder_state.takeInsertCountIncrement()) |instruction| {
+            try self.writeQpackDecoderInstruction(instruction);
+        }
+    }
+
+    fn processQpackDecoderState(self: *Session, state: *StreamState) Error!void {
+        while (state.rx.items.len > 0) {
+            const decoded = qpack.instructions.decodeDecoderInstruction(state.rx.items) catch |err| {
+                if (err == error.InsufficientBytes) return;
+                self.closeForError(err);
+                return err;
+            };
+            try self.qpack_encoder_state.receiveDecoderInstruction(decoded.instruction);
             try compactRx(state, decoded.bytes_read);
         }
     }
@@ -463,9 +534,32 @@ pub const Session = struct {
                 return err;
             };
 
-            const maybe_event = decoder.observe(self.allocator, decoded.frame) catch |err| {
-                self.closeForError(err);
-                return err;
+            const maybe_event = switch (decoded.frame) {
+                .headers => |block| blk: {
+                    const decoded_fields = self.decodeFieldSectionForStream(state.id, block) catch |err| {
+                        if (err == error.RequiredInsertCountNotReady) {
+                            state.blocked_on_qpack = true;
+                            return;
+                        }
+                        self.closeForError(err);
+                        return err;
+                    };
+                    const message_event = decoder.observeOwnedFieldLines(
+                        self.allocator,
+                        decoded_fields.fields,
+                    ) catch |err| {
+                        self.closeForError(err);
+                        return err;
+                    };
+                    errdefer message_event.deinit(self.allocator);
+                    try self.completeQpackFieldSection(state.id, decoded_fields.required_insert_count);
+                    state.blocked_on_qpack = false;
+                    break :blk message_event;
+                },
+                else => decoder.observe(self.allocator, decoded.frame) catch |err| {
+                    self.closeForError(err);
+                    return err;
+                },
             };
             if (maybe_event) |message_event| {
                 defer message_event.deinit(self.allocator);
@@ -599,6 +693,59 @@ pub const Session = struct {
             } },
         };
         try appendEvent(self.allocator, events, out);
+    }
+
+    const DecodedFieldSection = struct {
+        fields: []qpack.FieldLine,
+        required_insert_count: u64,
+    };
+
+    fn decodeFieldSectionForStream(
+        self: *Session,
+        stream_id: u64,
+        block: []const u8,
+    ) Error!DecodedFieldSection {
+        if (!self.receivesDynamicQpack()) {
+            return .{
+                .fields = try qpack.decodeFieldSection(self.allocator, block),
+                .required_insert_count = 0,
+            };
+        }
+
+        const decoded_prefix = try qpack.state.decodeFieldSectionPrefix(
+            block,
+            self.local_settings.qpack_max_table_capacity,
+            self.qpack_decoder_table.insert_count,
+        );
+        switch (try self.qpack_decoder_state.beginFieldSection(
+            stream_id,
+            decoded_prefix.prefix.required_insert_count,
+        )) {
+            .ready => {},
+            .blocked => return error.RequiredInsertCountNotReady,
+        }
+
+        return .{
+            .fields = try qpack.decodeDynamicFieldSection(
+                self.allocator,
+                &self.qpack_decoder_table,
+                self.local_settings.qpack_max_table_capacity,
+                block,
+            ),
+            .required_insert_count = decoded_prefix.prefix.required_insert_count,
+        };
+    }
+
+    fn completeQpackFieldSection(
+        self: *Session,
+        stream_id: u64,
+        required_insert_count: u64,
+    ) Error!void {
+        const instruction = try self.qpack_decoder_state.completeFieldSection(
+            stream_id,
+            required_insert_count,
+        ) orelse return;
+        try self.writeQpackDecoderInstruction(instruction);
     }
 
     fn ensureIncomingState(self: *Session, stream_id: u64) Error!*StreamState {
@@ -738,12 +885,7 @@ pub const Session = struct {
         encoder: *message_mod.Encoder,
         fields: []const qpack.FieldLine,
     ) Error!void {
-        const payload_len = qpack.fieldSectionEncodedLen(fields);
-        const len = varint.encodedLen(protocol.FrameType.headers) + varint.encodedLen(payload_len) + payload_len;
-        const buf = try self.allocator.alloc(u8, len);
-        defer self.allocator.free(buf);
-        const n = try encoder.encodeHeaders(buf, fields);
-        try self.writeAll(stream_id, buf[0..n]);
+        try self.writeFieldSectionWithEncoder(.headers, stream_id, encoder, fields);
     }
 
     fn writeDataWithEncoder(
@@ -775,11 +917,159 @@ pub const Session = struct {
         encoder: *message_mod.Encoder,
         fields: []const qpack.FieldLine,
     ) Error!void {
+        try self.writeFieldSectionWithEncoder(.trailers, stream_id, encoder, fields);
+    }
+
+    const FieldSectionKind = enum {
+        headers,
+        trailers,
+    };
+
+    fn writeFieldSectionWithEncoder(
+        self: *Session,
+        section_kind: FieldSectionKind,
+        stream_id: u64,
+        encoder: *message_mod.Encoder,
+        fields: []const qpack.FieldLine,
+    ) Error!void {
+        if (try self.writeDynamicFieldSectionWithEncoder(section_kind, stream_id, encoder, fields)) {
+            return;
+        }
+
         const payload_len = qpack.fieldSectionEncodedLen(fields);
         const len = varint.encodedLen(protocol.FrameType.headers) + varint.encodedLen(payload_len) + payload_len;
         const buf = try self.allocator.alloc(u8, len);
         defer self.allocator.free(buf);
-        const n = try encoder.encodeTrailers(buf, fields);
+        const n = switch (section_kind) {
+            .headers => try encoder.encodeHeaders(buf, fields),
+            .trailers => try encoder.encodeTrailers(buf, fields),
+        };
+        try self.writeAll(stream_id, buf[0..n]);
+    }
+
+    fn writeDynamicFieldSectionWithEncoder(
+        self: *Session,
+        section_kind: FieldSectionKind,
+        stream_id: u64,
+        encoder: *message_mod.Encoder,
+        fields: []const qpack.FieldLine,
+    ) Error!bool {
+        if (!(try self.prepareDynamicQpackEncoder(fields))) return false;
+
+        const options = self.dynamicQpackEncodeOptions(stream_id);
+        const field_section_len = try qpack.dynamicFieldSectionEncodedLenWithOptions(
+            &self.qpack_encoder_table,
+            fields,
+            options,
+        );
+        const field_section = try self.allocator.alloc(u8, field_section_len);
+        defer self.allocator.free(field_section);
+        const field_section_n = try qpack.encodeDynamicFieldSectionWithOptions(
+            field_section,
+            &self.qpack_encoder_table,
+            fields,
+            options,
+        );
+
+        const len = varint.encodedLen(protocol.FrameType.headers) +
+            varint.encodedLen(field_section_n) +
+            field_section_n;
+        const buf = try self.allocator.alloc(u8, len);
+        defer self.allocator.free(buf);
+        const n = switch (section_kind) {
+            .headers => try encoder.encodeHeadersBlock(buf, fields, field_section[0..field_section_n]),
+            .trailers => try encoder.encodeTrailersBlock(buf, fields, field_section[0..field_section_n]),
+        };
+        try self.writeAll(stream_id, buf[0..n]);
+        return true;
+    }
+
+    fn prepareDynamicQpackEncoder(self: *Session, fields: []const qpack.FieldLine) Error!bool {
+        if (!self.canUseDynamicQpackEncoder()) return false;
+        if (!(try self.syncQpackEncoderCapacity())) return false;
+
+        const max_instruction_len = qpackEncoderInstructionsMaxLen(fields, self.config.qpack_huffman);
+        if (max_instruction_len == 0) return true;
+
+        const instruction_buf = try self.allocator.alloc(u8, max_instruction_len);
+        defer self.allocator.free(instruction_buf);
+        const n = try qpack.encodeFieldSectionEncoderInstructions(
+            instruction_buf,
+            &self.qpack_encoder_table,
+            fields,
+            self.dynamicQpackEncodeOptions(0),
+        );
+        if (n > 0) try self.writeQpackEncoderBytes(instruction_buf[0..n]);
+        return true;
+    }
+
+    fn syncQpackEncoderCapacity(self: *Session) Error!bool {
+        const peer = self.peer_settings orelse return false;
+        const peer_capacity = std.math.cast(usize, peer.qpack_max_table_capacity) orelse
+            std.math.maxInt(usize);
+        const desired = @min(self.config.qpack_encoder_table_capacity, peer_capacity);
+        if (desired == 0) return false;
+        if (desired == self.qpack_encoder_capacity) return true;
+
+        const instruction: qpack.EncoderInstruction = .{ .set_capacity = desired };
+        var buf: [16]u8 = undefined;
+        const n = try qpack.instructions.encodeEncoderInstruction(&buf, instruction);
+        try self.writeQpackEncoderBytes(buf[0..n]);
+        _ = try qpack.instructions.applyEncoderInstruction(&self.qpack_encoder_table, instruction);
+        self.qpack_encoder_capacity = desired;
+        return true;
+    }
+
+    fn dynamicQpackEncodeOptions(
+        self: *Session,
+        stream_id: u64,
+    ) qpack.DynamicFieldSectionEncodeOptions {
+        return .{
+            .huffman = self.config.qpack_huffman,
+            .tracker = .{
+                .encoder_state = &self.qpack_encoder_state,
+                .stream_id = stream_id,
+            },
+            .indexing = self.config.qpack_indexing,
+        };
+    }
+
+    fn canUseDynamicQpackEncoder(self: *const Session) bool {
+        if (!self.hasDynamicQpackIndexing()) return false;
+        if (self.qpack_encoder_stream_id == null) return false;
+        if (self.config.qpack_encoder_table_capacity == 0) return false;
+        const peer = self.peer_settings orelse return false;
+        return peer.qpack_max_table_capacity > 0;
+    }
+
+    fn hasDynamicQpackIndexing(self: *const Session) bool {
+        return self.config.qpack_indexing.dynamic_references != .none or
+            self.config.qpack_indexing.dynamic_inserts != .never;
+    }
+
+    fn receivesDynamicQpack(self: *const Session) bool {
+        return self.local_settings.qpack_max_table_capacity > 0;
+    }
+
+    fn usesQpackStreams(self: *const Session) bool {
+        return self.config.open_qpack_streams or
+            self.receivesDynamicQpack() or
+            self.config.qpack_encoder_table_capacity > 0 or
+            self.hasDynamicQpackIndexing();
+    }
+
+    fn writeQpackEncoderBytes(self: *Session, bytes: []const u8) Error!void {
+        const stream_id = self.qpack_encoder_stream_id orelse return Error.MissingStream;
+        try self.writeAll(stream_id, bytes);
+    }
+
+    fn writeQpackDecoderInstruction(
+        self: *Session,
+        instruction: qpack.DecoderInstruction,
+    ) Error!void {
+        const stream_id = self.qpack_decoder_stream_id orelse return Error.MissingStream;
+        var buf: [16]u8 = undefined;
+        const n = try qpack.instructions.encodeDecoderInstruction(&buf, instruction);
         try self.writeAll(stream_id, buf[0..n]);
     }
 
@@ -872,6 +1162,16 @@ fn compactRx(state: *StreamState, consumed: usize) Error!void {
     const remaining = state.rx.items.len - consumed;
     std.mem.copyForwards(u8, state.rx.items[0..remaining], state.rx.items[consumed..]);
     state.rx.shrinkRetainingCapacity(remaining);
+}
+
+fn qpackEncoderInstructionsMaxLen(fields: []const qpack.FieldLine, huffman: bool) usize {
+    var n: usize = 0;
+    const string_options: qpack.StringOptions = .{ .huffman = huffman };
+    for (fields) |field| {
+        n += qpack.stringLiteralEncodedLen(5, field.name, string_options);
+        n += qpack.stringLiteralEncodedLen(7, field.value, string_options);
+    }
+    return n;
 }
 
 fn cloneFields(allocator: std.mem.Allocator, fields: []const qpack.FieldLine) Error![]qpack.FieldLine {

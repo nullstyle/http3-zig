@@ -17,7 +17,7 @@ pub const Error = nullq.conn.state.Error || frame_mod.Error || varint.Error || e
 pub const Config = struct {
     settings: settings_mod.Settings = .{},
     /// Literal-only QPACK does not need the encoder/decoder streams.
-    /// Enable this once dynamic-table support is configured.
+    /// Enable this for peers or tests that expect the critical streams.
     open_qpack_streams: bool = false,
 };
 
