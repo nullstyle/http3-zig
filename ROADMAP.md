@@ -44,6 +44,8 @@ Datagrams / capsules), and the QUIC RFCs already tracked by `nullq`.
   error metadata when available.
 - Done: `nullq` flow-control blocked events are surfaced through the typed
   session/client/server event model and runner batch summaries.
+- Done: `nullq` connection-ID replenishment events are surfaced through the
+  typed session/client/server event model and runner batch summaries.
 - Done: higher-level client/server event runners over session events and
   lifecycle trackers.
 - Done: Extended CONNECT foundation with `SETTINGS_ENABLE_CONNECT_PROTOCOL`,
@@ -106,6 +108,8 @@ Datagrams / capsules), and the QUIC RFCs already tracked by `nullq`.
   state.
 - Done: request/response tracker body-budget caps for applications that use the
   owned lifecycle assemblers.
+- Done: session drain event-count and owned-payload budgets, covering transient
+  DATA, DATAGRAM, capsule DATA, push-promise, and close-reason event copies.
 - Next: HTTP/3 interop harnesses against external peers over ordinary
   `nullq.Connection` APIs, plus additional examples layered on the shared
   driver.
@@ -137,8 +141,8 @@ Datagrams / capsules), and the QUIC RFCs already tracked by `nullq`.
   malformed pseudo-headers, truncated capsules, DATA-after-trailers, oversized
   decoded field sections, QPACK decoder feedback errors, and peer QPACK dynamic
   table capacity/entry overflow.
-- Partial: send-side stream buffering and tracker body accumulation now have
-  opt-in caps; broader memory budgets still need coverage across capsules,
-  QPACK, and queued events.
+- Partial: send-side stream buffering, session event queues, and tracker body
+  accumulation now have opt-in caps; broader memory budgets still need coverage
+  across QPACK and extension-specific capsule state.
 - Remaining: broader fuzzing plus sustained memory/flow/resource-pressure cases.
 - Interop matrix across quic-go, ngtcp2, lsquic, aioquic, and Chromium/curl where practical.

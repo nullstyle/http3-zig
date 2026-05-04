@@ -78,6 +78,7 @@ pub const UnknownFrame = session_mod.UnknownFrameEvent;
 pub const ConnectionClosed = session_mod.ConnectionClosedEvent;
 pub const DatagramSend = session_mod.DatagramSendEvent;
 pub const FlowBlocked = session_mod.FlowBlockedEvent;
+pub const ConnectionIdsNeeded = session_mod.ConnectionIdsNeededEvent;
 pub const StreamSendState = session_mod.StreamSendState;
 
 pub const ResponseOptions = struct {
@@ -238,6 +239,7 @@ pub const RequestEvent = union(enum) {
     datagram_acked: DatagramSend,
     datagram_lost: DatagramSend,
     flow_blocked: FlowBlocked,
+    connection_ids_needed: ConnectionIdsNeeded,
     trailers: Headers,
     finished: StreamFinished,
     reset: StreamReset,
@@ -263,6 +265,7 @@ pub const RequestEvent = union(enum) {
             .datagram_acked => |acked| .{ .datagram_acked = acked },
             .datagram_lost => |lost| .{ .datagram_lost = lost },
             .flow_blocked => |blocked| .{ .flow_blocked = blocked },
+            .connection_ids_needed => |needed| .{ .connection_ids_needed = needed },
             .trailers => |trailers| if (trailers.kind == .request) .{
                 .trailers = .{ .stream_id = trailers.stream_id, .fields = trailers.fields },
             } else null,
@@ -597,6 +600,7 @@ pub const RequestTracker = struct {
             .datagram_acked,
             .datagram_lost,
             .flow_blocked,
+            .connection_ids_needed,
             .goaway,
             .connection_closed,
             .ignored_unknown_frame,

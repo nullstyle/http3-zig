@@ -170,6 +170,44 @@ pub const Decoder = struct {
         }
     }
 
+    pub fn validateFrame(self: *const Decoder, f: frame_mod.Frame) Error!void {
+        try stream_mod.validateFrameType(
+            frameContext(self.kind),
+            frame_mod.frameType(f),
+            !self.validator.seen_any,
+            self.validator.settings_seen,
+        );
+
+        switch (f) {
+            .data => {
+                if (!self.seen_headers) return Error.DataBeforeHeaders;
+                if (self.seen_trailers) return Error.DataAfterTrailers;
+            },
+            .push_promise => {
+                if (self.kind != .request) return Error.UnexpectedPushPromise;
+            },
+            else => {},
+        }
+    }
+
+    pub fn validateOwnedFieldLines(
+        self: *const Decoder,
+        fields: []const qpack.FieldLine,
+    ) Error!void {
+        try stream_mod.validateFrameType(
+            frameContext(self.kind),
+            protocol.FrameType.headers,
+            !self.validator.seen_any,
+            self.validator.settings_seen,
+        );
+        if (self.seen_trailers) return Error.DuplicateHeaders;
+        if (!self.seen_headers) {
+            try validateFields(self.kind, fields, self.options);
+        } else {
+            try headers_mod.validateTrailers(fields);
+        }
+    }
+
     pub fn observeOwnedFieldLines(
         self: *Decoder,
         allocator: std.mem.Allocator,

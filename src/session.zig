@@ -45,6 +45,8 @@ pub const Error = nullq.conn.state.Error ||
         DatagramNotEnabled,
         DatagramTooLarge,
         SendBufferFull,
+        EventPayloadTooLarge,
+        EventQueueFull,
     };
 
 pub const Config = struct {
@@ -68,6 +70,15 @@ pub const Config = struct {
     /// Optional cap on per-stream bytes buffered in nullq but not yet
     /// acknowledged. Leave null to preserve unbounded legacy behavior.
     max_stream_send_buffered: ?usize = null,
+    /// Optional cap on owned payload bytes copied for any single emitted event.
+    /// DATA, DATAGRAM, push-promise blocks, close reasons, and cloned field
+    /// lines count toward this limit.
+    max_event_payload_size: ?usize = null,
+    /// Optional cap on aggregate owned event payload bytes emitted by one
+    /// `drain` call.
+    max_event_payload_bytes_per_drain: ?usize = null,
+    /// Optional cap on the number of events emitted by one `drain` call.
+    max_events_per_drain: ?usize = null,
 };
 
 pub const FieldEvent = struct {
@@ -98,6 +109,7 @@ pub const DatagramSendEvent = nullq.conn.DatagramSendEvent;
 pub const FlowBlockedEvent = nullq.conn.FlowBlockedInfo;
 pub const FlowBlockedKind = nullq.conn.FlowBlockedKind;
 pub const FlowBlockedSource = nullq.conn.FlowBlockedSource;
+pub const ConnectionIdsNeededEvent = nullq.conn.state.ConnectionIdReplenishInfo;
 
 pub const StreamSendState = struct {
     stream_id: u64,
@@ -177,6 +189,7 @@ pub const Event = union(enum) {
     datagram_acked: DatagramSendEvent,
     datagram_lost: DatagramSendEvent,
     flow_blocked: FlowBlockedEvent,
+    connection_ids_needed: ConnectionIdsNeededEvent,
     trailers: FieldEvent,
     push_promise: PushPromiseEvent,
     goaway: u64,
@@ -214,6 +227,30 @@ const StreamState = struct {
 
     fn deinit(self: *StreamState, allocator: std.mem.Allocator) void {
         self.rx.deinit(allocator);
+    }
+};
+
+const DrainBudget = struct {
+    max_payload_size: ?usize,
+    max_payload_bytes: ?usize,
+    max_events: ?usize,
+    payload_bytes: usize = 0,
+    events: usize = 0,
+
+    fn reserve(self: *DrainBudget, owned_payload_bytes: usize) Error!void {
+        if (self.max_events) |max| {
+            if (self.events >= max) return Error.EventQueueFull;
+        }
+        if (self.max_payload_size) |max| {
+            if (owned_payload_bytes > max) return Error.EventPayloadTooLarge;
+        }
+        if (self.max_payload_bytes) |max| {
+            if (owned_payload_bytes > max or self.payload_bytes > max - owned_payload_bytes) {
+                return Error.EventQueueFull;
+            }
+        }
+        self.events += 1;
+        self.payload_bytes += owned_payload_bytes;
     }
 };
 
@@ -530,8 +567,9 @@ pub const Session = struct {
     }
 
     pub fn drain(self: *Session, events: *std.ArrayList(Event)) Error!void {
-        try self.drainConnectionEvents(events);
-        try self.drainDatagrams(events);
+        var budget = self.drainBudget();
+        try self.drainConnectionEvents(events, &budget);
+        try self.drainDatagrams(events, &budget);
 
         const read_chunk_size = if (self.config.read_chunk_size == 0) 4096 else self.config.read_chunk_size;
         const tmp = try self.allocator.alloc(u8, read_chunk_size);
@@ -548,12 +586,12 @@ pub const Session = struct {
             };
 
             if (self.shouldRejectIncomingRequest(stream_id)) {
-                try self.rejectIncomingRequest(state, tmp, events);
+                try self.rejectIncomingRequest(state, tmp, events, &budget);
                 continue;
             }
 
             if (entry.value_ptr.*.recv.reset) |reset| {
-                try self.observeReset(state, reset.error_code, reset.final_size, events);
+                try self.observeReset(state, reset.error_code, reset.final_size, events, &budget);
                 entry.value_ptr.*.recv.markRead();
                 continue;
             }
@@ -564,19 +602,31 @@ pub const Session = struct {
                 try state.rx.appendSlice(self.allocator, tmp[0..n]);
             }
 
-            self.processState(state, events) catch |err| {
-                self.closeForError(err);
+            self.processState(state, events, &budget) catch |err| {
+                if (!isLocalDrainBudgetError(err)) self.closeForError(err);
                 return err;
             };
             if (state.blocked_on_qpack) continue;
-            self.observeFin(state, entry.value_ptr.*.recv.fin_seen, events) catch |err| {
-                self.closeForError(err);
+            self.observeFin(state, entry.value_ptr.*.recv.fin_seen, events, &budget) catch |err| {
+                if (!isLocalDrainBudgetError(err)) self.closeForError(err);
                 return err;
             };
         }
     }
 
-    fn drainDatagrams(self: *Session, events: *std.ArrayList(Event)) Error!void {
+    fn drainBudget(self: *const Session) DrainBudget {
+        return .{
+            .max_payload_size = self.config.max_event_payload_size,
+            .max_payload_bytes = self.config.max_event_payload_bytes_per_drain,
+            .max_events = self.config.max_events_per_drain,
+        };
+    }
+
+    fn drainDatagrams(
+        self: *Session,
+        events: *std.ArrayList(Event),
+        budget: *DrainBudget,
+    ) Error!void {
         const max_payload = if (self.config.max_datagram_payload_size == 0)
             64 * 1024
         else
@@ -593,9 +643,10 @@ pub const Session = struct {
                 self.closeForError(err);
                 return err;
             };
+            try budget.reserve(decoded.payload.len);
             const payload = try self.allocator.dupe(u8, decoded.payload);
             errdefer self.allocator.free(payload);
-            try appendEvent(self.allocator, events, .{
+            try self.appendReservedEvent(events, .{
                 .datagram = .{
                     .stream_id = decoded.stream_id,
                     .payload = payload,
@@ -605,13 +656,18 @@ pub const Session = struct {
         }
     }
 
-    fn drainConnectionEvents(self: *Session, events: *std.ArrayList(Event)) Error!void {
+    fn drainConnectionEvents(
+        self: *Session,
+        events: *std.ArrayList(Event),
+        budget: *DrainBudget,
+    ) Error!void {
         while (self.quic.pollEvent()) |event| {
             switch (event) {
-                .close => |close_event| try self.observeConnectionClose(close_event, events),
-                .datagram_acked => |acked| try appendEvent(self.allocator, events, .{ .datagram_acked = acked }),
-                .datagram_lost => |lost| try appendEvent(self.allocator, events, .{ .datagram_lost = lost }),
-                .flow_blocked => |blocked| try appendEvent(self.allocator, events, .{ .flow_blocked = blocked }),
+                .close => |close_event| try self.observeConnectionClose(close_event, events, budget),
+                .datagram_acked => |acked| try self.appendEvent(events, budget, .{ .datagram_acked = acked }),
+                .datagram_lost => |lost| try self.appendEvent(events, budget, .{ .datagram_lost = lost }),
+                .flow_blocked => |blocked| try self.appendEvent(events, budget, .{ .flow_blocked = blocked }),
+                .connection_ids_needed => |needed| try self.appendEvent(events, budget, .{ .connection_ids_needed = needed }),
             }
         }
         self.syncShutdownState();
@@ -621,12 +677,15 @@ pub const Session = struct {
         self: *Session,
         close_event: nullq.CloseEvent,
         events: *std.ArrayList(Event),
+        budget: *DrainBudget,
     ) Error!void {
         const application = if (close_event.error_space == .application)
             errors_mod.applicationError(close_event.error_code)
         else
             null;
+        try budget.reserve(close_event.reason.len);
         const reason = try self.allocator.dupe(u8, close_event.reason);
+        errdefer self.allocator.free(reason);
 
         if (application) |app| {
             if (errorSourceFromCloseSource(close_event.source)) |source| {
@@ -638,7 +697,7 @@ pub const Session = struct {
         }
 
         self.syncShutdownState();
-        try appendEvent(self.allocator, events, .{
+        try self.appendReservedEvent(events, .{
             .connection_closed = .{
                 .source = close_event.source,
                 .error_space = close_event.error_space,
@@ -690,15 +749,25 @@ pub const Session = struct {
         self.qpack_decoder_stream_id = dec_id;
     }
 
-    fn processState(self: *Session, state: *StreamState, events: *std.ArrayList(Event)) Error!void {
+    fn processState(
+        self: *Session,
+        state: *StreamState,
+        events: *std.ArrayList(Event),
+        budget: *DrainBudget,
+    ) Error!void {
         if (stream_mod.isUnidirectional(state.id)) {
-            try self.processUniState(state, events);
+            try self.processUniState(state, events, budget);
         } else {
-            try self.processMessageState(state, events);
+            try self.processMessageState(state, events, budget);
         }
     }
 
-    fn processUniState(self: *Session, state: *StreamState, events: *std.ArrayList(Event)) Error!void {
+    fn processUniState(
+        self: *Session,
+        state: *StreamState,
+        events: *std.ArrayList(Event),
+        budget: *DrainBudget,
+    ) Error!void {
         if (state.uni_kind == null) {
             const decoded = stream_mod.decodeType(state.rx.items) catch |err| {
                 if (err == error.InsufficientBytes) return;
@@ -711,15 +780,20 @@ pub const Session = struct {
         }
 
         switch (state.uni_kind.?) {
-            .control => try self.processControlState(state, events),
+            .control => try self.processControlState(state, events, budget),
             .qpack_encoder => try self.processQpackEncoderState(state),
             .qpack_decoder => try self.processQpackDecoderState(state),
             .unknown => state.rx.clearRetainingCapacity(),
-            .push => try self.processPushState(state, events),
+            .push => try self.processPushState(state, events, budget),
         }
     }
 
-    fn processControlState(self: *Session, state: *StreamState, events: *std.ArrayList(Event)) Error!void {
+    fn processControlState(
+        self: *Session,
+        state: *StreamState,
+        events: *std.ArrayList(Event),
+        budget: *DrainBudget,
+    ) Error!void {
         while (state.rx.items.len > 0) {
             const decoded = frame_mod.decode(state.rx.items) catch |err| {
                 if (err == error.InsufficientBytes) return;
@@ -728,28 +802,49 @@ pub const Session = struct {
             };
 
             const frame_type = frame_mod.frameType(decoded.frame);
-            state.control_validator.?.observe(frame_type) catch |err| {
+            const validator = state.control_validator.?;
+            stream_mod.validateFrameType(.control, frame_type, !validator.seen_any, validator.settings_seen) catch |err| {
                 self.closeForError(err);
                 return err;
             };
 
             switch (decoded.frame) {
                 .settings => |peer| {
+                    try budget.reserve(0);
+                    state.control_validator.?.observe(frame_type) catch |err| {
+                        self.closeForError(err);
+                        return err;
+                    };
                     self.peer_settings = peer;
                     self.qpack_encoder_state.max_blocked_streams = peer.qpack_blocked_streams;
-                    try appendEvent(self.allocator, events, .{ .peer_settings = peer });
+                    try self.appendReservedEvent(events, .{ .peer_settings = peer });
                 },
                 .goaway => |id| {
+                    try budget.reserve(0);
+                    state.control_validator.?.observe(frame_type) catch |err| {
+                        self.closeForError(err);
+                        return err;
+                    };
                     try self.observeGoaway(id);
-                    try appendEvent(self.allocator, events, .{ .goaway = id });
+                    try self.appendReservedEvent(events, .{ .goaway = id });
                 },
-                .unknown => |unknown| try appendEvent(self.allocator, events, .{
-                    .ignored_unknown_frame = .{
-                        .stream_id = state.id,
-                        .frame_type = unknown.frame_type,
-                    },
-                }),
-                else => {},
+                .unknown => |unknown| {
+                    try budget.reserve(0);
+                    state.control_validator.?.observe(frame_type) catch |err| {
+                        self.closeForError(err);
+                        return err;
+                    };
+                    try self.appendReservedEvent(events, .{
+                        .ignored_unknown_frame = .{
+                            .stream_id = state.id,
+                            .frame_type = unknown.frame_type,
+                        },
+                    });
+                },
+                else => state.control_validator.?.observe(frame_type) catch |err| {
+                    self.closeForError(err);
+                    return err;
+                },
             }
 
             try compactRx(state, decoded.bytes_read);
@@ -799,7 +894,12 @@ pub const Session = struct {
         }
     }
 
-    fn processPushState(self: *Session, state: *StreamState, events: *std.ArrayList(Event)) Error!void {
+    fn processPushState(
+        self: *Session,
+        state: *StreamState,
+        events: *std.ArrayList(Event),
+        budget: *DrainBudget,
+    ) Error!void {
         if (self.role != .client) {
             self.closeForError(Error.UnexpectedStream);
             return Error.UnexpectedStream;
@@ -821,10 +921,15 @@ pub const Session = struct {
             }
         }
 
-        try self.processMessageState(state, events);
+        try self.processMessageState(state, events, budget);
     }
 
-    fn processMessageState(self: *Session, state: *StreamState, events: *std.ArrayList(Event)) Error!void {
+    fn processMessageState(
+        self: *Session,
+        state: *StreamState,
+        events: *std.ArrayList(Event),
+        budget: *DrainBudget,
+    ) Error!void {
         const decoder = if (state.message_decoder) |*decoder| decoder else return Error.MissingStream;
 
         while (state.rx.items.len > 0) {
@@ -850,6 +955,13 @@ pub const Session = struct {
                         self.closeForError(err);
                         return err;
                     };
+                    var fields_to_free: ?[]qpack.FieldLine = decoded_fields.fields;
+                    errdefer if (fields_to_free) |fields| qpack.freeFieldSection(self.allocator, fields);
+                    decoder.validateOwnedFieldLines(decoded_fields.fields) catch |err| {
+                        self.closeForError(err);
+                        return err;
+                    };
+                    try budget.reserve(fieldsOwnedBytes(decoded_fields.fields));
                     const message_event = decoder.observeOwnedFieldLines(
                         self.allocator,
                         decoded_fields.fields,
@@ -857,19 +969,29 @@ pub const Session = struct {
                         self.closeForError(err);
                         return err;
                     };
+                    fields_to_free = null;
                     errdefer message_event.deinit(self.allocator);
                     try self.completeQpackFieldSection(state.id, decoded_fields.required_insert_count);
                     state.blocked_on_qpack = false;
                     break :blk message_event;
                 },
-                else => decoder.observe(self.allocator, decoded.frame) catch |err| {
-                    self.closeForError(err);
-                    return err;
+                else => blk: {
+                    decoder.validateFrame(decoded.frame) catch |err| {
+                        self.closeForError(err);
+                        return err;
+                    };
+                    if (messageFrameEventOwnedPayloadBytes(decoded.frame)) |owned_payload_bytes| {
+                        try budget.reserve(owned_payload_bytes);
+                    }
+                    break :blk decoder.observe(self.allocator, decoded.frame) catch |err| {
+                        self.closeForError(err);
+                        return err;
+                    };
                 },
             };
             if (maybe_event) |message_event| {
                 defer message_event.deinit(self.allocator);
-                try self.appendMessageEvent(events, state.id, decoder.kind, message_event);
+                try self.appendReservedMessageEvent(events, state.id, decoder.kind, message_event);
             }
 
             try compactRx(state, decoded.bytes_read);
@@ -881,7 +1003,10 @@ pub const Session = struct {
         state: *StreamState,
         scratch: []u8,
         events: *std.ArrayList(Event),
+        budget: *DrainBudget,
     ) Error!void {
+        if (!state.locally_rejected) try budget.reserve(0);
+
         while (true) {
             const n = try self.quic.streamRead(state.id, scratch);
             if (n == 0) break;
@@ -893,7 +1018,7 @@ pub const Session = struct {
         try self.rejectRequest(state.id);
         state.locally_rejected = true;
         state.recv_finished = true;
-        try appendEvent(self.allocator, events, .{
+        try self.appendReservedEvent(events, .{
             .request_rejected = .{
                 .stream_id = state.id,
                 .error_code = protocol.ErrorCode.request_rejected,
@@ -906,6 +1031,7 @@ pub const Session = struct {
         state: *StreamState,
         fin_seen: bool,
         events: *std.ArrayList(Event),
+        budget: *DrainBudget,
     ) Error!void {
         if (!fin_seen or state.recv_finished) return;
 
@@ -927,8 +1053,9 @@ pub const Session = struct {
             break :blk decoder.kind;
         } else null;
 
+        try budget.reserve(0);
         state.recv_finished = true;
-        try appendEvent(self.allocator, events, .{
+        try self.appendReservedEvent(events, .{
             .stream_finished = .{
                 .stream_id = state.id,
                 .kind = message_kind,
@@ -942,8 +1069,10 @@ pub const Session = struct {
         error_code: u64,
         final_size: u64,
         events: *std.ArrayList(Event),
+        budget: *DrainBudget,
     ) Error!void {
         if (state.recv_reset_seen) return;
+        try budget.reserve(0);
         try self.cancelQpackDecodeForStream(state.id);
         state.rx.clearRetainingCapacity();
         state.recv_reset_seen = true;
@@ -956,7 +1085,7 @@ pub const Session = struct {
         else
             null;
 
-        try appendEvent(self.allocator, events, .{
+        try self.appendReservedEvent(events, .{
             .stream_reset = .{
                 .stream_id = state.id,
                 .kind = kind,
@@ -988,7 +1117,7 @@ pub const Session = struct {
         }
     }
 
-    fn appendMessageEvent(
+    fn appendReservedMessageEvent(
         self: *Session,
         events: *std.ArrayList(Event),
         stream_id: u64,
@@ -1021,7 +1150,25 @@ pub const Session = struct {
                 .frame_type = frame_type,
             } },
         };
-        try appendEvent(self.allocator, events, out);
+        try self.appendReservedEvent(events, out);
+    }
+
+    fn appendEvent(
+        self: *Session,
+        events: *std.ArrayList(Event),
+        budget: *DrainBudget,
+        event: Event,
+    ) Error!void {
+        try budget.reserve(eventOwnedPayloadBytes(event));
+        try self.appendReservedEvent(events, event);
+    }
+
+    fn appendReservedEvent(
+        self: *Session,
+        events: *std.ArrayList(Event),
+        event: Event,
+    ) Error!void {
+        try appendRawEvent(self.allocator, events, event);
     }
 
     const DecodedFieldSection = struct {
@@ -1546,11 +1693,47 @@ fn errorSourceFromCloseSource(source: nullq.CloseSource) ?errors_mod.Source {
     };
 }
 
-fn appendEvent(allocator: std.mem.Allocator, events: *std.ArrayList(Event), event: Event) Error!void {
+fn appendRawEvent(allocator: std.mem.Allocator, events: *std.ArrayList(Event), event: Event) Error!void {
     events.append(allocator, event) catch |err| {
         event.deinit(allocator);
         return err;
     };
+}
+
+fn isLocalDrainBudgetError(err: anyerror) bool {
+    return switch (err) {
+        error.EventPayloadTooLarge,
+        error.EventQueueFull,
+        => true,
+        else => false,
+    };
+}
+
+fn eventOwnedPayloadBytes(event: Event) usize {
+    return switch (event) {
+        .headers => |field_event| fieldsOwnedBytes(field_event.fields),
+        .trailers => |field_event| fieldsOwnedBytes(field_event.fields),
+        .data => |data| data.data.len,
+        .datagram => |datagram| datagram.payload.len,
+        .push_promise => |promise| promise.field_section.len,
+        .connection_closed => |closed| closed.reason.len,
+        else => 0,
+    };
+}
+
+fn messageFrameEventOwnedPayloadBytes(frame: frame_mod.Frame) ?usize {
+    return switch (frame) {
+        .data => |bytes| bytes.len,
+        .push_promise => |promise| promise.field_section.len,
+        .unknown => 0,
+        else => null,
+    };
+}
+
+fn fieldsOwnedBytes(fields: []const qpack.FieldLine) usize {
+    var total = @sizeOf(qpack.FieldLine) * fields.len;
+    for (fields) |field| total += field.name.len + field.value.len;
+    return total;
 }
 
 fn validateClientBidiStreamId(id: u64) Error!void {
@@ -1634,13 +1817,69 @@ test "session emits deep-owned message events" {
         events.deinit(allocator);
     }
 
-    try session.processMessageState(state, &events);
+    var budget = session.drainBudget();
+    try session.processMessageState(state, &events, &budget);
     try std.testing.expectEqual(@as(usize, 1), events.items.len);
     switch (events.items[0]) {
         .headers => |event| {
             try std.testing.expectEqual(message_mod.Kind.response, event.kind);
             try std.testing.expectEqualStrings("200", event.fields[0].value);
         },
+        else => return error.TestExpectedEqual,
+    }
+    try std.testing.expectEqual(@as(usize, 0), state.rx.items.len);
+}
+
+test "session event budget resumes pending trailers" {
+    const allocator = std.testing.allocator;
+    var client_quic: nullq.Connection = undefined;
+
+    var session = Session.init(allocator, .client, &client_quic, .{
+        .max_events_per_drain = 1,
+    });
+    defer session.deinit();
+
+    const fields = [_]qpack.FieldLine{
+        .{ .name = ":status", .value = "200" },
+    };
+    const trailers = [_]qpack.FieldLine{
+        .{ .name = "x-checksum", .value = "ok" },
+    };
+
+    const state = try session.ensureMessageState(0, .response, .request);
+    var enc = message_mod.Encoder.init(.response, .{});
+    var buf: [256]u8 = undefined;
+    var pos: usize = 0;
+    pos += try enc.encodeHeaders(buf[pos..], &fields);
+    pos += try enc.encodeTrailers(buf[pos..], &trailers);
+    try state.rx.appendSlice(allocator, buf[0..pos]);
+
+    var events: std.ArrayList(Event) = .empty;
+    defer {
+        for (events.items) |event| event.deinit(allocator);
+        events.deinit(allocator);
+    }
+
+    var first_budget = session.drainBudget();
+    try std.testing.expectError(
+        Error.EventQueueFull,
+        session.processMessageState(state, &events, &first_budget),
+    );
+    try std.testing.expectEqual(@as(usize, 1), events.items.len);
+    switch (events.items[0]) {
+        .headers => |event| try std.testing.expectEqualStrings("200", event.fields[0].value),
+        else => return error.TestExpectedEqual,
+    }
+    try std.testing.expect(state.rx.items.len > 0);
+
+    for (events.items) |event| event.deinit(allocator);
+    events.clearRetainingCapacity();
+
+    var second_budget = session.drainBudget();
+    try session.processMessageState(state, &events, &second_budget);
+    try std.testing.expectEqual(@as(usize, 1), events.items.len);
+    switch (events.items[0]) {
+        .trailers => |event| try std.testing.expectEqualStrings("ok", event.fields[0].value),
         else => return error.TestExpectedEqual,
     }
     try std.testing.expectEqual(@as(usize, 0), state.rx.items.len);
@@ -1682,8 +1921,9 @@ test "session emits stream reset once" {
         events.deinit(allocator);
     }
 
-    try session.observeReset(state, protocol.ErrorCode.request_cancelled, 42, &events);
-    try session.observeReset(state, protocol.ErrorCode.request_cancelled, 42, &events);
+    var budget = session.drainBudget();
+    try session.observeReset(state, protocol.ErrorCode.request_cancelled, 42, &events, &budget);
+    try session.observeReset(state, protocol.ErrorCode.request_cancelled, 42, &events, &budget);
 
     try std.testing.expectEqual(@as(usize, 1), events.items.len);
     switch (events.items[0]) {
@@ -1727,7 +1967,8 @@ test "session clears blocked QPACK state when a stream resets" {
         events.deinit(allocator);
     }
 
-    try session.observeReset(state, protocol.ErrorCode.request_cancelled, 0, &events);
+    var budget = session.drainBudget();
+    try session.observeReset(state, protocol.ErrorCode.request_cancelled, 0, &events, &budget);
 
     try std.testing.expect(!session.qpack_decoder_state.isStreamBlocked(0));
     try std.testing.expectEqual(@as(usize, 1), events.items.len);

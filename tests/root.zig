@@ -652,6 +652,29 @@ test "client and server facades classify session events" {
         },
         else => return error.TestExpectedEqual,
     }
+
+    const connection_ids_needed: null3.session.Event = .{ .connection_ids_needed = .{
+        .path_id = 0,
+        .reason = .retired,
+        .active_count = 1,
+        .active_limit = 2,
+        .issue_budget = 1,
+        .next_sequence_number = 3,
+    } };
+    switch (null3.client.ResponseEvent.from(connection_ids_needed).?) {
+        .connection_ids_needed => |event| {
+            try std.testing.expectEqual(@as(u32, 0), event.path_id);
+            try std.testing.expectEqual(@as(usize, 1), event.issue_budget);
+        },
+        else => return error.TestExpectedEqual,
+    }
+    switch (null3.server.RequestEvent.from(connection_ids_needed).?) {
+        .connection_ids_needed => |event| {
+            try std.testing.expectEqual(@as(usize, 2), event.active_limit);
+            try std.testing.expectEqual(@as(u64, 3), event.next_sequence_number);
+        },
+        else => return error.TestExpectedEqual,
+    }
 }
 
 test "request tracker owns server request lifecycle" {
@@ -1341,6 +1364,94 @@ test "session exposes send buffer state and enforces configured cap" {
     const after = try writer.sendState();
     try std.testing.expectEqual(before.written_bytes, after.written_bytes);
     try std.testing.expectEqual(before.buffered_bytes, after.buffered_bytes);
+}
+
+test "session enforces drain event count budget" {
+    const allocator = std.testing.allocator;
+
+    var pair: H3Pair = undefined;
+    try pair.initStarted(
+        allocator,
+        .{ .max_events_per_drain = 0 },
+        .{},
+    );
+    defer pair.deinit();
+
+    var client_events: std.ArrayList(null3.session.Event) = .empty;
+    defer {
+        clearSessionEvents(allocator, &client_events);
+        client_events.deinit(allocator);
+    }
+    var server_events: std.ArrayList(null3.session.Event) = .empty;
+    defer {
+        clearSessionEvents(allocator, &server_events);
+        server_events.deinit(allocator);
+    }
+
+    var now_us: u64 = 1_000_000;
+    try std.testing.expectError(
+        error.EventQueueFull,
+        pumpH3(
+            &pair.client,
+            &pair.server,
+            &pair.client_h3,
+            &pair.server_h3,
+            &client_events,
+            &server_events,
+            &now_us,
+        ),
+    );
+    try std.testing.expect(pair.client_h3.shutdownState() != .closed);
+}
+
+test "session enforces drain event payload budget" {
+    const allocator = std.testing.allocator;
+
+    var pair: H3Pair = undefined;
+    try pair.initStarted(
+        allocator,
+        .{},
+        .{
+            .settings = .{ .h3_datagram = true },
+            .max_event_payload_size = 1,
+        },
+    );
+    defer pair.deinit();
+
+    try sendRawH3Datagram(&pair.client, 0, "xx");
+
+    var client_events: std.ArrayList(null3.session.Event) = .empty;
+    defer {
+        clearSessionEvents(allocator, &client_events);
+        client_events.deinit(allocator);
+    }
+    var server_events: std.ArrayList(null3.session.Event) = .empty;
+    defer {
+        clearSessionEvents(allocator, &server_events);
+        server_events.deinit(allocator);
+    }
+
+    var saw_budget_error = false;
+    var now_us: u64 = 1_000_000;
+    var iters: u32 = 0;
+    while (!saw_budget_error) : (iters += 1) {
+        try std.testing.expect(iters < 20_000);
+        pumpH3(
+            &pair.client,
+            &pair.server,
+            &pair.client_h3,
+            &pair.server_h3,
+            &client_events,
+            &server_events,
+            &now_us,
+        ) catch |err| {
+            try std.testing.expectEqual(error.EventPayloadTooLarge, err);
+            saw_budget_error = true;
+        };
+        clearSessionEvents(allocator, &client_events);
+        clearSessionEvents(allocator, &server_events);
+    }
+    try std.testing.expect(pair.server_h3.shutdownState() != .closed);
 }
 
 test "session rejects disabled DATAGRAM sends after SETTINGS" {

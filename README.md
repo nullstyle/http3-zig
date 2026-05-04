@@ -19,7 +19,8 @@ send/receive groundwork, reusable transport driver helpers, request lifecycle
 tracking, response lifecycle tracking, client/server event runners, Extended
 CONNECT negotiation and request metadata, Capsule Protocol codecs,
 context-aware DATAGRAM helpers, opt-in send-buffer backpressure limits, and
-lightweight request-response facades with configurable tracker body budgets.
+lightweight request-response facades with configurable tracker body and session
+event-queue budgets.
 
 ```sh
 mise install
@@ -79,7 +80,9 @@ just test
   nullq flow-control blocked events, reset/close events, and deep-owned
   application events. `Session.Config.max_stream_send_buffered` can cap
   per-stream bytes accepted by nullq but not yet acknowledged, and
-  `StreamSendState` exposes written/acked/buffered byte counters.
+  `StreamSendState` exposes written/acked/buffered byte counters. Session
+  drain can also cap emitted event count and owned event payload bytes before
+  DATA, DATAGRAM, capsule, push, or close-reason payloads are copied.
 - `connection`: `nullq.Connection` adapter for control stream, optional QPACK
   streams, and request/data frame writes.
 - `client` / `server`: BoringSSL TLS context helpers with ALPN set to `h3`,
@@ -108,8 +111,9 @@ just test
   and flow-control blocked events surface through the typed
   session/client/server APIs. It also covers negotiated HTTP/3 DATAGRAM exchange
   in both directions over `nullq` DATAGRAM frames, including tracked send IDs
-  and DATAGRAM ACK propagation, send-buffer cap enforcement, tracker body-budget
-  enforcement, RFC 9204 Appendix B exact-byte
+  and DATAGRAM ACK propagation, nullq connection-ID replenishment events,
+  send-buffer cap enforcement, tracker body-budget enforcement, session
+  event-budget enforcement, RFC 9204 Appendix B exact-byte
   QPACK examples for dynamic table insertion, field-section references,
   acknowledgments, cancellations, and eviction, an opt-in dynamic QPACK
   response header over the in-process `nullq` exchange, plus exact-byte

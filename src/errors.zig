@@ -203,6 +203,8 @@ pub fn codeForError(err: anyerror) u64 {
         error.WriteStalled,
         error.SendBufferFull,
         error.BodyTooLarge,
+        error.EventPayloadTooLarge,
+        error.EventQueueFull,
         error.DatagramTooLarge,
         error.InsertCountOverflow,
         error.ReferenceCountOverflow,
@@ -270,13 +272,16 @@ fn scopeForError(err: anyerror, app: ApplicationError) Scope {
 
 fn categoryForError(err: anyerror, app: ApplicationError) Category {
     return switch (err) {
-        error.OutOfMemory => .resource,
+        error.OutOfMemory,
+        error.SendBufferFull,
+        error.BodyTooLarge,
+        error.EventPayloadTooLarge,
+        error.EventQueueFull,
+        => .resource,
         error.HandshakeFailed,
         error.PeerAlerted,
         error.UnsupportedCipherSuite,
         error.InboxOverflow,
-        error.SendBufferFull,
-        error.BodyTooLarge,
         error.PeerDcidNotSet,
         error.PathLimitExceeded,
         => .transport,
@@ -313,4 +318,8 @@ test "local causes map to close codes and cause categories" {
     const oom = classify(error.OutOfMemory);
     try std.testing.expectEqual(protocol.ErrorCode.internal_error, oom.application.code);
     try std.testing.expectEqual(Category.resource, oom.category);
+
+    const event_queue = classify(error.EventQueueFull);
+    try std.testing.expectEqual(protocol.ErrorCode.internal_error, event_queue.application.code);
+    try std.testing.expectEqual(Category.resource, event_queue.category);
 }
