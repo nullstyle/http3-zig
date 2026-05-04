@@ -42,7 +42,8 @@ Datagrams / capsules), and the QUIC RFCs already tracked by `nullq`.
 - Done: dynamic table core with capacity, insertion/eviction, duplication,
   absolute indexing, encoder-stream relative indexing, and field-section
   relative/post-base lookup helpers.
-- Encoder/decoder stream instruction codecs.
+- Done: encoder/decoder stream instruction codecs, including dynamic-table
+  application of encoder stream instructions.
 - Blocked stream accounting, acknowledgments, cancellations, and capacity changes.
 - Configurable indexing policy with safe defaults for sensitive fields.
 - RFC 9204 examples and cross-implementation fixture tests.
