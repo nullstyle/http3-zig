@@ -14,8 +14,9 @@ header validation, priority parameter parsing, TLS context helpers,
 transport-free message codecs, critical stream setup, SETTINGS exchange,
 opt-in dynamic QPACK stream integration, GOAWAY handling, graceful-drain state,
 reset events, transport close events, structured HTTP/3/QPACK error
-classification, request lifecycle tracking, response lifecycle tracking, and
-lightweight client/server request-response facades.
+classification, HTTP/3 DATAGRAM send/receive groundwork, request lifecycle
+tracking, response lifecycle tracking, and lightweight client/server
+request-response facades.
 
 ```sh
 mise install
@@ -55,11 +56,12 @@ just test
 - `stream`: stream type helpers plus frame-context validation.
 - `message`: transport-free request/response HEADERS, DATA, and trailer
   encoding/decoding with stream-order validation.
+- `datagram`: RFC 9297 HTTP/3 DATAGRAM quarter-stream-id payload codec.
 - `session`: HTTP/3 session state over `nullq.Connection`, including control
   streams, peer SETTINGS, request stream draining, response writes, FIN
   validation, optional dynamic QPACK encoder/decoder stream processing,
-  GOAWAY policy enforcement, reset/close events, and deep-owned application
-  events.
+  GOAWAY policy enforcement, HTTP/3 DATAGRAM events over QUIC DATAGRAM frames,
+  reset/close events, and deep-owned application events.
 - `connection`: `nullq.Connection` adapter for control stream, optional QPACK
   streams, and request/data frame writes.
 - `client` / `server`: BoringSSL TLS context helpers with ALPN set to `h3`,
@@ -79,7 +81,8 @@ just test
   request streams, the server rejects a deliberately non-compliant request
   stream above its GOAWAY limit, and send-side RESET_STREAM plus CONNECTION_CLOSE
   events surface through the typed session/client/server APIs. It also covers
-  RFC 9204 Appendix B exact-byte
+  negotiated HTTP/3 DATAGRAM exchange in both directions over `nullq` DATAGRAM
+  frames, RFC 9204 Appendix B exact-byte
   QPACK examples for dynamic table insertion, field-section references,
   acknowledgments, cancellations, and eviction, an opt-in dynamic QPACK
   response header over the in-process `nullq` exchange, plus exact-byte

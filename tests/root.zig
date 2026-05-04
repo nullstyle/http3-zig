@@ -679,6 +679,167 @@ test "session exchanges HTTP/3 request and response over nullq streams" {
     }
 }
 
+test "session exchanges HTTP/3 datagrams over nullq datagram frames" {
+    const allocator = std.testing.allocator;
+
+    var server_tls = try null3.server.initTlsContext(.{}, test_cert_pem, test_key_pem);
+    defer server_tls.deinit();
+    var client_tls = try null3.client.initTlsContext(.{ .verify = .none });
+    defer client_tls.deinit();
+
+    var client: nullq.Connection = undefined;
+    var server: nullq.Connection = undefined;
+    try initConnectedQuic(allocator, client_tls, server_tls, &client, &server);
+    defer client.deinit();
+    defer server.deinit();
+
+    const h3_settings: null3.Settings = .{ .h3_datagram = true };
+    var client_h3 = null3.Session.init(allocator, .client, &client, .{
+        .settings = h3_settings,
+    });
+    defer client_h3.deinit();
+    var server_h3 = null3.Session.init(allocator, .server, &server, .{
+        .settings = h3_settings,
+    });
+    defer server_h3.deinit();
+
+    try client_h3.start();
+    try server_h3.start();
+    var h3_client = null3.Client.init(&client_h3);
+    var h3_server = null3.Server.init(&server_h3);
+
+    try std.testing.expectError(
+        null3.session.Error.MissingSettings,
+        h3_client.sendDatagram(0, "too-soon"),
+    );
+
+    var client_events: std.ArrayList(null3.session.Event) = .empty;
+    defer {
+        clearSessionEvents(allocator, &client_events);
+        client_events.deinit(allocator);
+    }
+    var server_events: std.ArrayList(null3.session.Event) = .empty;
+    defer {
+        clearSessionEvents(allocator, &server_events);
+        server_events.deinit(allocator);
+    }
+
+    var client_saw_settings = false;
+    var server_saw_settings = false;
+    var now_us: u64 = 1_000_000;
+    var iters: u32 = 0;
+    while (!client_saw_settings or !server_saw_settings) : (iters += 1) {
+        try std.testing.expect(iters < 20_000);
+        try pumpH3(
+            &client,
+            &server,
+            &client_h3,
+            &server_h3,
+            &client_events,
+            &server_events,
+            &now_us,
+        );
+
+        for (client_events.items) |event| {
+            const response_event = h3_client.classify(event) orelse continue;
+            switch (response_event) {
+                .settings => |settings| {
+                    try std.testing.expect(settings.h3_datagram);
+                    client_saw_settings = true;
+                },
+                else => {},
+            }
+        }
+        for (server_events.items) |event| {
+            const request_event = h3_server.classify(event) orelse continue;
+            switch (request_event) {
+                .settings => |settings| {
+                    try std.testing.expect(settings.h3_datagram);
+                    server_saw_settings = true;
+                },
+                else => {},
+            }
+        }
+        clearSessionEvents(allocator, &client_events);
+        clearSessionEvents(allocator, &server_events);
+    }
+
+    var writer = try h3_client.startRequest(allocator, .{
+        .method = "CONNECT",
+        .authority = "localhost",
+        .path = "/datagram",
+    });
+    const stream_id = writer.stream_id;
+    try writer.datagram("from-client");
+
+    var server_saw_datagram = false;
+    iters = 0;
+    while (!server_saw_datagram) : (iters += 1) {
+        try std.testing.expect(iters < 20_000);
+        try pumpH3(
+            &client,
+            &server,
+            &client_h3,
+            &server_h3,
+            &client_events,
+            &server_events,
+            &now_us,
+        );
+
+        for (server_events.items) |event| {
+            const request_event = h3_server.classify(event) orelse continue;
+            switch (request_event) {
+                .datagram => |datagram| {
+                    server_saw_datagram = true;
+                    try std.testing.expectEqual(stream_id, datagram.stream_id);
+                    try std.testing.expectEqualStrings("from-client", datagram.payload);
+                    try std.testing.expect(!datagram.arrived_in_early_data);
+                },
+                else => {},
+            }
+        }
+        clearSessionEvents(allocator, &server_events);
+        clearSessionEvents(allocator, &client_events);
+    }
+
+    try h3_server.sendDatagram(stream_id, "from-server");
+
+    var client_saw_datagram = false;
+    iters = 0;
+    while (!client_saw_datagram) : (iters += 1) {
+        try std.testing.expect(iters < 20_000);
+        try pumpH3(
+            &client,
+            &server,
+            &client_h3,
+            &server_h3,
+            &client_events,
+            &server_events,
+            &now_us,
+        );
+
+        for (client_events.items) |event| {
+            const response_event = h3_client.classify(event) orelse continue;
+            switch (response_event) {
+                .datagram => |datagram| {
+                    client_saw_datagram = true;
+                    try std.testing.expectEqual(stream_id, datagram.stream_id);
+                    try std.testing.expectEqualStrings("from-server", datagram.payload);
+                    try std.testing.expect(!datagram.arrived_in_early_data);
+                },
+                else => {},
+            }
+        }
+        clearSessionEvents(allocator, &client_events);
+        clearSessionEvents(allocator, &server_events);
+    }
+
+    try std.testing.expectError(
+        error.InvalidDatagramStream,
+        h3_client.sendDatagram(stream_id + 1, "bad stream"),
+    );
+}
+
 test "session surfaces nullq connection close events" {
     const allocator = std.testing.allocator;
 

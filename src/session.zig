@@ -9,6 +9,7 @@ const std = @import("std");
 const nullq = @import("nullq");
 
 const errors_mod = @import("errors.zig");
+const datagram_mod = @import("datagram.zig");
 const frame_mod = @import("frame.zig");
 const message_mod = @import("message.zig");
 const protocol = @import("protocol.zig");
@@ -20,6 +21,7 @@ const varint = nullq.wire.varint;
 
 pub const Error = nullq.conn.state.Error ||
     frame_mod.Error ||
+    datagram_mod.Error ||
     message_mod.Error ||
     stream_mod.FrameValidationError ||
     settings_mod.Error ||
@@ -37,6 +39,8 @@ pub const Error = nullq.conn.state.Error ||
         ClosedCriticalStream,
         InvalidGoawayId,
         RequestBlockedByGoaway,
+        DatagramNotEnabled,
+        DatagramTooLarge,
     };
 
 pub const Config = struct {
@@ -56,6 +60,7 @@ pub const Config = struct {
     max_field_section_size: ?usize = null,
     read_chunk_size: usize = 4096,
     max_data_frame_payload: usize = 16 * 1024,
+    max_datagram_payload_size: usize = 64 * 1024,
 };
 
 pub const FieldEvent = struct {
@@ -74,6 +79,12 @@ pub const PushPromiseEvent = struct {
     stream_id: u64,
     push_id: u64,
     field_section: []u8,
+};
+
+pub const DatagramEvent = struct {
+    stream_id: u64,
+    payload: []u8,
+    arrived_in_early_data: bool = false,
 };
 
 pub const StreamFinishedEvent = struct {
@@ -137,6 +148,7 @@ pub const Event = union(enum) {
     peer_settings: settings_mod.Settings,
     headers: FieldEvent,
     data: DataEvent,
+    datagram: DatagramEvent,
     trailers: FieldEvent,
     push_promise: PushPromiseEvent,
     goaway: u64,
@@ -151,6 +163,7 @@ pub const Event = union(enum) {
             .headers => |event| freeFields(allocator, event.fields),
             .trailers => |event| freeFields(allocator, event.fields),
             .data => |event| allocator.free(event.data),
+            .datagram => |event| allocator.free(event.payload),
             .push_promise => |event| allocator.free(event.field_section),
             .connection_closed => |event| event.deinit(allocator),
             else => {},
@@ -303,6 +316,16 @@ pub const Session = struct {
         try self.quic.streamFinish(stream_id);
     }
 
+    pub fn sendDatagram(self: *Session, stream_id: u64, payload: []const u8) Error!void {
+        try self.validateDatagramSend(stream_id, payload.len);
+
+        const len = try datagram_mod.encodedLen(stream_id, payload.len);
+        const encoded = try self.allocator.alloc(u8, len);
+        defer self.allocator.free(encoded);
+        const n = try datagram_mod.encode(encoded, stream_id, payload);
+        try self.quic.sendDatagram(encoded[0..n]);
+    }
+
     pub fn resetStream(self: *Session, stream_id: u64, application_error_code: u64) Error!void {
         self.qpack_encoder_state.cancelStream(stream_id);
         try self.quic.streamReset(stream_id, application_error_code);
@@ -360,6 +383,7 @@ pub const Session = struct {
 
     pub fn drain(self: *Session, events: *std.ArrayList(Event)) Error!void {
         try self.drainConnectionEvents(events);
+        try self.drainDatagrams(events);
 
         const read_chunk_size = if (self.config.read_chunk_size == 0) 4096 else self.config.read_chunk_size;
         const tmp = try self.allocator.alloc(u8, read_chunk_size);
@@ -401,6 +425,35 @@ pub const Session = struct {
                 self.closeForError(err);
                 return err;
             };
+        }
+    }
+
+    fn drainDatagrams(self: *Session, events: *std.ArrayList(Event)) Error!void {
+        const max_payload = if (self.config.max_datagram_payload_size == 0)
+            64 * 1024
+        else
+            self.config.max_datagram_payload_size;
+        const scratch = try self.allocator.alloc(u8, max_payload);
+        defer self.allocator.free(scratch);
+
+        while (self.quic.receiveDatagramInfo(scratch)) |info| {
+            if (!self.local_settings.h3_datagram) {
+                self.closeForError(Error.DatagramNotEnabled);
+                return Error.DatagramNotEnabled;
+            }
+            const decoded = datagram_mod.decode(scratch[0..info.len]) catch |err| {
+                self.closeForError(err);
+                return err;
+            };
+            const payload = try self.allocator.dupe(u8, decoded.payload);
+            errdefer self.allocator.free(payload);
+            try appendEvent(self.allocator, events, .{
+                .datagram = .{
+                    .stream_id = decoded.stream_id,
+                    .payload = payload,
+                    .arrived_in_early_data = info.arrived_in_early_data,
+                },
+            });
         }
     }
 
@@ -753,6 +806,19 @@ pub const Session = struct {
                 .final_size = final_size,
             },
         });
+    }
+
+    fn validateDatagramSend(self: *Session, stream_id: u64, payload_len: usize) Error!void {
+        try datagram_mod.validateStreamId(stream_id);
+
+        const peer = self.peer_settings orelse return Error.MissingSettings;
+        if (!peer.h3_datagram) return Error.DatagramNotEnabled;
+
+        const encoded_len = try datagram_mod.encodedLen(stream_id, payload_len);
+        const peer_transport = try self.quic.peerTransportParams();
+        const params = peer_transport orelse return Error.DatagramNotEnabled;
+        if (params.max_datagram_frame_size == 0) return Error.DatagramNotEnabled;
+        if (encoded_len > params.max_datagram_frame_size) return Error.DatagramTooLarge;
     }
 
     fn cancelQpackDecodeForStream(self: *Session, stream_id: u64) Error!void {

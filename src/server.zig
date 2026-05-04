@@ -39,6 +39,12 @@ pub const Data = struct {
     bytes: []const u8,
 };
 
+pub const Datagram = struct {
+    stream_id: u64,
+    payload: []const u8,
+    arrived_in_early_data: bool = false,
+};
+
 pub const StreamFinished = struct {
     stream_id: u64,
 };
@@ -80,6 +86,10 @@ pub const ResponseWriter = struct {
 
     pub fn write(self: *ResponseWriter, data: []const u8) session_mod.Error!void {
         if (data.len > 0) try self.server.sendData(self.stream_id, data);
+    }
+
+    pub fn datagram(self: *ResponseWriter, payload: []const u8) session_mod.Error!void {
+        try self.server.sendDatagram(self.stream_id, payload);
     }
 
     pub fn trailers(self: *ResponseWriter, fields: []const qpack.FieldLine) session_mod.Error!void {
@@ -155,6 +165,7 @@ pub const RequestEvent = union(enum) {
     settings: settings_mod.Settings,
     headers: Headers,
     data: Data,
+    datagram: Datagram,
     trailers: Headers,
     finished: StreamFinished,
     reset: StreamReset,
@@ -172,6 +183,11 @@ pub const RequestEvent = union(enum) {
             .data => |data| if (data.kind == .request) .{
                 .data = .{ .stream_id = data.stream_id, .bytes = data.data },
             } else null,
+            .datagram => |datagram| .{ .datagram = .{
+                .stream_id = datagram.stream_id,
+                .payload = datagram.payload,
+                .arrived_in_early_data = datagram.arrived_in_early_data,
+            } },
             .trailers => |trailers| if (trailers.kind == .request) .{
                 .trailers = .{ .stream_id = trailers.stream_id, .fields = trailers.fields },
             } else null,
@@ -207,6 +223,10 @@ pub const Server = struct {
 
     pub fn sendData(self: *Server, stream_id: u64, data: []const u8) session_mod.Error!void {
         try self.session.sendResponseData(stream_id, data);
+    }
+
+    pub fn sendDatagram(self: *Server, stream_id: u64, payload: []const u8) session_mod.Error!void {
+        try self.session.sendDatagram(stream_id, payload);
     }
 
     pub fn sendTrailers(self: *Server, stream_id: u64, fields: []const qpack.FieldLine) session_mod.Error!void {
@@ -406,7 +426,7 @@ pub const RequestTracker = struct {
                 request.complete = true;
                 return request;
             },
-            .settings, .goaway, .connection_closed, .ignored_unknown_frame => return null,
+            .settings, .datagram, .goaway, .connection_closed, .ignored_unknown_frame => return null,
         }
     }
 

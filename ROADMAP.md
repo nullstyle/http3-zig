@@ -96,7 +96,12 @@ Datagrams / capsules), and the QUIC RFCs already tracked by `nullq`.
 
 - RFC 9218 Priority header parsing and PRIORITY_UPDATE scheduling hooks.
 - Server push APIs with `MAX_PUSH_ID`, `PUSH_PROMISE`, cancellation, and disable knobs.
-- Extended CONNECT, WebSocket-over-H3, HTTP datagrams, and capsule protocol.
+- Done: HTTP/3 DATAGRAM groundwork over `nullq` DATAGRAM frames, including
+  RFC 9297 quarter-stream-id payload codec, SETTINGS/transport negotiation
+  checks, typed session/client/server datagram events, and bidirectional
+  in-process coverage.
+- Next: Extended CONNECT, WebSocket-over-H3, context-aware HTTP datagrams, and
+  capsule protocol.
 - Observability hooks: keylog passthrough, qlog-friendly events, metrics counters.
 
 ## Phase 5: Hardening
