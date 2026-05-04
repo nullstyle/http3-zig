@@ -1,5 +1,6 @@
 //! HTTP/3 server-side helpers.
 
+const std = @import("std");
 const boringssl = @import("boringssl");
 const protocol = @import("protocol.zig");
 const qpack = @import("qpack/root.zig");
@@ -49,6 +50,18 @@ pub const StreamReset = struct {
 
 pub const RequestRejected = session_mod.RequestRejectedEvent;
 pub const UnknownFrame = session_mod.UnknownFrameEvent;
+
+pub const ResponseOptions = struct {
+    status: []const u8 = "200",
+    headers: []const qpack.FieldLine = &.{},
+    body: ?[]const u8 = null,
+    trailers: []const qpack.FieldLine = &.{},
+    end_stream: bool = true,
+};
+
+pub const Response = struct {
+    stream_id: u64,
+};
 
 /// Server-facing view over `session.Event`.
 ///
@@ -126,8 +139,200 @@ pub const Server = struct {
         try self.session.sendGoaway(id);
     }
 
+    pub fn respond(
+        self: *Server,
+        allocator: std.mem.Allocator,
+        stream_id: u64,
+        options: ResponseOptions,
+    ) session_mod.Error!Response {
+        const fields = try buildResponseFields(allocator, options);
+        defer allocator.free(fields);
+
+        try self.sendHeaders(stream_id, fields);
+        if (options.body) |body| {
+            if (body.len > 0) try self.sendData(stream_id, body);
+        }
+        if (options.trailers.len > 0) try self.sendTrailers(stream_id, options.trailers);
+        if (options.end_stream) try self.finish(stream_id);
+
+        return .{ .stream_id = stream_id };
+    }
+
     pub fn classify(self: *const Server, event: session_mod.Event) ?RequestEvent {
         _ = self;
         return RequestEvent.from(event);
     }
 };
+
+pub const RequestState = struct {
+    stream_id: u64,
+    headers: ?[]qpack.FieldLine = null,
+    body: std.ArrayList(u8) = .empty,
+    trailers: ?[]qpack.FieldLine = null,
+    complete: bool = false,
+    reset: ?StreamReset = null,
+    rejected: ?RequestRejected = null,
+
+    pub fn deinit(self: *RequestState, allocator: std.mem.Allocator) void {
+        if (self.headers) |fields| freeFields(allocator, fields);
+        if (self.trailers) |fields| freeFields(allocator, fields);
+        self.body.deinit(allocator);
+    }
+
+    pub fn headerFields(self: *const RequestState) []const qpack.FieldLine {
+        return self.headers orelse &.{};
+    }
+
+    pub fn trailerFields(self: *const RequestState) []const qpack.FieldLine {
+        return self.trailers orelse &.{};
+    }
+
+    pub fn bodyBytes(self: *const RequestState) []const u8 {
+        return self.body.items;
+    }
+
+    fn setHeaders(
+        self: *RequestState,
+        allocator: std.mem.Allocator,
+        fields: []const qpack.FieldLine,
+    ) std.mem.Allocator.Error!void {
+        const copy = try cloneFields(allocator, fields);
+        if (self.headers) |old| freeFields(allocator, old);
+        self.headers = copy;
+    }
+
+    fn setTrailers(
+        self: *RequestState,
+        allocator: std.mem.Allocator,
+        fields: []const qpack.FieldLine,
+    ) std.mem.Allocator.Error!void {
+        const copy = try cloneFields(allocator, fields);
+        if (self.trailers) |old| freeFields(allocator, old);
+        self.trailers = copy;
+    }
+};
+
+pub const RequestTracker = struct {
+    allocator: std.mem.Allocator,
+    requests: std.AutoHashMapUnmanaged(u64, *RequestState) = .empty,
+
+    pub fn init(allocator: std.mem.Allocator) RequestTracker {
+        return .{ .allocator = allocator };
+    }
+
+    pub fn deinit(self: *RequestTracker) void {
+        var it = self.requests.iterator();
+        while (it.next()) |entry| {
+            const request = entry.value_ptr.*;
+            request.deinit(self.allocator);
+            self.allocator.destroy(request);
+        }
+        self.requests.deinit(self.allocator);
+    }
+
+    pub fn get(self: *const RequestTracker, stream_id: u64) ?*RequestState {
+        return self.requests.get(stream_id);
+    }
+
+    pub fn remove(self: *RequestTracker, stream_id: u64) ?*RequestState {
+        const entry = self.requests.fetchRemove(stream_id) orelse return null;
+        return entry.value;
+    }
+
+    pub fn observe(
+        self: *RequestTracker,
+        event: RequestEvent,
+    ) std.mem.Allocator.Error!?*RequestState {
+        switch (event) {
+            .headers => |headers| {
+                const request = try self.ensure(headers.stream_id);
+                try request.setHeaders(self.allocator, headers.fields);
+                return request;
+            },
+            .data => |data| {
+                const request = try self.ensure(data.stream_id);
+                try request.body.appendSlice(self.allocator, data.bytes);
+                return request;
+            },
+            .trailers => |trailers| {
+                const request = try self.ensure(trailers.stream_id);
+                try request.setTrailers(self.allocator, trailers.fields);
+                return request;
+            },
+            .finished => |finished| {
+                const request = try self.ensure(finished.stream_id);
+                request.complete = true;
+                return request;
+            },
+            .reset => |reset| {
+                const request = try self.ensure(reset.stream_id);
+                request.reset = reset;
+                request.complete = true;
+                return request;
+            },
+            .rejected => |rejected| {
+                const request = try self.ensure(rejected.stream_id);
+                request.rejected = rejected;
+                request.complete = true;
+                return request;
+            },
+            .settings, .goaway, .ignored_unknown_frame => return null,
+        }
+    }
+
+    fn ensure(self: *RequestTracker, stream_id: u64) std.mem.Allocator.Error!*RequestState {
+        if (self.requests.get(stream_id)) |request| return request;
+
+        const request = try self.allocator.create(RequestState);
+        errdefer self.allocator.destroy(request);
+        request.* = .{ .stream_id = stream_id };
+        try self.requests.put(self.allocator, stream_id, request);
+        return request;
+    }
+};
+
+fn buildResponseFields(
+    allocator: std.mem.Allocator,
+    options: ResponseOptions,
+) session_mod.Error![]qpack.FieldLine {
+    const fields = try allocator.alloc(qpack.FieldLine, 1 + options.headers.len);
+    fields[0] = .{ .name = ":status", .value = options.status };
+    for (options.headers, 0..) |header, i| fields[1 + i] = header;
+    return fields;
+}
+
+fn cloneFields(
+    allocator: std.mem.Allocator,
+    fields: []const qpack.FieldLine,
+) std.mem.Allocator.Error![]qpack.FieldLine {
+    const out = try allocator.alloc(qpack.FieldLine, fields.len);
+    var initialized: usize = 0;
+    errdefer {
+        freeFields(allocator, out[0..initialized]);
+        allocator.free(out);
+    }
+
+    for (fields) |field| {
+        const name = try allocator.dupe(u8, field.name);
+        const value = allocator.dupe(u8, field.value) catch |err| {
+            allocator.free(name);
+            return err;
+        };
+        out[initialized] = .{
+            .name = name,
+            .value = value,
+            .sensitive = field.sensitive,
+        };
+        initialized += 1;
+    }
+
+    return out;
+}
+
+fn freeFields(allocator: std.mem.Allocator, fields: []qpack.FieldLine) void {
+    for (fields) |field| {
+        allocator.free(@constCast(field.name));
+        allocator.free(@constCast(field.value));
+    }
+    allocator.free(fields);
+}

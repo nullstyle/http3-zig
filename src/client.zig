@@ -1,5 +1,6 @@
 //! HTTP/3 client-side helpers.
 
+const std = @import("std");
 const boringssl = @import("boringssl");
 const protocol = @import("protocol.zig");
 const qpack = @import("qpack/root.zig");
@@ -41,6 +42,21 @@ pub const StreamReset = struct {
 };
 
 pub const UnknownFrame = session_mod.UnknownFrameEvent;
+
+pub const RequestOptions = struct {
+    method: []const u8 = "GET",
+    scheme: []const u8 = "https",
+    authority: []const u8 = "",
+    path: []const u8 = "/",
+    headers: []const qpack.FieldLine = &.{},
+    body: ?[]const u8 = null,
+    trailers: []const qpack.FieldLine = &.{},
+    end_stream: bool = true,
+};
+
+pub const Request = struct {
+    stream_id: u64,
+};
 
 /// Client-facing view over `session.Event`.
 ///
@@ -114,8 +130,39 @@ pub const Client = struct {
         try self.session.cancelRequest(stream_id);
     }
 
+    pub fn request(
+        self: *Client,
+        allocator: std.mem.Allocator,
+        options: RequestOptions,
+    ) session_mod.Error!Request {
+        const fields = try buildRequestFields(allocator, options);
+        defer allocator.free(fields);
+
+        const stream_id = try self.open(fields);
+        if (options.body) |body| {
+            if (body.len > 0) try self.sendData(stream_id, body);
+        }
+        if (options.trailers.len > 0) try self.sendTrailers(stream_id, options.trailers);
+        if (options.end_stream) try self.finish(stream_id);
+
+        return .{ .stream_id = stream_id };
+    }
+
     pub fn classify(self: *const Client, event: session_mod.Event) ?ResponseEvent {
         _ = self;
         return ResponseEvent.from(event);
     }
 };
+
+fn buildRequestFields(
+    allocator: std.mem.Allocator,
+    options: RequestOptions,
+) session_mod.Error![]qpack.FieldLine {
+    const fields = try allocator.alloc(qpack.FieldLine, 4 + options.headers.len);
+    fields[0] = .{ .name = ":method", .value = options.method };
+    fields[1] = .{ .name = ":scheme", .value = options.scheme };
+    fields[2] = .{ .name = ":path", .value = options.path };
+    fields[3] = .{ .name = ":authority", .value = options.authority };
+    for (options.headers, 0..) |header, i| fields[4 + i] = header;
+    return fields;
+}

@@ -10,7 +10,8 @@ constants, SETTINGS and frame codecs, non-blocking QPACK field-section
 encoding/decoding with static-table support, header validation, priority
 parameter parsing, TLS context helpers, transport-free message codecs, critical
 stream setup, SETTINGS exchange, GOAWAY handling, graceful-drain state, reset
-events, and lightweight client/server request-response facades.
+events, request lifecycle tracking, and lightweight client/server
+request-response facades.
 
 ```sh
 mise install
@@ -48,14 +49,16 @@ just test
   streams, and request/data frame writes.
 - `client` / `server`: BoringSSL TLS context helpers with ALPN set to `h3`,
   plus thin `Client` / `Server` facades that classify session events and proxy
-  common request/response operations.
+  common request/response operations. `Client.request` assembles request
+  pseudo-headers from options, `Server.respond` assembles response headers, and
+  `server.RequestTracker` builds owned per-stream request lifecycle state.
 
 ## Verified
 
 - `zig build test` covers unit codecs and an in-process `h3` ALPN integration
   where a `null3.Session` client sends a request over `nullq` streams, a
-  `null3.Server` returns a response, the server sends GOAWAY, the `null3.Client`
-  refuses excluded request streams, and the server rejects a deliberately
-  non-compliant request stream above its GOAWAY limit.
+  `null3.Server` tracks and returns a response, the server sends GOAWAY, the
+  `null3.Client` refuses excluded request streams, and the server rejects a
+  deliberately non-compliant request stream above its GOAWAY limit.
 
 See [ROADMAP.md](ROADMAP.md) for the production plan.

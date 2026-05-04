@@ -251,6 +251,49 @@ test "client and server facades classify session events" {
     }
 }
 
+test "request tracker owns server request lifecycle" {
+    const allocator = std.testing.allocator;
+    var tracker = null3.RequestTracker.init(allocator);
+    defer tracker.deinit();
+
+    const request_fields = [_]null3.FieldLine{
+        .{ .name = ":method", .value = "POST" },
+        .{ .name = ":scheme", .value = "https" },
+        .{ .name = ":path", .value = "/tracked" },
+        .{ .name = ":authority", .value = "localhost" },
+    };
+    const trailers = [_]null3.FieldLine{
+        .{ .name = "x-checksum", .value = "ok" },
+    };
+
+    _ = try tracker.observe(.{ .headers = .{
+        .stream_id = 0,
+        .fields = @constCast(&request_fields),
+    } });
+    _ = try tracker.observe(.{ .data = .{
+        .stream_id = 0,
+        .bytes = "hello",
+    } });
+    _ = try tracker.observe(.{ .trailers = .{
+        .stream_id = 0,
+        .fields = @constCast(&trailers),
+    } });
+    const state = (try tracker.observe(.{ .finished = .{ .stream_id = 0 } })).?;
+
+    try std.testing.expectEqual(@as(u64, 0), state.stream_id);
+    try std.testing.expectEqualStrings("/tracked", state.headerFields()[2].value);
+    try std.testing.expectEqualStrings("hello", state.bodyBytes());
+    try std.testing.expectEqualStrings("ok", state.trailerFields()[0].value);
+    try std.testing.expect(state.complete);
+
+    const removed = tracker.remove(0).?;
+    defer {
+        removed.deinit(allocator);
+        allocator.destroy(removed);
+    }
+    try std.testing.expect(tracker.get(0) == null);
+}
+
 test "session exchanges HTTP/3 request and response over nullq streams" {
     const allocator = std.testing.allocator;
 
@@ -305,17 +348,20 @@ test "session exchanges HTTP/3 request and response over nullq streams" {
     try server_h3.start();
     var h3_client = null3.Client.init(&client_h3);
     var h3_server = null3.Server.init(&server_h3);
+    var request_tracker = null3.RequestTracker.init(allocator);
+    defer request_tracker.deinit();
 
-    const request_fields = [_]null3.FieldLine{
-        .{ .name = ":method", .value = "POST" },
-        .{ .name = ":scheme", .value = "https" },
-        .{ .name = ":path", .value = "/echo" },
-        .{ .name = ":authority", .value = "localhost" },
+    const request_headers = [_]null3.FieldLine{
         .{ .name = "content-type", .value = "text/plain" },
     };
-    const request_stream_id = try h3_client.open(&request_fields);
-    try h3_client.sendData(request_stream_id, "ping");
-    try h3_client.finish(request_stream_id);
+    const request = try h3_client.request(allocator, .{
+        .method = "POST",
+        .authority = "localhost",
+        .path = "/echo",
+        .headers = &request_headers,
+        .body = "ping",
+    });
+    const request_stream_id = request.stream_id;
 
     var client_events: std.ArrayList(null3.session.Event) = .empty;
     defer {
@@ -360,33 +406,33 @@ test "session exchanges HTTP/3 request and response over nullq streams" {
                     server_saw_settings = true;
                     try std.testing.expectEqual(@as(?u64, 1 << 20), settings.max_field_section_size);
                 },
-                .headers => |headers| {
-                    server_saw_request_headers = true;
-                    try std.testing.expectEqual(request_stream_id, headers.stream_id);
-                    try std.testing.expectEqualStrings("POST", headers.fields[0].value);
-                    try std.testing.expectEqualStrings("/echo", headers.fields[2].value);
+                else => {
+                    const request_state = (try request_tracker.observe(request_event)) orelse continue;
+                    try std.testing.expectEqual(request_stream_id, request_state.stream_id);
+                    if (request_state.headers != null) {
+                        server_saw_request_headers = true;
+                        try std.testing.expectEqualStrings("POST", request_state.headerFields()[0].value);
+                        try std.testing.expectEqualStrings("/echo", request_state.headerFields()[2].value);
+                    }
+                    if (request_state.bodyBytes().len > 0) {
+                        server_saw_request_body = true;
+                        try std.testing.expectEqualStrings("ping", request_state.bodyBytes());
+                    }
+                    if (request_state.complete) server_saw_request_finish = true;
                 },
-                .data => |data| {
-                    server_saw_request_body = true;
-                    try std.testing.expectEqualStrings("ping", data.bytes);
-                },
-                .finished => |finished| {
-                    try std.testing.expectEqual(request_stream_id, finished.stream_id);
-                    server_saw_request_finish = true;
-                },
-                else => {},
             }
         }
         clearSessionEvents(allocator, &server_events);
 
         if (!response_sent and server_saw_request_headers and server_saw_request_body and server_saw_request_finish) {
             const response_fields = [_]null3.FieldLine{
-                .{ .name = ":status", .value = "200" },
                 .{ .name = "content-type", .value = "text/plain" },
             };
-            try h3_server.sendHeaders(request_stream_id, &response_fields);
-            try h3_server.sendData(request_stream_id, "pong");
-            try h3_server.finish(request_stream_id);
+            _ = try h3_server.respond(allocator, request_stream_id, .{
+                .status = "200",
+                .headers = &response_fields,
+                .body = "pong",
+            });
             try h3_server.goaway(request_stream_id + 4);
             response_sent = true;
         }
@@ -436,15 +482,27 @@ test "session exchanges HTTP/3 request and response over nullq streams" {
 
     try std.testing.expectError(
         null3.session.Error.RequestBlockedByGoaway,
-        h3_client.open(&request_fields),
+        h3_client.request(allocator, .{
+            .method = "POST",
+            .authority = "localhost",
+            .path = "/echo",
+            .headers = &request_headers,
+        }),
     );
 
     const ignored_stream_id = request_stream_id + 4;
     _ = try client.openBidi(ignored_stream_id);
     var ignored_encoder = null3.MessageEncoder.init(.request, .{});
+    const ignored_request_fields = [_]null3.FieldLine{
+        .{ .name = ":method", .value = "POST" },
+        .{ .name = ":scheme", .value = "https" },
+        .{ .name = ":path", .value = "/echo" },
+        .{ .name = ":authority", .value = "localhost" },
+        .{ .name = "content-type", .value = "text/plain" },
+    };
     var ignored_bytes: [512]u8 = undefined;
     var ignored_len: usize = 0;
-    ignored_len += try ignored_encoder.encodeHeaders(ignored_bytes[ignored_len..], &request_fields);
+    ignored_len += try ignored_encoder.encodeHeaders(ignored_bytes[ignored_len..], &ignored_request_fields);
     ignored_len += try ignored_encoder.encodeData(ignored_bytes[ignored_len..], "late");
     _ = try client.streamWrite(ignored_stream_id, ignored_bytes[0..ignored_len]);
     try client.streamFinish(ignored_stream_id);

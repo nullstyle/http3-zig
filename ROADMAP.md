@@ -47,11 +47,13 @@ Datagrams / capsules), and the QUIC RFCs already tracked by `nullq`.
 
 - Done: thin `client.Client` and `server.Server` facades over `Session` for
   request/response operations and typed event classification.
-- Next: higher-level client request API with owned request options and streaming
-  bodies/trailers.
-- Next: server accept/dispatch API with request lifecycle tracking and streaming
-  responses.
-- Structured error model: H3 connection errors, stream errors, and app errors.
+- Done: `client.RequestOptions` / `Client.request` for pseudo-header assembly
+  and simple body/trailer sends.
+- Done: `server.ResponseOptions` / `Server.respond` for common responses.
+- Done: `server.RequestTracker` for owned request lifecycle state assembled
+  from session events.
+- Next: streaming body reader/writer convenience handles and structured error
+  model for H3 connection errors, stream errors, and app errors.
 - Integration harness against `go-quic-peer` once `nullq` upload interop lands.
 
 ## Phase 4: Production Extensions
