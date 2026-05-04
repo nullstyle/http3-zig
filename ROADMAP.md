@@ -57,8 +57,12 @@ Datagrams / capsules), and the QUIC RFCs already tracked by `nullq`.
   from session events.
 - Done: structured error model for HTTP/3/QPACK application codes, local causes,
   connection-close state, and stream reset/rejection events.
-- Next: reader-side response/request convenience handles.
-- Integration harness against `go-quic-peer` once `nullq` upload interop lands.
+- Done: reader-side response/request convenience handles via
+  `client.ResponseTracker` / `ResponseReader` and
+  `server.RequestTracker` / `RequestReader`.
+- Next: integration harness against `go-quic-peer` once `nullq` upload interop
+  lands, plus send-side RESET_STREAM convenience once `nullq` exposes it
+  publicly.
 
 ## Phase 4: Production Extensions
 

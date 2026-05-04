@@ -92,6 +92,47 @@ pub const RequestWriter = struct {
     }
 };
 
+pub const PushPromise = struct {
+    push_id: u64,
+    field_section: []u8,
+};
+
+pub const ResponseReader = struct {
+    response: *const ResponseState,
+
+    pub fn streamId(self: ResponseReader) u64 {
+        return self.response.stream_id;
+    }
+
+    pub fn headers(self: ResponseReader) []const qpack.FieldLine {
+        return self.response.headerFields();
+    }
+
+    pub fn trailers(self: ResponseReader) []const qpack.FieldLine {
+        return self.response.trailerFields();
+    }
+
+    pub fn body(self: ResponseReader) []const u8 {
+        return self.response.bodyBytes();
+    }
+
+    pub fn status(self: ResponseReader) ?[]const u8 {
+        return self.response.status();
+    }
+
+    pub fn complete(self: ResponseReader) bool {
+        return self.response.complete;
+    }
+
+    pub fn reset(self: ResponseReader) ?StreamReset {
+        return self.response.reset;
+    }
+
+    pub fn pushPromises(self: ResponseReader) []const PushPromise {
+        return self.response.pushPromises();
+    }
+};
+
 /// Client-facing view over `session.Event`.
 ///
 /// Slices borrow from the source event. Callers should finish consuming the
@@ -134,6 +175,159 @@ pub const ResponseEvent = union(enum) {
             .ignored_unknown_frame => |unknown| .{ .ignored_unknown_frame = unknown },
             .request_rejected => null,
         };
+    }
+};
+
+pub const ResponseState = struct {
+    stream_id: u64,
+    headers: ?[]qpack.FieldLine = null,
+    body: std.ArrayList(u8) = .empty,
+    trailers: ?[]qpack.FieldLine = null,
+    push_promises: std.ArrayList(PushPromise) = .empty,
+    complete: bool = false,
+    reset: ?StreamReset = null,
+
+    pub fn deinit(self: *ResponseState, allocator: std.mem.Allocator) void {
+        if (self.headers) |fields| freeFields(allocator, fields);
+        if (self.trailers) |fields| freeFields(allocator, fields);
+        for (self.push_promises.items) |promise| allocator.free(promise.field_section);
+        self.push_promises.deinit(allocator);
+        self.body.deinit(allocator);
+    }
+
+    pub fn reader(self: *const ResponseState) ResponseReader {
+        return .{ .response = self };
+    }
+
+    pub fn headerFields(self: *const ResponseState) []const qpack.FieldLine {
+        return self.headers orelse &.{};
+    }
+
+    pub fn trailerFields(self: *const ResponseState) []const qpack.FieldLine {
+        return self.trailers orelse &.{};
+    }
+
+    pub fn bodyBytes(self: *const ResponseState) []const u8 {
+        return self.body.items;
+    }
+
+    pub fn status(self: *const ResponseState) ?[]const u8 {
+        return fieldValue(self.headerFields(), ":status");
+    }
+
+    pub fn pushPromises(self: *const ResponseState) []const PushPromise {
+        return self.push_promises.items;
+    }
+
+    fn setHeaders(
+        self: *ResponseState,
+        allocator: std.mem.Allocator,
+        fields: []const qpack.FieldLine,
+    ) std.mem.Allocator.Error!void {
+        const copy = try cloneFields(allocator, fields);
+        if (self.headers) |old| freeFields(allocator, old);
+        self.headers = copy;
+    }
+
+    fn setTrailers(
+        self: *ResponseState,
+        allocator: std.mem.Allocator,
+        fields: []const qpack.FieldLine,
+    ) std.mem.Allocator.Error!void {
+        const copy = try cloneFields(allocator, fields);
+        if (self.trailers) |old| freeFields(allocator, old);
+        self.trailers = copy;
+    }
+
+    fn addPushPromise(
+        self: *ResponseState,
+        allocator: std.mem.Allocator,
+        promise: session_mod.PushPromiseEvent,
+    ) std.mem.Allocator.Error!void {
+        const field_section = try allocator.dupe(u8, promise.field_section);
+        errdefer allocator.free(field_section);
+        try self.push_promises.append(allocator, .{
+            .push_id = promise.push_id,
+            .field_section = field_section,
+        });
+    }
+};
+
+pub const ResponseTracker = struct {
+    allocator: std.mem.Allocator,
+    responses: std.AutoHashMapUnmanaged(u64, *ResponseState) = .empty,
+
+    pub fn init(allocator: std.mem.Allocator) ResponseTracker {
+        return .{ .allocator = allocator };
+    }
+
+    pub fn deinit(self: *ResponseTracker) void {
+        var it = self.responses.iterator();
+        while (it.next()) |entry| {
+            const response = entry.value_ptr.*;
+            response.deinit(self.allocator);
+            self.allocator.destroy(response);
+        }
+        self.responses.deinit(self.allocator);
+    }
+
+    pub fn get(self: *const ResponseTracker, stream_id: u64) ?*ResponseState {
+        return self.responses.get(stream_id);
+    }
+
+    pub fn remove(self: *ResponseTracker, stream_id: u64) ?*ResponseState {
+        const entry = self.responses.fetchRemove(stream_id) orelse return null;
+        return entry.value;
+    }
+
+    pub fn observe(
+        self: *ResponseTracker,
+        event: ResponseEvent,
+    ) std.mem.Allocator.Error!?*ResponseState {
+        switch (event) {
+            .headers => |headers| {
+                const response = try self.ensure(headers.stream_id);
+                try response.setHeaders(self.allocator, headers.fields);
+                return response;
+            },
+            .data => |data| {
+                const response = try self.ensure(data.stream_id);
+                try response.body.appendSlice(self.allocator, data.bytes);
+                return response;
+            },
+            .trailers => |trailers| {
+                const response = try self.ensure(trailers.stream_id);
+                try response.setTrailers(self.allocator, trailers.fields);
+                return response;
+            },
+            .push_promise => |promise| {
+                const response = try self.ensure(promise.stream_id);
+                try response.addPushPromise(self.allocator, promise);
+                return response;
+            },
+            .finished => |finished| {
+                const response = try self.ensure(finished.stream_id);
+                response.complete = true;
+                return response;
+            },
+            .reset => |reset| {
+                const response = try self.ensure(reset.stream_id);
+                response.reset = reset;
+                response.complete = true;
+                return response;
+            },
+            .settings, .goaway, .ignored_unknown_frame => return null,
+        }
+    }
+
+    fn ensure(self: *ResponseTracker, stream_id: u64) std.mem.Allocator.Error!*ResponseState {
+        if (self.responses.get(stream_id)) |response| return response;
+
+        const response = try self.allocator.create(ResponseState);
+        errdefer self.allocator.destroy(response);
+        response.* = .{ .stream_id = stream_id };
+        try self.responses.put(self.allocator, stream_id, response);
+        return response;
     }
 };
 
@@ -216,4 +410,47 @@ fn buildRequestFields(
     fields[3] = .{ .name = ":authority", .value = options.authority };
     for (options.headers, 0..) |header, i| fields[4 + i] = header;
     return fields;
+}
+
+fn cloneFields(
+    allocator: std.mem.Allocator,
+    fields: []const qpack.FieldLine,
+) std.mem.Allocator.Error![]qpack.FieldLine {
+    const out = try allocator.alloc(qpack.FieldLine, fields.len);
+    var initialized: usize = 0;
+    errdefer {
+        freeFields(allocator, out[0..initialized]);
+        allocator.free(out);
+    }
+
+    for (fields) |field| {
+        const name = try allocator.dupe(u8, field.name);
+        const value = allocator.dupe(u8, field.value) catch |err| {
+            allocator.free(name);
+            return err;
+        };
+        out[initialized] = .{
+            .name = name,
+            .value = value,
+            .sensitive = field.sensitive,
+        };
+        initialized += 1;
+    }
+
+    return out;
+}
+
+fn freeFields(allocator: std.mem.Allocator, fields: []qpack.FieldLine) void {
+    for (fields) |field| {
+        allocator.free(@constCast(field.name));
+        allocator.free(@constCast(field.value));
+    }
+    allocator.free(fields);
+}
+
+fn fieldValue(fields: []const qpack.FieldLine, name: []const u8) ?[]const u8 {
+    for (fields) |field| {
+        if (std.mem.eql(u8, field.name, name)) return field.value;
+    }
+    return null;
 }

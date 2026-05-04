@@ -11,7 +11,8 @@ encoding/decoding with static-table support, header validation, priority
 parameter parsing, TLS context helpers, transport-free message codecs, critical
 stream setup, SETTINGS exchange, GOAWAY handling, graceful-drain state, reset
 events, structured HTTP/3/QPACK error classification, request lifecycle
-tracking, and lightweight client/server request-response facades.
+tracking, response lifecycle tracking, and lightweight client/server
+request-response facades.
 
 ```sh
 mise install
@@ -54,14 +55,16 @@ just test
   common request/response operations. `Client.startRequest` and
   `Server.startResponse` return streaming writers for incremental bodies and
   trailers, `Client.request` / `Server.respond` provide one-shot helpers, and
-  `server.RequestTracker` builds owned per-stream request lifecycle state.
+  `client.ResponseTracker` / `server.RequestTracker` build owned per-stream
+  reader state that can outlive the drained event batch.
 
 ## Verified
 
 - `zig build test` covers unit codecs and an in-process `h3` ALPN integration
   where a `null3.Session` client sends a request over `nullq` streams, a
-  `null3.Server` tracks and returns a response, the server sends GOAWAY, the
-  `null3.Client` refuses excluded request streams, and the server rejects a
-  deliberately non-compliant request stream above its GOAWAY limit.
+  `null3.Server` tracks and returns a response, the `null3.Client` tracks the
+  response lifecycle, the server sends GOAWAY, the client refuses excluded
+  request streams, and the server rejects a deliberately non-compliant request
+  stream above its GOAWAY limit.
 
 See [ROADMAP.md](ROADMAP.md) for the production plan.

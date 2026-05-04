@@ -90,6 +90,54 @@ pub const ResponseWriter = struct {
     }
 };
 
+pub const RequestReader = struct {
+    request: *const RequestState,
+
+    pub fn streamId(self: RequestReader) u64 {
+        return self.request.stream_id;
+    }
+
+    pub fn headers(self: RequestReader) []const qpack.FieldLine {
+        return self.request.headerFields();
+    }
+
+    pub fn trailers(self: RequestReader) []const qpack.FieldLine {
+        return self.request.trailerFields();
+    }
+
+    pub fn body(self: RequestReader) []const u8 {
+        return self.request.bodyBytes();
+    }
+
+    pub fn method(self: RequestReader) ?[]const u8 {
+        return self.request.method();
+    }
+
+    pub fn scheme(self: RequestReader) ?[]const u8 {
+        return self.request.scheme();
+    }
+
+    pub fn authority(self: RequestReader) ?[]const u8 {
+        return self.request.authority();
+    }
+
+    pub fn path(self: RequestReader) ?[]const u8 {
+        return self.request.path();
+    }
+
+    pub fn complete(self: RequestReader) bool {
+        return self.request.complete;
+    }
+
+    pub fn reset(self: RequestReader) ?StreamReset {
+        return self.request.reset;
+    }
+
+    pub fn rejected(self: RequestReader) ?RequestRejected {
+        return self.request.rejected;
+    }
+};
+
 /// Server-facing view over `session.Event`.
 ///
 /// Slices borrow from the source event. Callers should finish consuming the
@@ -222,6 +270,10 @@ pub const RequestState = struct {
         self.body.deinit(allocator);
     }
 
+    pub fn reader(self: *const RequestState) RequestReader {
+        return .{ .request = self };
+    }
+
     pub fn headerFields(self: *const RequestState) []const qpack.FieldLine {
         return self.headers orelse &.{};
     }
@@ -232,6 +284,22 @@ pub const RequestState = struct {
 
     pub fn bodyBytes(self: *const RequestState) []const u8 {
         return self.body.items;
+    }
+
+    pub fn method(self: *const RequestState) ?[]const u8 {
+        return fieldValue(self.headerFields(), ":method");
+    }
+
+    pub fn scheme(self: *const RequestState) ?[]const u8 {
+        return fieldValue(self.headerFields(), ":scheme");
+    }
+
+    pub fn authority(self: *const RequestState) ?[]const u8 {
+        return fieldValue(self.headerFields(), ":authority");
+    }
+
+    pub fn path(self: *const RequestState) ?[]const u8 {
+        return fieldValue(self.headerFields(), ":path");
     }
 
     fn setHeaders(
@@ -378,4 +446,11 @@ fn freeFields(allocator: std.mem.Allocator, fields: []qpack.FieldLine) void {
         allocator.free(@constCast(field.value));
     }
     allocator.free(fields);
+}
+
+fn fieldValue(fields: []const qpack.FieldLine, name: []const u8) ?[]const u8 {
+    for (fields) |field| {
+        if (std.mem.eql(u8, field.name, name)) return field.value;
+    }
+    return null;
 }

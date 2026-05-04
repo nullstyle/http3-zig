@@ -286,6 +286,61 @@ test "request tracker owns server request lifecycle" {
     try std.testing.expectEqualStrings("ok", state.trailerFields()[0].value);
     try std.testing.expect(state.complete);
 
+    const reader = state.reader();
+    try std.testing.expectEqual(@as(u64, 0), reader.streamId());
+    try std.testing.expectEqualStrings("POST", reader.method().?);
+    try std.testing.expectEqualStrings("https", reader.scheme().?);
+    try std.testing.expectEqualStrings("localhost", reader.authority().?);
+    try std.testing.expectEqualStrings("/tracked", reader.path().?);
+    try std.testing.expectEqualStrings("hello", reader.body());
+    try std.testing.expect(reader.complete());
+
+    const removed = tracker.remove(0).?;
+    defer {
+        removed.deinit(allocator);
+        allocator.destroy(removed);
+    }
+    try std.testing.expect(tracker.get(0) == null);
+}
+
+test "response tracker owns client response lifecycle" {
+    const allocator = std.testing.allocator;
+    var tracker = null3.ResponseTracker.init(allocator);
+    defer tracker.deinit();
+
+    const response_fields = [_]null3.FieldLine{
+        .{ .name = ":status", .value = "200" },
+        .{ .name = "content-type", .value = "text/plain" },
+    };
+    const trailers = [_]null3.FieldLine{
+        .{ .name = "server-timing", .value = "app;dur=1" },
+    };
+
+    _ = try tracker.observe(.{ .headers = .{
+        .stream_id = 0,
+        .fields = @constCast(&response_fields),
+    } });
+    _ = try tracker.observe(.{ .data = .{
+        .stream_id = 0,
+        .bytes = "po",
+    } });
+    _ = try tracker.observe(.{ .data = .{
+        .stream_id = 0,
+        .bytes = "ng",
+    } });
+    _ = try tracker.observe(.{ .trailers = .{
+        .stream_id = 0,
+        .fields = @constCast(&trailers),
+    } });
+    const state = (try tracker.observe(.{ .finished = .{ .stream_id = 0 } })).?;
+
+    const reader = state.reader();
+    try std.testing.expectEqual(@as(u64, 0), reader.streamId());
+    try std.testing.expectEqualStrings("200", reader.status().?);
+    try std.testing.expectEqualStrings("pong", reader.body());
+    try std.testing.expectEqualStrings("app;dur=1", reader.trailers()[0].value);
+    try std.testing.expect(reader.complete());
+
     const removed = tracker.remove(0).?;
     defer {
         removed.deinit(allocator);
@@ -350,6 +405,8 @@ test "session exchanges HTTP/3 request and response over nullq streams" {
     var h3_server = null3.Server.init(&server_h3);
     var request_tracker = null3.RequestTracker.init(allocator);
     defer request_tracker.deinit();
+    var response_tracker = null3.ResponseTracker.init(allocator);
+    defer response_tracker.deinit();
 
     const request_headers = [_]null3.FieldLine{
         .{ .name = "content-type", .value = "text/plain" },
@@ -375,9 +432,6 @@ test "session exchanges HTTP/3 request and response over nullq streams" {
         clearSessionEvents(allocator, &server_events);
         server_events.deinit(allocator);
     }
-    var response_body: std.ArrayList(u8) = .empty;
-    defer response_body.deinit(allocator);
-
     var client_saw_settings = false;
     var server_saw_settings = false;
     var server_saw_request_headers = false;
@@ -412,19 +466,20 @@ test "session exchanges HTTP/3 request and response over nullq streams" {
                 },
                 else => {
                     const request_state = (try request_tracker.observe(request_event)) orelse continue;
+                    const request_reader = request_state.reader();
                     try std.testing.expectEqual(request_stream_id, request_state.stream_id);
-                    if (request_state.headers != null) {
+                    if (request_reader.headers().len > 0) {
                         server_saw_request_headers = true;
-                        try std.testing.expectEqualStrings("POST", request_state.headerFields()[0].value);
-                        try std.testing.expectEqualStrings("/echo", request_state.headerFields()[2].value);
+                        try std.testing.expectEqualStrings("POST", request_reader.method().?);
+                        try std.testing.expectEqualStrings("/echo", request_reader.path().?);
                     }
-                    if (request_state.bodyBytes().len > 0) {
-                        const body = request_state.bodyBytes();
+                    if (request_reader.body().len > 0) {
+                        const body = request_reader.body();
                         try std.testing.expect(body.len <= "ping".len);
                         try std.testing.expectEqualStrings("ping"[0..body.len], body);
                         if (std.mem.eql(u8, body, "ping")) server_saw_request_body = true;
                     }
-                    if (request_state.complete) server_saw_request_finish = true;
+                    if (request_reader.complete()) server_saw_request_finish = true;
                 },
             }
         }
@@ -452,26 +507,26 @@ test "session exchanges HTTP/3 request and response over nullq streams" {
                     client_saw_settings = true;
                     try std.testing.expectEqual(@as(?u64, 1 << 20), settings.max_field_section_size);
                 },
-                .headers => |headers| {
-                    client_saw_response_headers = true;
-                    try std.testing.expectEqual(request_stream_id, headers.stream_id);
-                    try std.testing.expectEqualStrings("200", headers.fields[0].value);
-                },
-                .data => |data| {
-                    try response_body.appendSlice(allocator, data.bytes);
-                    try std.testing.expect(response_body.items.len <= "pong".len);
-                    try std.testing.expectEqualStrings("pong"[0..response_body.items.len], response_body.items);
-                    if (std.mem.eql(u8, response_body.items, "pong")) client_saw_response_body = true;
-                },
-                .finished => |finished| {
-                    try std.testing.expectEqual(request_stream_id, finished.stream_id);
-                    client_saw_response_finish = true;
-                },
                 .goaway => |id| {
                     client_saw_goaway = true;
                     try std.testing.expectEqual(request_stream_id + 4, id);
                 },
-                else => {},
+                else => {
+                    const response_state = (try response_tracker.observe(response_event)) orelse continue;
+                    const response_reader = response_state.reader();
+                    try std.testing.expectEqual(request_stream_id, response_reader.streamId());
+                    if (response_reader.headers().len > 0) {
+                        client_saw_response_headers = true;
+                        try std.testing.expectEqualStrings("200", response_reader.status().?);
+                    }
+                    if (response_reader.body().len > 0) {
+                        const body = response_reader.body();
+                        try std.testing.expect(body.len <= "pong".len);
+                        try std.testing.expectEqualStrings("pong"[0..body.len], body);
+                        if (std.mem.eql(u8, body, "pong")) client_saw_response_body = true;
+                    }
+                    if (response_reader.complete()) client_saw_response_finish = true;
+                },
             }
         }
         clearSessionEvents(allocator, &client_events);
