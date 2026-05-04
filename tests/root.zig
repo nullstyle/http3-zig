@@ -218,6 +218,42 @@ fn expectPairH3Error(allocator: std.mem.Allocator, pair: *H3Pair, expected: anye
     );
 }
 
+fn exchangePairSettings(allocator: std.mem.Allocator, pair: *H3Pair) !void {
+    var client_events: std.ArrayList(null3.session.Event) = .empty;
+    defer {
+        clearSessionEvents(allocator, &client_events);
+        client_events.deinit(allocator);
+    }
+    var server_events: std.ArrayList(null3.session.Event) = .empty;
+    defer {
+        clearSessionEvents(allocator, &server_events);
+        server_events.deinit(allocator);
+    }
+
+    var now_us: u64 = 1_000_000;
+    var iters: u32 = 0;
+    while (pair.client_h3.peer_settings == null or pair.server_h3.peer_settings == null) : (iters += 1) {
+        try std.testing.expect(iters < 20_000);
+        try pumpH3(
+            &pair.client,
+            &pair.server,
+            &pair.client_h3,
+            &pair.server_h3,
+            &client_events,
+            &server_events,
+            &now_us,
+        );
+        clearSessionEvents(allocator, &client_events);
+        clearSessionEvents(allocator, &server_events);
+    }
+}
+
+fn sendRawH3Datagram(conn: *nullq.Connection, stream_id: u64, payload: []const u8) !void {
+    var buf: [2048]u8 = undefined;
+    const n = try null3.datagram.encode(&buf, stream_id, payload);
+    try conn.sendDatagram(buf[0..n]);
+}
+
 test "HTTP/3 SETTINGS frame round-trip" {
     const s: null3.Settings = .{
         .qpack_max_table_capacity = 4096,
@@ -956,6 +992,33 @@ test "session rejects GOAWAY on request streams" {
     try expectLastCloseCode(&pair.server_h3, null3.protocol.ErrorCode.frame_unexpected);
 }
 
+test "session closes on invalid peer GOAWAY ids" {
+    const allocator = std.testing.allocator;
+
+    var pair: H3Pair = undefined;
+    try pair.initStarted(allocator, .{}, .{});
+    defer pair.deinit();
+
+    try writeFrame(&pair.server, pair.server_h3.control_stream_id.?, .{ .goaway = 1 });
+    try expectPairH3Error(allocator, &pair, error.InvalidGoawayId);
+    try std.testing.expectEqual(null3.session.ShutdownState.closed, pair.client_h3.shutdownState());
+    try expectLastCloseCode(&pair.client_h3, null3.protocol.ErrorCode.id_error);
+}
+
+test "session closes on increasing peer GOAWAY ids" {
+    const allocator = std.testing.allocator;
+
+    var pair: H3Pair = undefined;
+    try pair.initStarted(allocator, .{}, .{});
+    defer pair.deinit();
+
+    try writeFrame(&pair.server, pair.server_h3.control_stream_id.?, .{ .goaway = 4 });
+    try writeFrame(&pair.server, pair.server_h3.control_stream_id.?, .{ .goaway = 8 });
+    try expectPairH3Error(allocator, &pair, error.InvalidGoawayId);
+    try std.testing.expectEqual(null3.session.ShutdownState.closed, pair.client_h3.shutdownState());
+    try expectLastCloseCode(&pair.client_h3, null3.protocol.ErrorCode.id_error);
+}
+
 test "session rejects duplicate peer control streams" {
     const allocator = std.testing.allocator;
 
@@ -997,6 +1060,46 @@ test "session rejects push streams sent to servers" {
     try expectPairH3Error(allocator, &pair, error.UnexpectedStream);
     try std.testing.expectEqual(null3.session.ShutdownState.closed, pair.server_h3.shutdownState());
     try expectLastCloseCode(&pair.server_h3, null3.protocol.ErrorCode.stream_creation_error);
+}
+
+test "session rejects disabled DATAGRAM sends after SETTINGS" {
+    const allocator = std.testing.allocator;
+
+    var pair: H3Pair = undefined;
+    try pair.initStarted(allocator, .{}, .{});
+    defer pair.deinit();
+    try exchangePairSettings(allocator, &pair);
+
+    try std.testing.expectError(error.DatagramNotEnabled, pair.client_h3.sendDatagram(0, "disabled"));
+}
+
+test "session rejects oversized DATAGRAM sends" {
+    const allocator = std.testing.allocator;
+
+    var pair: H3Pair = undefined;
+    try pair.initStarted(
+        allocator,
+        .{ .settings = .{ .h3_datagram = true } },
+        .{ .settings = .{ .h3_datagram = true } },
+    );
+    defer pair.deinit();
+    try exchangePairSettings(allocator, &pair);
+
+    var payload = [_]u8{'x'} ** 1200;
+    try std.testing.expectError(error.DatagramTooLarge, pair.client_h3.sendDatagram(0, &payload));
+}
+
+test "session closes on received DATAGRAM when local setting disabled" {
+    const allocator = std.testing.allocator;
+
+    var pair: H3Pair = undefined;
+    try pair.initStarted(allocator, .{}, .{});
+    defer pair.deinit();
+
+    try sendRawH3Datagram(&pair.client, 0, "unexpected");
+    try expectPairH3Error(allocator, &pair, error.DatagramNotEnabled);
+    try std.testing.expectEqual(null3.session.ShutdownState.closed, pair.server_h3.shutdownState());
+    try expectLastCloseCode(&pair.server_h3, null3.protocol.ErrorCode.settings_error);
 }
 
 test "session closes when peer control stream is closed" {

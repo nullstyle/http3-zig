@@ -126,6 +126,7 @@ Datagrams / capsules), and the QUIC RFCs already tracked by `nullq`.
 - Memory-budget enforcement and field-section size limits.
 - Done: abuse tests now cover critical stream closure, duplicate SETTINGS,
   invalid frame placement, duplicate critical streams, server-side push streams,
+  malformed peer GOAWAY sequencing, DATAGRAM negotiation and size failures,
   malformed pseudo-headers, truncated capsules, DATA-after-trailers, and
   oversized decoded field sections.
 - Remaining: oversized dynamic-table state and resource-pressure cases.
