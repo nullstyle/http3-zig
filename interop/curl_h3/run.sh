@@ -159,6 +159,31 @@ fi
 stop_server
 echo "PASS post echo"
 
+start_server 1
+large_upload_in="$WORK_DIR/large-upload.bin"
+large_upload_out="$WORK_DIR/large-upload.echo"
+dd if=/dev/zero of="$large_upload_in" bs=1024 count=256 >/dev/null 2>&1
+if ! curl_common --request POST --data-binary @"$large_upload_in" \
+    --output "$large_upload_out" \
+    "https://localhost:${SERVER_PORT}/echo"; then
+    echo "FAIL large upload echo: curl request failed" >&2
+    show_server_log
+    exit 1
+fi
+large_upload_size="$(wc -c <"$large_upload_out" | tr -d ' ')"
+if [[ "$large_upload_size" != "262144" ]]; then
+    echo "FAIL large upload echo: got ${large_upload_size} bytes" >&2
+    show_server_log
+    exit 1
+fi
+if ! cmp -s "$large_upload_in" "$large_upload_out"; then
+    echo "FAIL large upload echo: echoed body mismatch" >&2
+    show_server_log
+    exit 1
+fi
+stop_server
+echo "PASS large upload echo"
+
 start_server 3
 if ! multi_body="$(curl_common \
     "https://localhost:${SERVER_PORT}/hello?first" \
