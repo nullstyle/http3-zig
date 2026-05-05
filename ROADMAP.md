@@ -155,10 +155,10 @@ Datagrams / capsules), and the QUIC RFCs already tracked by `nullq`.
 - Done: CONNECT-UDP helper foundation layered on Extended CONNECT, capsules,
   and context-aware datagrams, including target path construction/parsing,
   Context ID 0 UDP payload helpers, typed client/server tunnel wrappers,
-  checked context registry helpers, UDP payload length guards, integration
-  coverage, and fuzz smoke coverage.
+  checked context registry helpers, drop/buffer/abort receive disposition,
+  UDP payload length guards, integration coverage, and fuzz smoke coverage.
 - Next: deeper MASQUE protocol state, including extension-specific capsule
-  registration semantics, close/error semantics, and external proxy interop.
+  registration semantics and external proxy interop.
 
 ## Phase 5: Hardening
 
@@ -172,7 +172,7 @@ Datagrams / capsules), and the QUIC RFCs already tracked by `nullq`.
   malformed pseudo-headers, truncated capsules, DATA-after-trailers, oversized
   decoded field sections, QPACK decoder feedback errors, and peer QPACK dynamic
   table capacity/entry overflow, plus CONNECT-UDP context registry failures and
-  oversized UDP payload rejection.
+  oversized UDP payload stream-abort classification.
 - Partial: send-side stream buffering, outgoing capsule values, session event
   queues, tracker body accumulation, and decoded QPACK field sections now have
   opt-in caps; broader sustained resource-pressure coverage is still needed,

@@ -1907,6 +1907,23 @@ test "session closes on received DATAGRAM when local setting disabled" {
     try expectLastCloseCode(&pair.server_h3, null3.protocol.ErrorCode.settings_error);
 }
 
+test "session closes malformed DATAGRAM payload with H3_DATAGRAM_ERROR" {
+    const allocator = std.testing.allocator;
+
+    var pair: H3Pair = undefined;
+    try pair.initStarted(
+        allocator,
+        .{ .settings = .{ .h3_datagram = true } },
+        .{ .settings = .{ .h3_datagram = true } },
+    );
+    defer pair.deinit();
+
+    try pair.client.sendDatagram(&.{});
+    try expectPairH3Error(allocator, &pair, error.InsufficientBytes);
+    try std.testing.expectEqual(null3.session.ShutdownState.closed, pair.server_h3.shutdownState());
+    try expectLastCloseCode(&pair.server_h3, null3.protocol.ErrorCode.datagram_error);
+}
+
 test "session closes when peer control stream is closed" {
     const allocator = std.testing.allocator;
 

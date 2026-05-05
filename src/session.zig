@@ -715,7 +715,7 @@ pub const Session = struct {
                 return Error.DatagramNotEnabled;
             }
             const decoded = datagram_mod.decode(scratch[0..info.len]) catch |err| {
-                self.closeForError(err);
+                self.close(protocol.ErrorCode.datagram_error, @errorName(err));
                 return err;
             };
             try budget.reserve(decoded.payload.len);

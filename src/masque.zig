@@ -8,6 +8,7 @@
 const std = @import("std");
 
 const datagram_mod = @import("datagram.zig");
+const protocol = @import("protocol.zig");
 const qpack = @import("qpack/root.zig");
 
 pub const connect_udp_protocol = "connect-udp";
@@ -17,6 +18,7 @@ pub const capsule_protocol_value = "?1";
 pub const udp_context_id: u64 = 0;
 pub const max_udp_payload_len: usize = 65527;
 pub const max_registered_contexts: usize = 16;
+pub const connect_udp_abort_code = protocol.ErrorCode.connect_error;
 
 pub const Error = datagram_mod.Error || std.mem.Allocator.Error || error{
     BufferTooSmall,
@@ -93,6 +95,26 @@ pub const ContextPayload = struct {
     }
 };
 
+pub const AbortReason = enum {
+    malformed_context,
+    udp_payload_too_large,
+    unexpected_context,
+    local_failure,
+};
+
+pub const StreamAbort = struct {
+    error_code: u64,
+    reason: AbortReason,
+    cause: ?anyerror = null,
+};
+
+pub const DatagramDisposition = union(enum) {
+    udp_payload: []const u8,
+    extension_payload: ContextPayload,
+    unknown_context: datagram_mod.ContextPayload,
+    abort_stream: StreamAbort,
+};
+
 pub const ContextRegistry = struct {
     entries: [max_registered_contexts]RegisteredContext = [_]RegisteredContext{
         .{ .context_id = udp_context_id, .kind = .connect_udp },
@@ -155,6 +177,28 @@ pub const ContextRegistry = struct {
         return context.payload;
     }
 
+    pub fn classifyDatagramPayload(self: *const ContextRegistry, src: []const u8) DatagramDisposition {
+        const context = datagram_mod.decodeContextPayload(src) catch |err| {
+            return .{ .abort_stream = streamAbortForError(err) };
+        };
+        const kind = self.kindOf(context.context_id) orelse {
+            return .{ .unknown_context = context };
+        };
+        switch (kind) {
+            .connect_udp => {
+                validateUdpPayload(context.payload) catch |err| {
+                    return .{ .abort_stream = streamAbortForError(err) };
+                };
+                return .{ .udp_payload = context.payload };
+            },
+            .extension => return .{ .extension_payload = .{
+                .context_id = context.context_id,
+                .kind = .extension,
+                .payload = context.payload,
+            } },
+        }
+    }
+
     fn indexOf(self: *const ContextRegistry, context_id: u64) ?usize {
         for (self.entries[0..self.count], 0..) |entry, index| {
             if (entry.context_id == context_id) return index;
@@ -162,6 +206,26 @@ pub const ContextRegistry = struct {
         return null;
     }
 };
+
+pub fn streamAbortForError(err: anyerror) StreamAbort {
+    return .{
+        .error_code = connect_udp_abort_code,
+        .reason = abortReasonForError(err),
+        .cause = err,
+    };
+}
+
+pub fn abortReasonForError(err: anyerror) AbortReason {
+    return switch (err) {
+        error.UdpPayloadTooLarge => .udp_payload_too_large,
+        error.UnexpectedContext => .unexpected_context,
+        error.InsufficientBytes,
+        error.InvalidLength,
+        error.ValueTooLarge,
+        => .malformed_context,
+        else => .local_failure,
+    };
+}
 
 pub fn isProtocolToken(value: []const u8) bool {
     return std.mem.eql(u8, value, connect_udp_protocol);
@@ -478,6 +542,59 @@ test "CONNECT-UDP context registry classifies known contexts" {
     try registry.unregister(7);
     try std.testing.expect(!registry.isKnown(7));
     try std.testing.expectError(Error.UnknownContext, registry.unregister(7));
+}
+
+test "CONNECT-UDP datagram disposition separates unknown context from stream aborts" {
+    const allocator = std.testing.allocator;
+    var buf: [64]u8 = undefined;
+    var registry = ContextRegistry.init();
+
+    const udp_n = try encodeUdpPayload(&buf, "packet");
+    switch (registry.classifyDatagramPayload(buf[0..udp_n])) {
+        .udp_payload => |payload| try std.testing.expectEqualStrings("packet", payload),
+        else => return error.UnexpectedDisposition,
+    }
+
+    const unknown_n = try datagram_mod.encodeContextPayload(&buf, 7, "future");
+    switch (registry.classifyDatagramPayload(buf[0..unknown_n])) {
+        .unknown_context => |context| {
+            try std.testing.expectEqual(@as(u64, 7), context.context_id);
+            try std.testing.expectEqualStrings("future", context.payload);
+        },
+        else => return error.UnexpectedDisposition,
+    }
+
+    try registry.registerExtension(7);
+    switch (registry.classifyDatagramPayload(buf[0..unknown_n])) {
+        .extension_payload => |context| {
+            try std.testing.expectEqual(@as(u64, 7), context.context_id);
+            try std.testing.expectEqual(ContextKind.extension, context.kind);
+            try std.testing.expectEqualStrings("future", context.payload);
+        },
+        else => return error.UnexpectedDisposition,
+    }
+
+    switch (registry.classifyDatagramPayload("")) {
+        .abort_stream => |abort| {
+            try std.testing.expectEqual(connect_udp_abort_code, abort.error_code);
+            try std.testing.expectEqual(AbortReason.malformed_context, abort.reason);
+        },
+        else => return error.UnexpectedDisposition,
+    }
+
+    const too_large = try allocator.alloc(u8, max_udp_payload_len + 1);
+    defer allocator.free(too_large);
+    const encoded = try allocator.alloc(u8, udpPayloadEncodedLen(too_large.len));
+    defer allocator.free(encoded);
+    const encoded_n = try datagram_mod.encodeContextPayload(encoded, udp_context_id, too_large);
+    switch (registry.classifyDatagramPayload(encoded[0..encoded_n])) {
+        .abort_stream => |abort| {
+            try std.testing.expectEqual(connect_udp_abort_code, abort.error_code);
+            try std.testing.expectEqual(AbortReason.udp_payload_too_large, abort.reason);
+            try std.testing.expectEqual(error.UdpPayloadTooLarge, abort.cause.?);
+        },
+        else => return error.UnexpectedDisposition,
+    }
 }
 
 test "CONNECT-UDP context registry enforces fixed capacity" {

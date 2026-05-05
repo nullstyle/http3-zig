@@ -253,7 +253,9 @@ fn fuzzMasque(allocator: std.mem.Allocator, input: []const u8) void {
 
     var registry = null3.masque.ContextRegistry.init();
     if (registry.decodeContextPayload(input)) |_| {} else |_| {}
+    _ = registry.classifyDatagramPayload(input);
     registry.registerExtension(7) catch {};
     if (registry.decodeContextPayload(input)) |_| {} else |_| {}
     if (registry.decodeUdpPayload(input)) |_| {} else |_| {}
+    _ = registry.classifyDatagramPayload(input);
 }

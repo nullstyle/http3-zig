@@ -220,6 +220,14 @@ pub const ConnectUdpServerStream = struct {
         try self.writer.reset(error_code);
     }
 
+    pub fn fail(self: *ConnectUdpServerStream) session_mod.Error!void {
+        try self.reset(masque_mod.connect_udp_abort_code);
+    }
+
+    pub fn failForError(self: *ConnectUdpServerStream, err: anyerror) session_mod.Error!void {
+        try self.reset(masque_mod.streamAbortForError(err).error_code);
+    }
+
     pub fn abort(self: *ConnectUdpServerStream) session_mod.Error!void {
         try self.writer.abort();
     }

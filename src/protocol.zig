@@ -41,8 +41,9 @@ pub const SettingId = struct {
     pub const h3_datagram: u64 = 0x33;
 };
 
-/// HTTP/3 and QPACK error codes (RFC 9114 §8.1, RFC 9204 §6).
+/// HTTP/3, HTTP Datagrams, and QPACK error codes (RFC 9114 §8.1, RFC 9297 §5.2, RFC 9204 §6).
 pub const ErrorCode = struct {
+    pub const datagram_error: u64 = 0x33;
     pub const no_error: u64 = 0x0100;
     pub const general_protocol_error: u64 = 0x0101;
     pub const internal_error: u64 = 0x0102;

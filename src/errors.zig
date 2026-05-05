@@ -31,6 +31,7 @@ pub const Category = enum {
     id,
     request,
     connect,
+    datagram,
     qpack,
     transport,
     resource,
@@ -94,6 +95,7 @@ pub const StreamError = struct {
 
 pub fn applicationError(code: u64) ApplicationError {
     return switch (code) {
+        protocol.ErrorCode.datagram_error => known(code, "H3_DATAGRAM_ERROR", .datagram, .connection),
         protocol.ErrorCode.no_error => known(code, "H3_NO_ERROR", .no_error, .application),
         protocol.ErrorCode.general_protocol_error => known(code, "H3_GENERAL_PROTOCOL_ERROR", .general, .connection),
         protocol.ErrorCode.internal_error => known(code, "H3_INTERNAL_ERROR", .internal, .connection),
@@ -200,6 +202,18 @@ pub fn codeForError(err: anyerror) u64 {
         error.InvalidDatagramStream => protocol.ErrorCode.id_error,
         error.RequestBlockedByGoaway => protocol.ErrorCode.request_rejected,
         error.DatagramNotEnabled => protocol.ErrorCode.settings_error,
+        error.InvalidConnectUdpPath,
+        error.InvalidConnectUdpTarget,
+        error.InvalidAcceptStatus,
+        error.NotConnectUdp,
+        error.UnexpectedContext,
+        error.UnknownContext,
+        error.UdpPayloadTooLarge,
+        error.CannotUnregisterDefaultContext,
+        error.ContextAlreadyRegistered,
+        error.ContextLimitExceeded,
+        error.InvalidContextRegistration,
+        => protocol.ErrorCode.connect_error,
         error.OutOfMemory,
         error.BufferTooSmall,
         error.WriteStalled,
@@ -270,6 +284,18 @@ fn scopeForError(err: anyerror, app: ApplicationError) Scope {
         error.SendBufferFull => .stream,
         error.BodyTooLarge => .stream,
         error.CapsuleTooLarge => .stream,
+        error.InvalidConnectUdpPath,
+        error.InvalidConnectUdpTarget,
+        error.InvalidAcceptStatus,
+        error.NotConnectUdp,
+        error.UnexpectedContext,
+        error.UnknownContext,
+        error.UdpPayloadTooLarge,
+        error.CannotUnregisterDefaultContext,
+        error.ContextAlreadyRegistered,
+        error.ContextLimitExceeded,
+        error.InvalidContextRegistration,
+        => .stream,
         else => app.default_scope,
     };
 }
@@ -307,6 +333,10 @@ test "application error code classification names HTTP/3 and QPACK codes" {
     try std.testing.expectEqualStrings("QPACK_DECOMPRESSION_FAILED", qpack.name);
     try std.testing.expect(qpack.isQpack());
 
+    const datagram = applicationError(protocol.ErrorCode.datagram_error);
+    try std.testing.expectEqualStrings("H3_DATAGRAM_ERROR", datagram.name);
+    try std.testing.expectEqual(Category.datagram, datagram.category);
+
     const unknown = applicationError(0xface);
     try std.testing.expect(!unknown.known());
     try std.testing.expectEqual(Scope.application, unknown.default_scope);
@@ -338,4 +368,9 @@ test "local causes map to close codes and cause categories" {
     try std.testing.expectEqual(protocol.ErrorCode.internal_error, capsule.application.code);
     try std.testing.expectEqual(Scope.stream, capsule.scope);
     try std.testing.expectEqual(Category.resource, capsule.category);
+
+    const udp_payload = classify(error.UdpPayloadTooLarge);
+    try std.testing.expectEqual(protocol.ErrorCode.connect_error, udp_payload.application.code);
+    try std.testing.expectEqual(Scope.stream, udp_payload.scope);
+    try std.testing.expectEqual(Category.connect, udp_payload.category);
 }
