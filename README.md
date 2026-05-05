@@ -29,6 +29,7 @@ mise install
 just test
 just fuzz-smoke
 just example-loopback-get
+just external-h3-client
 ```
 
 ## Design Shape
@@ -168,6 +169,10 @@ just example-loopback-get
   The server and in-process integration tests share the reusable transport
   driver helper instead of open-coding the packet pump, and the server uses
   `ServerRunner` for request lifecycle assembly.
+- `just external-h3-client` builds a null3-as-client HTTP/3 interop harness
+  that targets an IP-literal UDP endpoint with caller-supplied SNI, authority,
+  method, path, and optional body. Peer-specific scripts for quic-go, ngtcp2,
+  lsquic, and aioquic can layer above this binary.
 - `just example-loopback-get` runs a compact in-process client/server example
   over `TransportLoopback` with the public `Client`, `Server`,
   `ClientRunner`, and `ServerRunner` APIs.

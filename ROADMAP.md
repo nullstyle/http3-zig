@@ -117,9 +117,11 @@ Datagrams / capsules), and the QUIC RFCs already tracked by `nullq`.
   decoded owned field storage, distinct from encoded HEADERS size limits.
 - Done: outgoing reliable capsule value budgets, including context-aware
   DATAGRAM capsules before their encoded DATA-frame payload allocation.
-- Next: HTTP/3 interop harnesses against external peers over ordinary
-  `nullq.Connection` APIs, plus additional examples layered on the shared
-  driver.
+- Done: first external HTTP/3 client interop harness over ordinary
+  `nullq.Connection` APIs, using the public `Client`, `ClientRunner`, and
+  transport driver endpoint helpers against IP-literal UDP peers.
+- Next: peer-specific matrix scripts for quic-go, ngtcp2, lsquic, aioquic, and
+  curl, plus additional examples layered on the shared driver.
 
 ## Phase 4: Production Extensions
 

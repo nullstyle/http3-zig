@@ -85,6 +85,22 @@ pub fn build(b: *std.Build) void {
     const curl_h3_server_step = b.step("curl-h3-server", "Build the curl HTTP/3 interop server");
     curl_h3_server_step.dependOn(&install_curl_h3_server.step);
 
+    const external_h3_client_mod = b.createModule(.{
+        .root_source_file = b.path("interop/external_h3/client.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    external_h3_client_mod.addImport("null3", null3_mod);
+    external_h3_client_mod.addImport("nullq", nullq_mod);
+    external_h3_client_mod.addImport("boringssl", boringssl_mod);
+    const external_h3_client = b.addExecutable(.{
+        .name = "null3-external-h3-client",
+        .root_module = external_h3_client_mod,
+    });
+    const install_external_h3_client = b.addInstallArtifact(external_h3_client, .{});
+    const external_h3_client_step = b.step("external-h3-client", "Build the external HTTP/3 interop client");
+    external_h3_client_step.dependOn(&install_external_h3_client.step);
+
     const loopback_get_mod = b.createModule(.{
         .root_source_file = b.path("examples/loopback_get.zig"),
         .target = target,
