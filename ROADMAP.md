@@ -187,8 +187,11 @@ Datagrams / capsules), and the QUIC RFCs already tracked by `nullq`.
 - Done: capsule-aware MASQUE pending-buffer helpers with sustained
   unknown-context DATAGRAM capsule pressure coverage and exact byte-accounting
   checks across fill, reject, drain, and drop cycles.
-- Next: extension-specific capsule registration semantics and external proxy
-  interop.
+- Done: extension-specific capsule type registration semantics with DATAGRAM
+  and GREASE registration rejection, bounded per-receiver capacity, receiver
+  routing, pending-buffer non-retention, and structured CONNECT error
+  classification.
+- Next: external proxy interop.
 
 ## Phase 5: Hardening
 
@@ -207,6 +210,9 @@ Datagrams / capsules), and the QUIC RFCs already tracked by `nullq`.
 - Done: sustained MASQUE unknown-context DATAGRAM capsule pressure cases now
   cover bounded pending-buffer count/byte limits, malformed capsule
   non-buffering, ignored capsule types, and repeated drain/drop accounting.
+- Done: bounded MASQUE extension capsule registries now reject reserved
+  DATAGRAM/GREASE types, enforce capacity, and leave unknown extension capsule
+  values ignorable and unbuffered.
 - Partial: send-side stream buffering, outgoing capsule values, session event
   queues, tracker body accumulation, decoded QPACK field sections, and the
   production session preset now have opt-in caps; broader sustained

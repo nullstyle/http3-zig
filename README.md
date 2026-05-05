@@ -82,9 +82,9 @@ just external-h3-interop
 - `masque`: CONNECT-UDP helper foundation over Extended CONNECT, Context ID 0
   UDP payloads, checked context registry and receiver helpers, Context ID
   allocation validation, bounded unknown-context datagram buffering,
-  capsule-aware pending buffering, drop/buffer/abort receive dispositions for
-  DATAGRAM frames and DATAGRAM capsules, and `capsule-protocol: ?1`
-  negotiation headers.
+  capsule-aware pending buffering, bounded extension capsule type registration,
+  drop/buffer/abort receive dispositions for DATAGRAM frames and DATAGRAM
+  capsules, and `capsule-protocol: ?1` negotiation headers.
 - `driver`: small `nullq`/`null3` transport-driving helpers for tests,
   examples, and interop peers. It keeps socket and clock ownership with the
   embedder while centralizing the handle/poll/tick/session-drain order.
@@ -194,8 +194,8 @@ just external-h3-interop
   DATAGRAM capsules, receiver classification, context registry policy, and
   bounded unknown-context datagram and DATAGRAM-capsule buffering/release/drop
   behavior under small sustained budgets, endpoint Context ID allocation
-  parity, and oversized UDP payload stream-abort classification. DATAGRAM abuse
-  coverage includes malformed HTTP/3 DATAGRAM
+  parity, extension capsule registration/routing, and oversized UDP payload
+  stream-abort classification. DATAGRAM abuse coverage includes malformed HTTP/3 DATAGRAM
   connection closes with `H3_DATAGRAM_ERROR`. Server-push coverage checks
   client `MAX_PUSH_ID` opt-in, server `PUSH_PROMISE` emission, push-stream
   response headers, pushed DATA, pushed stream completion, `CANCEL_PUSH` in

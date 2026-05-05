@@ -217,10 +217,14 @@ pub fn codeForError(err: anyerror) u64 {
         error.UnknownContext,
         error.UdpPayloadTooLarge,
         error.CannotUnregisterDefaultContext,
+        error.CapsuleTypeAlreadyRegistered,
+        error.CapsuleTypeLimitExceeded,
         error.ContextBufferFull,
         error.ContextAlreadyRegistered,
         error.ContextLimitExceeded,
+        error.InvalidCapsuleTypeRegistration,
         error.InvalidContextRegistration,
+        error.UnknownCapsuleType,
         => protocol.ErrorCode.connect_error,
         error.OutOfMemory,
         error.BufferTooSmall,
@@ -300,10 +304,14 @@ fn scopeForError(err: anyerror, app: ApplicationError) Scope {
         error.UnknownContext,
         error.UdpPayloadTooLarge,
         error.CannotUnregisterDefaultContext,
+        error.CapsuleTypeAlreadyRegistered,
+        error.CapsuleTypeLimitExceeded,
         error.ContextBufferFull,
         error.ContextAlreadyRegistered,
         error.ContextLimitExceeded,
+        error.InvalidCapsuleTypeRegistration,
         error.InvalidContextRegistration,
+        error.UnknownCapsuleType,
         => .stream,
         else => app.default_scope,
     };
@@ -319,6 +327,7 @@ fn categoryForError(err: anyerror, app: ApplicationError) Category {
         error.EventQueueFull,
         error.DecodedFieldSectionTooLarge,
         error.TooManyFieldLines,
+        error.CapsuleTypeLimitExceeded,
         error.ContextBufferFull,
         => .resource,
         error.HandshakeFailed,
@@ -388,4 +397,9 @@ test "local causes map to close codes and cause categories" {
     try std.testing.expectEqual(protocol.ErrorCode.connect_error, context_buffer.application.code);
     try std.testing.expectEqual(Scope.stream, context_buffer.scope);
     try std.testing.expectEqual(Category.resource, context_buffer.category);
+
+    const capsule_type_limit = classify(error.CapsuleTypeLimitExceeded);
+    try std.testing.expectEqual(protocol.ErrorCode.connect_error, capsule_type_limit.application.code);
+    try std.testing.expectEqual(Scope.stream, capsule_type_limit.scope);
+    try std.testing.expectEqual(Category.resource, capsule_type_limit.category);
 }

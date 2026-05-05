@@ -19,19 +19,24 @@ pub const capsule_protocol_value = "?1";
 pub const udp_context_id: u64 = 0;
 pub const max_udp_payload_len: usize = 65527;
 pub const max_registered_contexts: usize = 16;
+pub const max_registered_capsule_types: usize = 16;
 pub const connect_udp_abort_code = protocol.ErrorCode.connect_error;
 
 pub const Error = datagram_mod.Error || std.mem.Allocator.Error || error{
     BufferTooSmall,
     CannotUnregisterDefaultContext,
+    CapsuleTypeAlreadyRegistered,
+    CapsuleTypeLimitExceeded,
     ContextBufferFull,
     ContextAlreadyRegistered,
     ContextLimitExceeded,
+    InvalidCapsuleTypeRegistration,
     InvalidContextRegistration,
     InvalidConnectUdpPath,
     InvalidConnectUdpTarget,
     InvalidAcceptStatus,
     NotConnectUdp,
+    UnknownCapsuleType,
     UdpPayloadTooLarge,
     UnexpectedContext,
     UnknownContext,
@@ -89,6 +94,15 @@ pub const RegisteredContext = struct {
     kind: ContextKind,
 };
 
+pub const RegisteredCapsuleType = struct {
+    capsule_type: u64,
+};
+
+pub const ExtensionCapsule = struct {
+    capsule_type: u64,
+    value: []const u8,
+};
+
 pub const ContextPayload = struct {
     context_id: u64,
     kind: ContextKind,
@@ -132,6 +146,7 @@ pub const DatagramDisposition = union(enum) {
 pub const ReceiveDisposition = union(enum) {
     udp_payload: []const u8,
     extension_payload: ContextPayload,
+    extension_capsule: ExtensionCapsule,
     unknown_context: datagram_mod.ContextPayload,
     ignored_capsule_type: u64,
     abort_stream: StreamAbort,
@@ -153,6 +168,7 @@ pub const ReceiveDisposition = union(enum) {
 
 pub const ConnectUdpReceiver = struct {
     registry: ContextRegistry = ContextRegistry.init(),
+    capsule_registry: CapsuleRegistry = CapsuleRegistry.init(),
 
     pub fn init() ConnectUdpReceiver {
         return .{};
@@ -160,6 +176,10 @@ pub const ConnectUdpReceiver = struct {
 
     pub fn contextRegistry(self: *ConnectUdpReceiver) *ContextRegistry {
         return &self.registry;
+    }
+
+    pub fn extensionCapsuleRegistry(self: *ConnectUdpReceiver) *CapsuleRegistry {
+        return &self.capsule_registry;
     }
 
     pub fn registerExtension(self: *ConnectUdpReceiver, context_id: u64) Error!void {
@@ -170,13 +190,20 @@ pub const ConnectUdpReceiver = struct {
         try self.registry.unregister(context_id);
     }
 
+    pub fn registerExtensionCapsule(self: *ConnectUdpReceiver, capsule_type: u64) Error!void {
+        try self.capsule_registry.registerExtension(capsule_type);
+    }
+
+    pub fn unregisterExtensionCapsule(self: *ConnectUdpReceiver, capsule_type: u64) Error!void {
+        try self.capsule_registry.unregister(capsule_type);
+    }
+
     pub fn classifyDatagramPayload(self: *const ConnectUdpReceiver, payload: []const u8) ReceiveDisposition {
         return receiveDispositionFromDatagram(self.registry.classifyDatagramPayload(payload));
     }
 
     pub fn classifyCapsule(self: *const ConnectUdpReceiver, capsule: capsule_mod.Capsule) ReceiveDisposition {
-        if (!capsule.isDatagram()) return .{ .ignored_capsule_type = capsule.capsule_type };
-        return self.classifyDatagramPayload(capsule.value);
+        return classifyCapsuleWithRegistries(&self.registry, &self.capsule_registry, capsule);
     }
 };
 
@@ -277,7 +304,34 @@ pub const PendingDatagramBuffer = struct {
         registry: *const ContextRegistry,
         capsule: capsule_mod.Capsule,
     ) Error!ReceiveDisposition {
-        if (!capsule.isDatagram()) return .{ .ignored_capsule_type = capsule.capsule_type };
+        return self.classifyCapsuleWithRegistriesOrBuffer(
+            registry,
+            &CapsuleRegistry.empty,
+            capsule,
+        );
+    }
+
+    pub fn classifyReceiverCapsuleOrBuffer(
+        self: *PendingDatagramBuffer,
+        receiver: *const ConnectUdpReceiver,
+        capsule: capsule_mod.Capsule,
+    ) Error!ReceiveDisposition {
+        return self.classifyCapsuleWithRegistriesOrBuffer(
+            &receiver.registry,
+            &receiver.capsule_registry,
+            capsule,
+        );
+    }
+
+    pub fn classifyCapsuleWithRegistriesOrBuffer(
+        self: *PendingDatagramBuffer,
+        registry: *const ContextRegistry,
+        capsule_registry: *const CapsuleRegistry,
+        capsule: capsule_mod.Capsule,
+    ) Error!ReceiveDisposition {
+        if (!capsule.isDatagram()) {
+            return classifyCapsuleWithRegistries(registry, capsule_registry, capsule);
+        }
         const disposition = registry.classifyDatagramPayload(capsule.value);
         switch (disposition) {
             .unknown_context => |context| try self.bufferUnknown(context),
@@ -334,6 +388,50 @@ pub const PendingDatagramBuffer = struct {
         {
             return Error.ContextBufferFull;
         }
+    }
+};
+
+pub const CapsuleRegistry = struct {
+    pub const empty: CapsuleRegistry = .{};
+
+    entries: [max_registered_capsule_types]RegisteredCapsuleType = [_]RegisteredCapsuleType{
+        .{ .capsule_type = 0 },
+    } ** max_registered_capsule_types,
+    count: usize = 0,
+
+    pub fn init() CapsuleRegistry {
+        return .{};
+    }
+
+    pub fn isKnown(self: *const CapsuleRegistry, capsule_type: u64) bool {
+        return self.indexOf(capsule_type) != null;
+    }
+
+    pub fn registerExtension(self: *CapsuleRegistry, capsule_type: u64) Error!void {
+        try validateExtensionCapsuleType(capsule_type);
+        if (self.indexOf(capsule_type) != null) return Error.CapsuleTypeAlreadyRegistered;
+        if (self.count >= max_registered_capsule_types) return Error.CapsuleTypeLimitExceeded;
+        self.entries[self.count] = .{ .capsule_type = capsule_type };
+        self.count += 1;
+    }
+
+    pub fn unregister(self: *CapsuleRegistry, capsule_type: u64) Error!void {
+        const index = self.indexOf(capsule_type) orelse return Error.UnknownCapsuleType;
+        self.count -= 1;
+        if (index != self.count) {
+            self.entries[index] = self.entries[self.count];
+        }
+    }
+
+    pub fn classifyCapsule(self: *const CapsuleRegistry, capsule: capsule_mod.Capsule) ReceiveDisposition {
+        return classifyExtensionCapsule(self, capsule);
+    }
+
+    fn indexOf(self: *const CapsuleRegistry, capsule_type: u64) ?usize {
+        for (self.entries[0..self.count], 0..) |entry, index| {
+            if (entry.capsule_type == capsule_type) return index;
+        }
+        return null;
     }
 };
 
@@ -446,6 +544,37 @@ pub fn contextIdAllocator(context_id: u64) Error!ContextIdAllocator {
 pub fn validateAllocatedContextId(allocator_role: ContextIdAllocator, context_id: u64) Error!void {
     const owner = try contextIdAllocator(context_id);
     if (owner != allocator_role) return Error.InvalidContextRegistration;
+}
+
+pub fn isReservedGreaseCapsuleType(capsule_type: u64) bool {
+    return capsule_type >= 0x17 and (capsule_type - 0x17) % 0x29 == 0;
+}
+
+pub fn validateExtensionCapsuleType(capsule_type: u64) Error!void {
+    if (capsule_type == capsule_mod.Type.datagram) return Error.InvalidCapsuleTypeRegistration;
+    if (isReservedGreaseCapsuleType(capsule_type)) return Error.InvalidCapsuleTypeRegistration;
+}
+
+fn classifyCapsuleWithRegistries(
+    registry: *const ContextRegistry,
+    capsule_registry: *const CapsuleRegistry,
+    capsule: capsule_mod.Capsule,
+) ReceiveDisposition {
+    if (capsule.isDatagram()) return receiveDispositionFromDatagram(registry.classifyDatagramPayload(capsule.value));
+    return classifyExtensionCapsule(capsule_registry, capsule);
+}
+
+fn classifyExtensionCapsule(
+    capsule_registry: *const CapsuleRegistry,
+    capsule: capsule_mod.Capsule,
+) ReceiveDisposition {
+    if (!capsule_registry.isKnown(capsule.capsule_type)) {
+        return .{ .ignored_capsule_type = capsule.capsule_type };
+    }
+    return .{ .extension_capsule = .{
+        .capsule_type = capsule.capsule_type,
+        .value = capsule.value,
+    } };
 }
 
 fn receiveDispositionFromDatagram(disposition: DatagramDisposition) ReceiveDisposition {
@@ -809,6 +938,90 @@ test "CONNECT-UDP context IDs enforce endpoint allocation parity" {
     try std.testing.expectError(Error.InvalidContextRegistration, registry.registerAllocatedExtension(.client, 9));
 }
 
+test "CONNECT-UDP capsule registry routes registered extension capsule types" {
+    var registry = CapsuleRegistry.init();
+    const extension_type: u64 = 0x41;
+    const grease_type: u64 = 0x29 + 0x17;
+
+    try std.testing.expect(isReservedGreaseCapsuleType(grease_type));
+    try std.testing.expect(!isReservedGreaseCapsuleType(extension_type));
+    try std.testing.expectError(Error.InvalidCapsuleTypeRegistration, registry.registerExtension(capsule_mod.Type.datagram));
+    try std.testing.expectError(Error.InvalidCapsuleTypeRegistration, registry.registerExtension(grease_type));
+
+    const capsule: capsule_mod.Capsule = .{
+        .capsule_type = extension_type,
+        .value = "extension-state",
+    };
+    switch (registry.classifyCapsule(capsule)) {
+        .ignored_capsule_type => |capsule_type| try std.testing.expectEqual(extension_type, capsule_type),
+        else => return error.UnexpectedDisposition,
+    }
+
+    try registry.registerExtension(extension_type);
+    try std.testing.expect(registry.isKnown(extension_type));
+    try std.testing.expectError(Error.CapsuleTypeAlreadyRegistered, registry.registerExtension(extension_type));
+    switch (registry.classifyCapsule(capsule)) {
+        .extension_capsule => |extension| {
+            try std.testing.expectEqual(extension_type, extension.capsule_type);
+            try std.testing.expectEqualStrings("extension-state", extension.value);
+        },
+        else => return error.UnexpectedDisposition,
+    }
+
+    try registry.unregister(extension_type);
+    try std.testing.expect(!registry.isKnown(extension_type));
+    try std.testing.expectError(Error.UnknownCapsuleType, registry.unregister(extension_type));
+}
+
+test "CONNECT-UDP capsule registry enforces fixed capacity" {
+    var registry = CapsuleRegistry.init();
+
+    var candidate: u64 = 0x41;
+    var registered: usize = 0;
+    while (registered < max_registered_capsule_types) : (candidate += 1) {
+        if (isReservedGreaseCapsuleType(candidate)) continue;
+        try registry.registerExtension(candidate);
+        registered += 1;
+    }
+    try std.testing.expectEqual(max_registered_capsule_types, registry.count);
+
+    while (isReservedGreaseCapsuleType(candidate)) : (candidate += 1) {}
+    try std.testing.expectError(Error.CapsuleTypeLimitExceeded, registry.registerExtension(candidate));
+}
+
+test "CONNECT-UDP receiver surfaces registered extension capsules" {
+    var receiver = ConnectUdpReceiver.init();
+    const extension_type: u64 = 0x41;
+    const capsule: capsule_mod.Capsule = .{
+        .capsule_type = extension_type,
+        .value = "receiver-state",
+    };
+
+    switch (receiver.classifyCapsule(capsule)) {
+        .ignored_capsule_type => |capsule_type| try std.testing.expectEqual(extension_type, capsule_type),
+        else => return error.UnexpectedDisposition,
+    }
+
+    try receiver.registerExtensionCapsule(extension_type);
+    try std.testing.expect(receiver.extensionCapsuleRegistry().isKnown(extension_type));
+    const routed = receiver.classifyCapsule(capsule);
+    try std.testing.expect(!routed.canSilentlyDrop());
+    switch (routed) {
+        .extension_capsule => |extension| {
+            try std.testing.expectEqual(extension_type, extension.capsule_type);
+            try std.testing.expectEqualStrings("receiver-state", extension.value);
+        },
+        else => return error.UnexpectedDisposition,
+    }
+
+    try receiver.unregisterExtensionCapsule(extension_type);
+    try std.testing.expect(!receiver.extensionCapsuleRegistry().isKnown(extension_type));
+    switch (receiver.classifyCapsule(capsule)) {
+        .ignored_capsule_type => |capsule_type| try std.testing.expectEqual(extension_type, capsule_type),
+        else => return error.UnexpectedDisposition,
+    }
+}
+
 test "CONNECT-UDP pending datagram buffer drains after context registration" {
     const allocator = std.testing.allocator;
     var buf: [128]u8 = undefined;
@@ -970,6 +1183,54 @@ test "CONNECT-UDP pending datagram buffer classifies DATAGRAM capsules under pre
     try std.testing.expectEqual(@as(usize, 1), pending.dropContext(10));
     try std.testing.expectEqual(@as(usize, 0), pending.len());
     try std.testing.expectEqual(@as(usize, 0), pending.bufferedPayloadBytes());
+}
+
+test "CONNECT-UDP pending datagram buffer preserves registered extension capsules" {
+    const allocator = std.testing.allocator;
+    var context_buf: [64]u8 = undefined;
+    var capsule_buf: [96]u8 = undefined;
+    var receiver = ConnectUdpReceiver.init();
+    var pending = PendingDatagramBuffer.initWithConfig(allocator, .{
+        .max_datagrams = 1,
+        .max_payload_bytes = 4,
+    });
+    defer pending.deinit();
+
+    const extension_type: u64 = 0x41;
+    try receiver.registerExtensionCapsule(extension_type);
+    switch (try pending.classifyReceiverCapsuleOrBuffer(&receiver, .{
+        .capsule_type = extension_type,
+        .value = "route-me",
+    })) {
+        .extension_capsule => |capsule| {
+            try std.testing.expectEqual(extension_type, capsule.capsule_type);
+            try std.testing.expectEqualStrings("route-me", capsule.value);
+        },
+        else => return error.UnexpectedDisposition,
+    }
+    try std.testing.expectEqual(@as(usize, 0), pending.len());
+    try std.testing.expectEqual(@as(usize, 0), pending.bufferedPayloadBytes());
+
+    const unknown_context_n = try datagram_mod.encodeContextPayload(&context_buf, 8, "hold");
+    const unknown_capsule_n = try capsule_mod.encodeDatagram(&capsule_buf, context_buf[0..unknown_context_n]);
+    const unknown_capsule = (try capsule_mod.decode(capsule_buf[0..unknown_capsule_n])).capsule;
+    switch (try pending.classifyReceiverCapsuleOrBuffer(&receiver, unknown_capsule)) {
+        .unknown_context => |context| {
+            try std.testing.expectEqual(@as(u64, 8), context.context_id);
+            try std.testing.expectEqualStrings("hold", context.payload);
+        },
+        else => return error.UnexpectedDisposition,
+    }
+    try std.testing.expectEqual(@as(usize, 1), pending.len());
+    try std.testing.expectEqual(@as(usize, 4), pending.bufferedPayloadBytes());
+
+    const ignored = try pending.classifyReceiverCapsuleOrBuffer(&receiver, .{
+        .capsule_type = 0x42,
+        .value = "ignore-me",
+    });
+    try std.testing.expect(ignored.canSilentlyDrop());
+    try std.testing.expectEqual(@as(usize, 1), pending.len());
+    try std.testing.expectEqual(@as(usize, 4), pending.bufferedPayloadBytes());
 }
 
 test "CONNECT-UDP pending datagram buffer survives sustained capsule fill and drain cycles" {

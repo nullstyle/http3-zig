@@ -4,17 +4,22 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    const nullq_dep = b.dependency("nullq", .{
-        .target = target,
-        .optimize = optimize,
-    });
-    const nullq_mod = nullq_dep.module("nullq");
-
     const boringssl_dep = b.dependency("boringssl_zig", .{
         .target = target,
         .optimize = optimize,
     });
     const boringssl_mod = boringssl_dep.module("boringssl");
+
+    const nullq_dep = b.dependency("nullq", .{
+        .target = target,
+        .optimize = optimize,
+    });
+    const nullq_mod = b.createModule(.{
+        .root_source_file = nullq_dep.path("src/root.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    nullq_mod.addImport("boringssl", boringssl_mod);
 
     const null3_mod = b.addModule("null3", .{
         .root_source_file = b.path("src/root.zig"),
