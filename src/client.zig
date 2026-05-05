@@ -419,6 +419,7 @@ pub const ResponseEvent = union(enum) {
     trailers: Headers,
     push_promise: session_mod.PushPromiseEvent,
     push_stream: session_mod.PushStreamEvent,
+    cancel_push: session_mod.CancelPushEvent,
     push_headers: Headers,
     push_data: Data,
     push_trailers: Headers,
@@ -459,6 +460,7 @@ pub const ResponseEvent = union(enum) {
             } else null,
             .push_promise => |promise| .{ .push_promise = promise },
             .push_stream => |push| .{ .push_stream = push },
+            .cancel_push => |cancel| .{ .cancel_push = cancel },
             .stream_finished => |finished| if (finished.kind != null and finished.kind.? == .response) .{
                 .finished = .{ .stream_id = finished.stream_id },
             } else if (finished.kind != null and finished.kind.? == .push) .{
@@ -669,6 +671,7 @@ pub const ResponseTracker = struct {
             .flow_blocked,
             .connection_ids_needed,
             .push_stream,
+            .cancel_push,
             .push_headers,
             .push_data,
             .push_trailers,
@@ -801,6 +804,10 @@ pub const Client = struct {
 
     pub fn cancel(self: *Client, stream_id: u64) session_mod.Error!void {
         try self.session.cancelRequest(stream_id);
+    }
+
+    pub fn cancelPush(self: *Client, push_id: u64) session_mod.Error!void {
+        try self.session.cancelPush(push_id);
     }
 
     pub fn request(

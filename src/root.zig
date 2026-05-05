@@ -99,6 +99,7 @@ pub const MessageDecoder = message.Decoder;
 pub const DatagramEvent = session.DatagramEvent;
 pub const DatagramSendEvent = session.DatagramSendEvent;
 pub const PushStreamEvent = session.PushStreamEvent;
+pub const CancelPushEvent = session.CancelPushEvent;
 pub const FlowBlockedEvent = session.FlowBlockedEvent;
 pub const FlowBlockedKind = session.FlowBlockedKind;
 pub const FlowBlockedSource = session.FlowBlockedSource;

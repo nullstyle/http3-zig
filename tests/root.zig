@@ -158,6 +158,12 @@ fn writeStreamType(conn: *nullq.Connection, stream_id: u64, stream_type: u64) !v
     _ = try conn.streamWrite(stream_id, buf[0..n]);
 }
 
+fn writeVarint(conn: *nullq.Connection, stream_id: u64, value: u64) !void {
+    var buf: [8]u8 = undefined;
+    const n = try nullq.wire.varint.encode(&buf, value);
+    _ = try conn.streamWrite(stream_id, buf[0..n]);
+}
+
 fn openUniWithType(conn: *nullq.Connection, stream_id: u64, stream_type: u64) !void {
     _ = try conn.openUni(stream_id);
     try writeStreamType(conn, stream_id, stream_type);
@@ -281,6 +287,59 @@ fn exchangePairSettings(allocator: std.mem.Allocator, pair: *H3Pair) !void {
         clearSessionEvents(allocator, &client_events);
         clearSessionEvents(allocator, &server_events);
     }
+}
+
+fn openGetAndAwaitServerHeaders(
+    allocator: std.mem.Allocator,
+    pair: *H3Pair,
+    h3_client: *null3.Client,
+) !u64 {
+    var request = try h3_client.startRequest(allocator, .{
+        .authority = "example.com",
+        .path = "/",
+    });
+    const stream_id = request.stream_id;
+    try request.finish();
+
+    var server_runner = null3.ServerRunner.init(allocator);
+    defer server_runner.deinit();
+
+    var client_events: std.ArrayList(null3.session.Event) = .empty;
+    defer {
+        clearSessionEvents(allocator, &client_events);
+        client_events.deinit(allocator);
+    }
+    var server_events: std.ArrayList(null3.session.Event) = .empty;
+    defer {
+        clearSessionEvents(allocator, &server_events);
+        server_events.deinit(allocator);
+    }
+
+    var now_us: u64 = 1_000_000;
+    var iters: u32 = 0;
+    while (iters < 20_000) : (iters += 1) {
+        try pumpH3(
+            &pair.client,
+            &pair.server,
+            &pair.client_h3,
+            &pair.server_h3,
+            &client_events,
+            &server_events,
+            &now_us,
+        );
+
+        for (server_events.items) |event| {
+            switch (try server_runner.observe(event)) {
+                .request_updated => |request_state| {
+                    if (request_state.reader().headers().len > 0) return stream_id;
+                },
+                else => {},
+            }
+        }
+        clearSessionEvents(allocator, &client_events);
+        clearSessionEvents(allocator, &server_events);
+    }
+    return error.ExpectedRequestHeaders;
 }
 
 test "codec fuzz target names parse" {
@@ -1673,6 +1732,282 @@ test "server push requires client MAX_PUSH_ID opt-in" {
     );
 }
 
+test "server push enforces advertised MAX_PUSH_ID limit" {
+    const allocator = std.testing.allocator;
+
+    var pair: H3Pair = undefined;
+    try pair.initStarted(allocator, .{ .max_push_id = 0 }, .{});
+    defer pair.deinit();
+
+    try exchangePairSettings(allocator, &pair);
+
+    var h3_client = null3.Client.init(&pair.client_h3);
+    var h3_server = null3.Server.init(&pair.server_h3);
+    const request_stream_id = try openGetAndAwaitServerHeaders(allocator, &pair, &h3_client);
+    const promised_headers = [_]null3.FieldLine{
+        .{ .name = ":method", .value = "GET" },
+        .{ .name = ":scheme", .value = "https" },
+        .{ .name = ":path", .value = "/style.css" },
+        .{ .name = ":authority", .value = "example.com" },
+    };
+
+    _ = try h3_server.startPush(allocator, request_stream_id, .{
+        .promise_headers = &promised_headers,
+        .response = .{ .status = "200" },
+    });
+    try std.testing.expectError(
+        error.PushLimitExceeded,
+        h3_server.startPush(allocator, request_stream_id, .{
+            .promise_headers = &promised_headers,
+            .response = .{ .status = "200" },
+        }),
+    );
+}
+
+test "client CANCEL_PUSH reaches server" {
+    const allocator = std.testing.allocator;
+
+    var pair: H3Pair = undefined;
+    try pair.initStarted(allocator, .{ .max_push_id = 0 }, .{});
+    defer pair.deinit();
+
+    try exchangePairSettings(allocator, &pair);
+
+    var h3_client = null3.Client.init(&pair.client_h3);
+    var h3_server = null3.Server.init(&pair.server_h3);
+    const request_stream_id = try openGetAndAwaitServerHeaders(allocator, &pair, &h3_client);
+    const promised_headers = [_]null3.FieldLine{
+        .{ .name = ":method", .value = "GET" },
+        .{ .name = ":scheme", .value = "https" },
+        .{ .name = ":path", .value = "/style.css" },
+        .{ .name = ":authority", .value = "example.com" },
+    };
+
+    _ = try h3_server.startPush(allocator, request_stream_id, .{
+        .promise_headers = &promised_headers,
+        .response = .{ .status = "200" },
+    });
+    try h3_client.cancelPush(0);
+
+    var client_events: std.ArrayList(null3.session.Event) = .empty;
+    defer {
+        clearSessionEvents(allocator, &client_events);
+        client_events.deinit(allocator);
+    }
+    var server_events: std.ArrayList(null3.session.Event) = .empty;
+    defer {
+        clearSessionEvents(allocator, &server_events);
+        server_events.deinit(allocator);
+    }
+
+    var saw_cancel = false;
+    var now_us: u64 = 1_000_000;
+    var iters: u32 = 0;
+    while (!saw_cancel) : (iters += 1) {
+        try std.testing.expect(iters < 20_000);
+        try pumpH3(
+            &pair.client,
+            &pair.server,
+            &pair.client_h3,
+            &pair.server_h3,
+            &client_events,
+            &server_events,
+            &now_us,
+        );
+
+        for (server_events.items) |event| {
+            const request_event = h3_server.classify(event) orelse continue;
+            switch (request_event) {
+                .cancel_push => |cancel| {
+                    saw_cancel = true;
+                    try std.testing.expectEqual(@as(u64, 0), cancel.push_id);
+                },
+                else => {},
+            }
+        }
+        clearSessionEvents(allocator, &server_events);
+
+        clearSessionEvents(allocator, &client_events);
+    }
+}
+
+test "server CANCEL_PUSH reaches client" {
+    const allocator = std.testing.allocator;
+
+    var pair: H3Pair = undefined;
+    try pair.initStarted(allocator, .{ .max_push_id = 0 }, .{});
+    defer pair.deinit();
+
+    try exchangePairSettings(allocator, &pair);
+
+    var h3_client = null3.Client.init(&pair.client_h3);
+    var h3_server = null3.Server.init(&pair.server_h3);
+    const request_stream_id = try openGetAndAwaitServerHeaders(allocator, &pair, &h3_client);
+    const promised_headers = [_]null3.FieldLine{
+        .{ .name = ":method", .value = "GET" },
+        .{ .name = ":scheme", .value = "https" },
+        .{ .name = ":path", .value = "/style.css" },
+        .{ .name = ":authority", .value = "example.com" },
+    };
+
+    _ = try h3_server.startPush(allocator, request_stream_id, .{
+        .promise_headers = &promised_headers,
+        .response = .{ .status = "200" },
+    });
+    try h3_server.cancelPush(0);
+
+    var client_events: std.ArrayList(null3.session.Event) = .empty;
+    defer {
+        clearSessionEvents(allocator, &client_events);
+        client_events.deinit(allocator);
+    }
+    var server_events: std.ArrayList(null3.session.Event) = .empty;
+    defer {
+        clearSessionEvents(allocator, &server_events);
+        server_events.deinit(allocator);
+    }
+
+    var saw_cancel = false;
+    var now_us: u64 = 1_000_000;
+    var iters: u32 = 0;
+    while (!saw_cancel) : (iters += 1) {
+        try std.testing.expect(iters < 20_000);
+        try pumpH3(
+            &pair.client,
+            &pair.server,
+            &pair.client_h3,
+            &pair.server_h3,
+            &client_events,
+            &server_events,
+            &now_us,
+        );
+        clearSessionEvents(allocator, &server_events);
+
+        for (client_events.items) |event| {
+            const response_event = h3_client.classify(event) orelse continue;
+            switch (response_event) {
+                .cancel_push => |cancel| {
+                    saw_cancel = true;
+                    try std.testing.expectEqual(@as(u64, 0), cancel.push_id);
+                },
+                else => {},
+            }
+        }
+        clearSessionEvents(allocator, &client_events);
+    }
+}
+
+test "session rejects CANCEL_PUSH for unpromised push IDs" {
+    const allocator = std.testing.allocator;
+
+    var pair: H3Pair = undefined;
+    try pair.initStarted(allocator, .{ .max_push_id = 1 }, .{});
+    defer pair.deinit();
+
+    try exchangePairSettings(allocator, &pair);
+    try writeFrame(&pair.client, pair.client_h3.control_stream_id.?, .{ .cancel_push = 0 });
+
+    try expectPairH3Error(allocator, &pair, error.InvalidPushId);
+    try std.testing.expectEqual(null3.session.ShutdownState.closed, pair.server_h3.shutdownState());
+    try expectLastCloseCode(&pair.server_h3, null3.protocol.ErrorCode.id_error);
+}
+
+test "session rejects CANCEL_PUSH above advertised MAX_PUSH_ID" {
+    const allocator = std.testing.allocator;
+
+    var pair: H3Pair = undefined;
+    try pair.initStarted(allocator, .{ .max_push_id = 0 }, .{});
+    defer pair.deinit();
+
+    try exchangePairSettings(allocator, &pair);
+    try writeFrame(&pair.client, pair.client_h3.control_stream_id.?, .{ .cancel_push = 1 });
+
+    try expectPairH3Error(allocator, &pair, error.InvalidPushId);
+    try std.testing.expectEqual(null3.session.ShutdownState.closed, pair.server_h3.shutdownState());
+    try expectLastCloseCode(&pair.server_h3, null3.protocol.ErrorCode.id_error);
+}
+
+test "session rejects push streams above advertised MAX_PUSH_ID" {
+    const allocator = std.testing.allocator;
+
+    var pair: H3Pair = undefined;
+    try pair.initStarted(allocator, .{ .max_push_id = 0 }, .{});
+    defer pair.deinit();
+
+    try openUniWithType(&pair.server, 7, null3.protocol.StreamType.push);
+    try writeVarint(&pair.server, 7, 1);
+
+    try expectPairH3Error(allocator, &pair, error.InvalidPushId);
+    try std.testing.expectEqual(null3.session.ShutdownState.closed, pair.client_h3.shutdownState());
+    try expectLastCloseCode(&pair.client_h3, null3.protocol.ErrorCode.id_error);
+}
+
+test "session rejects duplicate push stream IDs" {
+    const allocator = std.testing.allocator;
+
+    var pair: H3Pair = undefined;
+    try pair.initStarted(allocator, .{ .max_push_id = 1 }, .{});
+    defer pair.deinit();
+
+    var client_events: std.ArrayList(null3.session.Event) = .empty;
+    defer {
+        clearSessionEvents(allocator, &client_events);
+        client_events.deinit(allocator);
+    }
+    var server_events: std.ArrayList(null3.session.Event) = .empty;
+    defer {
+        clearSessionEvents(allocator, &server_events);
+        server_events.deinit(allocator);
+    }
+
+    try openUniWithType(&pair.server, 7, null3.protocol.StreamType.push);
+    try writeVarint(&pair.server, 7, 0);
+
+    var now_us: u64 = 1_000_000;
+    var saw_push = false;
+    var iters: u32 = 0;
+    while (!saw_push) : (iters += 1) {
+        try std.testing.expect(iters < 20_000);
+        try pumpH3(
+            &pair.client,
+            &pair.server,
+            &pair.client_h3,
+            &pair.server_h3,
+            &client_events,
+            &server_events,
+            &now_us,
+        );
+        clearSessionEvents(allocator, &server_events);
+        for (client_events.items) |event| {
+            switch (event) {
+                .push_stream => |push| {
+                    saw_push = true;
+                    try std.testing.expectEqual(@as(u64, 0), push.push_id);
+                },
+                else => {},
+            }
+        }
+        clearSessionEvents(allocator, &client_events);
+    }
+
+    try openUniWithType(&pair.server, 11, null3.protocol.StreamType.push);
+    try writeVarint(&pair.server, 11, 0);
+
+    try pumpUntilH3Error(
+        allocator,
+        &pair.client,
+        &pair.server,
+        &pair.client_h3,
+        &pair.server_h3,
+        &client_events,
+        &server_events,
+        &now_us,
+        error.InvalidPushId,
+    );
+    try std.testing.expectEqual(null3.session.ShutdownState.closed, pair.client_h3.shutdownState());
+    try expectLastCloseCode(&pair.client_h3, null3.protocol.ErrorCode.id_error);
+}
+
 test "session rejects duplicate peer SETTINGS" {
     const allocator = std.testing.allocator;
 
@@ -1725,6 +2060,21 @@ test "session rejects GOAWAY on request streams" {
     const stream_id: u64 = 0;
     _ = try pair.client.openBidi(stream_id);
     try writeFrame(&pair.client, stream_id, .{ .goaway = 0 });
+    try expectPairH3Error(allocator, &pair, error.FrameUnexpected);
+    try std.testing.expectEqual(null3.session.ShutdownState.closed, pair.server_h3.shutdownState());
+    try expectLastCloseCode(&pair.server_h3, null3.protocol.ErrorCode.frame_unexpected);
+}
+
+test "session rejects CANCEL_PUSH on request streams" {
+    const allocator = std.testing.allocator;
+
+    var pair: H3Pair = undefined;
+    try pair.initStarted(allocator, .{ .max_push_id = 0 }, .{});
+    defer pair.deinit();
+
+    const stream_id: u64 = 0;
+    _ = try pair.client.openBidi(stream_id);
+    try writeFrame(&pair.client, stream_id, .{ .cancel_push = 0 });
     try expectPairH3Error(allocator, &pair, error.FrameUnexpected);
     try std.testing.expectEqual(null3.session.ShutdownState.closed, pair.server_h3.shutdownState());
     try expectLastCloseCode(&pair.server_h3, null3.protocol.ErrorCode.frame_unexpected);

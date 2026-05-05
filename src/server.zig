@@ -241,6 +241,10 @@ pub const PushWriter = struct {
     pub fn abort(self: *PushWriter) session_mod.Error!void {
         try self.reset(protocol.ErrorCode.internal_error);
     }
+
+    pub fn cancel(self: *PushWriter) session_mod.Error!void {
+        try self.server.cancelPush(self.push_id);
+    }
 };
 
 pub const ConnectUdpAcceptOptions = masque_mod.AcceptOptions;
@@ -474,6 +478,7 @@ pub const RequestEvent = union(enum) {
     finished: StreamFinished,
     reset: StreamReset,
     rejected: RequestRejected,
+    cancel_push: session_mod.CancelPushEvent,
     goaway: u64,
     connection_closed: ConnectionClosed,
     ignored_unknown_frame: UnknownFrame,
@@ -510,6 +515,7 @@ pub const RequestEvent = union(enum) {
                 },
             } else null,
             .request_rejected => |rejected| .{ .rejected = rejected },
+            .cancel_push => |cancel| .{ .cancel_push = cancel },
             .goaway => |id| .{ .goaway = id },
             .connection_closed => |closed| .{ .connection_closed = closed },
             .ignored_unknown_frame => |unknown| .{ .ignored_unknown_frame = unknown },
@@ -636,6 +642,10 @@ pub const Server = struct {
 
     pub fn resetPush(self: *Server, stream_id: u64, error_code: u64) session_mod.Error!void {
         try self.session.resetStream(stream_id, error_code);
+    }
+
+    pub fn cancelPush(self: *Server, push_id: u64) session_mod.Error!void {
+        try self.session.cancelPush(push_id);
     }
 
     pub fn reject(self: *Server, stream_id: u64) session_mod.Error!void {
@@ -958,6 +968,7 @@ pub const RequestTracker = struct {
             .datagram_lost,
             .flow_blocked,
             .connection_ids_needed,
+            .cancel_push,
             .goaway,
             .connection_closed,
             .ignored_unknown_frame,

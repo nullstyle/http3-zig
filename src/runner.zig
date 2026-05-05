@@ -19,6 +19,7 @@ pub const BatchStats = struct {
     datagram_losses: usize = 0,
     flow_blocked: usize = 0,
     connection_id_replenishments: usize = 0,
+    cancel_pushes: usize = 0,
     goaways: usize = 0,
     connection_closes: usize = 0,
     ignored_unknown_frames: usize = 0,
@@ -36,6 +37,7 @@ pub const ClientObservation = union(enum) {
     datagram_lost: client_mod.DatagramSend,
     flow_blocked: client_mod.FlowBlocked,
     connection_ids_needed: client_mod.ConnectionIdsNeeded,
+    cancel_push: session_mod.CancelPushEvent,
     goaway: u64,
     connection_closed: client_mod.ConnectionClosed,
     ignored_unknown_frame: client_mod.UnknownFrame,
@@ -51,6 +53,7 @@ pub const ServerObservation = union(enum) {
     datagram_lost: server_mod.DatagramSend,
     flow_blocked: server_mod.FlowBlocked,
     connection_ids_needed: server_mod.ConnectionIdsNeeded,
+    cancel_push: session_mod.CancelPushEvent,
     goaway: u64,
     connection_closed: server_mod.ConnectionClosed,
     ignored_unknown_frame: server_mod.UnknownFrame,
@@ -108,6 +111,7 @@ pub const ClientRunner = struct {
             .datagram_lost => |lost| return .{ .datagram_lost = lost },
             .flow_blocked => |blocked| return .{ .flow_blocked = blocked },
             .connection_ids_needed => |needed| return .{ .connection_ids_needed = needed },
+            .cancel_push => |cancel| return .{ .cancel_push = cancel },
             .goaway => |id| {
                 self.last_goaway = id;
                 return .{ .goaway = id };
@@ -192,6 +196,7 @@ pub const ServerRunner = struct {
             .datagram_lost => |lost| return .{ .datagram_lost = lost },
             .flow_blocked => |blocked| return .{ .flow_blocked = blocked },
             .connection_ids_needed => |needed| return .{ .connection_ids_needed = needed },
+            .cancel_push => |cancel| return .{ .cancel_push = cancel },
             .goaway => |id| {
                 self.last_goaway = id;
                 return .{ .goaway = id };
@@ -245,6 +250,7 @@ fn noteClientObservation(
         .datagram_lost => stats.datagram_losses += 1,
         .flow_blocked => stats.flow_blocked += 1,
         .connection_ids_needed => stats.connection_id_replenishments += 1,
+        .cancel_push => stats.cancel_pushes += 1,
         .goaway => stats.goaways += 1,
         .connection_closed => stats.connection_closes += 1,
         .ignored_unknown_frame => stats.ignored_unknown_frames += 1,
@@ -271,6 +277,7 @@ fn noteServerObservation(
         .datagram_lost => stats.datagram_losses += 1,
         .flow_blocked => stats.flow_blocked += 1,
         .connection_ids_needed => stats.connection_id_replenishments += 1,
+        .cancel_push => stats.cancel_pushes += 1,
         .goaway => stats.goaways += 1,
         .connection_closed => stats.connection_closes += 1,
         .ignored_unknown_frame => stats.ignored_unknown_frames += 1,
