@@ -274,7 +274,7 @@ pub fn main(init: std.process.Init) !void {
                     .original_destination_connection_id = nullq.conn.path.ConnectionId.fromSlice(ids.dcid),
                     .initial_source_connection_id = nullq.conn.path.ConnectionId.fromSlice(&server_cid),
                     .max_idle_timeout_ms = 30_000,
-                    .initial_max_data = 32 * 1024 * 1024,
+                    .initial_max_data = 16 * 1024 * 1024,
                     .initial_max_stream_data_bidi_local = 16 * 1024 * 1024,
                     .initial_max_stream_data_bidi_remote = 16 * 1024 * 1024,
                     .initial_max_stream_data_uni = 1024 * 1024,

@@ -116,10 +116,15 @@ expect_body() {
     local url_path="$3"
     start_server 1
     local body
-    body="$(curl_common "https://localhost:${SERVER_PORT}${url_path}")"
+    if ! body="$(curl_common "https://localhost:${SERVER_PORT}${url_path}")"; then
+        echo "FAIL ${name}: curl request failed" >&2
+        show_server_log
+        return 1
+    fi
     if [[ "$body" != "$want" ]]; then
         echo "FAIL ${name}: unexpected body" >&2
         printf 'got:\n%s\nwant:\n%s\n' "$body" "$want" >&2
+        show_server_log
         return 1
     fi
     stop_server
@@ -153,6 +158,24 @@ if [[ "$echo_body" != "curl-post-body" ]]; then
 fi
 stop_server
 echo "PASS post echo"
+
+start_server 3
+if ! multi_body="$(curl_common \
+    "https://localhost:${SERVER_PORT}/hello?first" \
+    "https://localhost:${SERVER_PORT}/hello?second" \
+    "https://localhost:${SERVER_PORT}/hello?third")"; then
+    echo "FAIL multi request: curl request failed" >&2
+    show_server_log
+    exit 1
+fi
+if [[ "$multi_body" != $'hello\nhello\nhello' ]]; then
+    echo "FAIL multi request: unexpected concatenated body" >&2
+    printf 'got:\n%s\n' "$multi_body" >&2
+    show_server_log
+    exit 1
+fi
+stop_server
+echo "PASS multi request"
 
 start_server 1
 large_out="$WORK_DIR/large.bin"
