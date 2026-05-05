@@ -155,6 +155,7 @@ pub fn codeForError(err: anyerror) u64 {
         error.DuplicateHeaders,
         error.DataAfterTrailers,
         error.UnexpectedPushPromise,
+        error.InconsistentPushPromise,
         error.MissingHeaders,
         error.EmptyFieldName,
         error.UppercaseFieldName,

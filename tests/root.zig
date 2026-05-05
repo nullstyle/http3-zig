@@ -175,6 +175,22 @@ fn writeHeadersFrame(conn: *nullq.Connection, stream_id: u64, fields: []const nu
     try writeFrame(conn, stream_id, .{ .headers = block[0..block_n] });
 }
 
+fn writePushPromiseFrame(
+    conn: *nullq.Connection,
+    stream_id: u64,
+    push_id: u64,
+    fields: []const null3.FieldLine,
+) !void {
+    var block: [2048]u8 = undefined;
+    const block_n = try null3.qpack.encodeFieldSection(&block, fields);
+    try writeFrame(conn, stream_id, .{
+        .push_promise = .{
+            .push_id = push_id,
+            .field_section = block[0..block_n],
+        },
+    });
+}
+
 fn expectLastCloseCode(session: *const null3.Session, code: u64) !void {
     const close = session.lastCloseError() orelse return error.MissingCloseError;
     try std.testing.expectEqual(code, close.application.code);
@@ -2006,6 +2022,167 @@ test "session rejects duplicate push stream IDs" {
     );
     try std.testing.expectEqual(null3.session.ShutdownState.closed, pair.client_h3.shutdownState());
     try expectLastCloseCode(&pair.client_h3, null3.protocol.ErrorCode.id_error);
+}
+
+test "session accepts duplicate PUSH_PROMISE with identical fields" {
+    const allocator = std.testing.allocator;
+
+    var pair: H3Pair = undefined;
+    try pair.initStarted(allocator, .{ .max_push_id = 1 }, .{});
+    defer pair.deinit();
+
+    try exchangePairSettings(allocator, &pair);
+
+    var h3_client = null3.Client.init(&pair.client_h3);
+    const first_stream_id = try openGetAndAwaitServerHeaders(allocator, &pair, &h3_client);
+    const second_stream_id = try openGetAndAwaitServerHeaders(allocator, &pair, &h3_client);
+    const promised_headers = [_]null3.FieldLine{
+        .{ .name = ":method", .value = "GET" },
+        .{ .name = ":scheme", .value = "https" },
+        .{ .name = ":path", .value = "/style.css" },
+        .{ .name = ":authority", .value = "example.com" },
+    };
+
+    try writePushPromiseFrame(&pair.server, first_stream_id, 0, &promised_headers);
+    try writePushPromiseFrame(&pair.server, second_stream_id, 0, &promised_headers);
+
+    var client_events: std.ArrayList(null3.session.Event) = .empty;
+    defer {
+        clearSessionEvents(allocator, &client_events);
+        client_events.deinit(allocator);
+    }
+    var server_events: std.ArrayList(null3.session.Event) = .empty;
+    defer {
+        clearSessionEvents(allocator, &server_events);
+        server_events.deinit(allocator);
+    }
+
+    var promises: usize = 0;
+    var now_us: u64 = 1_000_000;
+    var iters: u32 = 0;
+    while (promises < 2) : (iters += 1) {
+        try std.testing.expect(iters < 20_000);
+        try pumpH3(
+            &pair.client,
+            &pair.server,
+            &pair.client_h3,
+            &pair.server_h3,
+            &client_events,
+            &server_events,
+            &now_us,
+        );
+        clearSessionEvents(allocator, &server_events);
+        for (client_events.items) |event| {
+            switch (event) {
+                .push_promise => |promise| {
+                    promises += 1;
+                    try std.testing.expectEqual(@as(u64, 0), promise.push_id);
+                },
+                else => {},
+            }
+        }
+        clearSessionEvents(allocator, &client_events);
+    }
+}
+
+test "session rejects duplicate PUSH_PROMISE with inconsistent fields" {
+    const allocator = std.testing.allocator;
+
+    var pair: H3Pair = undefined;
+    try pair.initStarted(allocator, .{ .max_push_id = 1 }, .{});
+    defer pair.deinit();
+
+    try exchangePairSettings(allocator, &pair);
+
+    var h3_client = null3.Client.init(&pair.client_h3);
+    const first_stream_id = try openGetAndAwaitServerHeaders(allocator, &pair, &h3_client);
+    const second_stream_id = try openGetAndAwaitServerHeaders(allocator, &pair, &h3_client);
+    const promised_headers = [_]null3.FieldLine{
+        .{ .name = ":method", .value = "GET" },
+        .{ .name = ":scheme", .value = "https" },
+        .{ .name = ":path", .value = "/style.css" },
+        .{ .name = ":authority", .value = "example.com" },
+    };
+    const conflicting_headers = [_]null3.FieldLine{
+        .{ .name = ":method", .value = "GET" },
+        .{ .name = ":scheme", .value = "https" },
+        .{ .name = ":path", .value = "/script.js" },
+        .{ .name = ":authority", .value = "example.com" },
+    };
+
+    try writePushPromiseFrame(&pair.server, first_stream_id, 0, &promised_headers);
+    try writePushPromiseFrame(&pair.server, second_stream_id, 0, &conflicting_headers);
+
+    try expectPairH3Error(allocator, &pair, error.InconsistentPushPromise);
+    try std.testing.expectEqual(null3.session.ShutdownState.closed, pair.client_h3.shutdownState());
+    try expectLastCloseCode(&pair.client_h3, null3.protocol.ErrorCode.message_error);
+}
+
+test "client push policy auto-cancels promised resources" {
+    const allocator = std.testing.allocator;
+
+    var pair: H3Pair = undefined;
+    try pair.initStarted(allocator, .{
+        .max_push_id = 0,
+        .push_policy = .cancel_promises,
+    }, .{});
+    defer pair.deinit();
+
+    try exchangePairSettings(allocator, &pair);
+
+    var h3_client = null3.Client.init(&pair.client_h3);
+    var h3_server = null3.Server.init(&pair.server_h3);
+    const request_stream_id = try openGetAndAwaitServerHeaders(allocator, &pair, &h3_client);
+    const promised_headers = [_]null3.FieldLine{
+        .{ .name = ":method", .value = "GET" },
+        .{ .name = ":scheme", .value = "https" },
+        .{ .name = ":path", .value = "/style.css" },
+        .{ .name = ":authority", .value = "example.com" },
+    };
+
+    _ = try h3_server.startPush(allocator, request_stream_id, .{
+        .promise_headers = &promised_headers,
+        .response = .{ .status = "200" },
+    });
+
+    var client_events: std.ArrayList(null3.session.Event) = .empty;
+    defer {
+        clearSessionEvents(allocator, &client_events);
+        client_events.deinit(allocator);
+    }
+    var server_events: std.ArrayList(null3.session.Event) = .empty;
+    defer {
+        clearSessionEvents(allocator, &server_events);
+        server_events.deinit(allocator);
+    }
+
+    var saw_cancel = false;
+    var now_us: u64 = 1_000_000;
+    var iters: u32 = 0;
+    while (!saw_cancel) : (iters += 1) {
+        try std.testing.expect(iters < 20_000);
+        try pumpH3(
+            &pair.client,
+            &pair.server,
+            &pair.client_h3,
+            &pair.server_h3,
+            &client_events,
+            &server_events,
+            &now_us,
+        );
+        clearSessionEvents(allocator, &client_events);
+        for (server_events.items) |event| {
+            const request_event = h3_server.classify(event) orelse continue;
+            switch (request_event) {
+                .cancel_push => |cancel| {
+                    saw_cancel = true;
+                    try std.testing.expectEqual(@as(u64, 0), cancel.push_id);
+                },
+                else => {},
+            }
+        }
+        clearSessionEvents(allocator, &server_events);
+    }
 }
 
 test "session rejects duplicate peer SETTINGS" {

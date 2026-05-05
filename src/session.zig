@@ -43,6 +43,7 @@ pub const Error = nullq.conn.state.Error ||
         ClosedCriticalStream,
         InvalidGoawayId,
         InvalidPushId,
+        InconsistentPushPromise,
         RequestBlockedByGoaway,
         PushNotEnabled,
         PushLimitExceeded,
@@ -98,6 +99,16 @@ pub const Config = struct {
     /// Optional typed HTTP/3 trace callback. Metrics are always tracked; the
     /// callback lets embedders translate events into logs or qlog JSON.
     observability: observability_mod.Hooks = .{},
+    /// Client-only policy for valid incoming PUSH_PROMISE frames.
+    push_policy: PushPolicy = .accept,
+};
+
+pub const PushPolicy = enum {
+    /// Emit valid PUSH_PROMISE events and accept matching push streams.
+    accept,
+    /// Emit valid PUSH_PROMISE events, immediately send CANCEL_PUSH, and abort
+    /// any matching push stream that has already arrived.
+    cancel_promises,
 };
 
 pub const FieldEvent = struct {
@@ -319,6 +330,7 @@ pub const Session = struct {
     qpack_encoder_capacity: usize = 0,
 
     streams: std.AutoHashMapUnmanaged(u64, *StreamState) = .empty,
+    received_push_promises: std.AutoHashMapUnmanaged(u64, []qpack.FieldLine) = .empty,
 
     pub fn init(
         allocator: std.mem.Allocator,
@@ -350,6 +362,9 @@ pub const Session = struct {
             self.allocator.destroy(state);
         }
         self.streams.deinit(self.allocator);
+        var promises = self.received_push_promises.valueIterator();
+        while (promises.next()) |fields| freeFields(self.allocator, fields.*);
+        self.received_push_promises.deinit(self.allocator);
         self.qpack_encoder_table.deinit();
         self.qpack_decoder_table.deinit();
         self.qpack_encoder_state.deinit();
@@ -1193,6 +1208,50 @@ pub const Session = struct {
                     state.blocked_on_qpack = false;
                     break :blk message_event;
                 },
+                .push_promise => |promise| blk: {
+                    if (self.config.max_field_section_size) |max| {
+                        if (promise.field_section.len > max) {
+                            self.closeForError(error.HeaderSectionTooLarge);
+                            return error.HeaderSectionTooLarge;
+                        }
+                    }
+                    decoder.validateFrame(decoded.frame) catch |err| {
+                        self.closeForError(err);
+                        return err;
+                    };
+                    self.validateReceivedPushId(promise.push_id) catch |err| return err;
+
+                    const decoded_fields = self.decodeFieldSectionForStream(state.id, promise.field_section) catch |err| {
+                        if (err == error.RequiredInsertCountNotReady) {
+                            state.blocked_on_qpack = true;
+                            return;
+                        }
+                        self.closeForError(err);
+                        return err;
+                    };
+                    defer qpack.freeFieldSection(self.allocator, decoded_fields.fields);
+
+                    headers_mod.validateRequest(decoded_fields.fields) catch |err| {
+                        self.closeForError(err);
+                        return err;
+                    };
+                    self.recordReceivedPushPromise(promise.push_id, decoded_fields.fields) catch |err| {
+                        self.closeForError(err);
+                        return err;
+                    };
+                    try self.completeQpackFieldSection(state.id, decoded_fields.required_insert_count);
+                    state.blocked_on_qpack = false;
+
+                    try budget.reserve(promise.field_section.len);
+                    const maybe_push_event = decoder.observe(self.allocator, decoded.frame) catch |err| {
+                        self.closeForError(err);
+                        return err;
+                    };
+                    const message_event = maybe_push_event orelse break :blk null;
+                    errdefer message_event.deinit(self.allocator);
+                    try self.applyPushPolicy(promise.push_id);
+                    break :blk message_event;
+                },
                 else => blk: {
                     decoder.validateFrame(decoded.frame) catch |err| {
                         self.closeForError(err);
@@ -1575,6 +1634,30 @@ pub const Session = struct {
         if (push_id > max_push_id) {
             self.closeForError(Error.InvalidPushId);
             return Error.InvalidPushId;
+        }
+    }
+
+    fn recordReceivedPushPromise(
+        self: *Session,
+        push_id: u64,
+        fields: []const qpack.FieldLine,
+    ) Error!void {
+        if (self.role != .client) return;
+        if (self.received_push_promises.get(push_id)) |existing| {
+            if (!fieldSectionsEqual(existing, fields)) return Error.InconsistentPushPromise;
+            return;
+        }
+
+        const copy = try cloneFields(self.allocator, fields);
+        errdefer freeFields(self.allocator, copy);
+        try self.received_push_promises.put(self.allocator, push_id, copy);
+    }
+
+    fn applyPushPolicy(self: *Session, push_id: u64) Error!void {
+        if (self.role != .client) return;
+        switch (self.config.push_policy) {
+            .accept => {},
+            .cancel_promises => try self.cancelPush(push_id),
         }
     }
 
@@ -2326,6 +2409,15 @@ fn fieldsOwnedBytes(fields: []const qpack.FieldLine) usize {
     var total = @sizeOf(qpack.FieldLine) * fields.len;
     for (fields) |field| total += field.name.len + field.value.len;
     return total;
+}
+
+fn fieldSectionsEqual(a: []const qpack.FieldLine, b: []const qpack.FieldLine) bool {
+    if (a.len != b.len) return false;
+    for (a, b) |left, right| {
+        if (!std.mem.eql(u8, left.name, right.name)) return false;
+        if (!std.mem.eql(u8, left.value, right.value)) return false;
+    }
+    return true;
 }
 
 fn contextPayloadEncodedLenChecked(context_id: u64, payload_len: usize) Error!usize {

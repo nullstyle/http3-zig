@@ -22,9 +22,10 @@ context-aware DATAGRAM helpers, WebSocket-over-HTTP/3 tunnel helpers, HTTP/3
 trace callbacks and metrics snapshots, TLS keylog / QUIC qlog passthrough
 hooks, CONNECT-UDP receiver helpers, context registry, receive dispositions,
 and UDP payload limits, first server-push support with `MAX_PUSH_ID`,
-`PUSH_PROMISE`, push streams, and `CANCEL_PUSH`, opt-in send-buffer
-backpressure limits, and lightweight request-response facades with
-configurable tracker body and session event-queue budgets.
+`PUSH_PROMISE`, push streams, `CANCEL_PUSH`, duplicate-promise validation, and
+client push policy, opt-in send-buffer backpressure limits, and lightweight
+request-response facades with configurable tracker body and session event-queue
+budgets.
 
 ```sh
 mise install
@@ -135,7 +136,9 @@ just external-h3-interop
   `Server.startPush` / `Server.push` provide the first server-push facade for
   promised requests and pushed responses once the client advertises
   `MAX_PUSH_ID`, and `Client.cancelPush` / `Server.cancelPush` exchange
-  `CANCEL_PUSH` control frames for promised resources.
+  `CANCEL_PUSH` control frames for promised resources. Client sessions track
+  duplicate `PUSH_PROMISE` IDs by decoded request fields and can use
+  `PushPolicy.cancel_promises` to auto-cancel valid promised resources.
   Request/response writers can send context-aware unreliable datagrams and
   reliable DATAGRAM capsules.
 
@@ -174,7 +177,8 @@ just external-h3-interop
   opt-in, server `PUSH_PROMISE` emission, push-stream response headers, pushed
   DATA, pushed stream completion, `CANCEL_PUSH` in both directions, invalid
   cancellation placement, push-ID limit enforcement, and duplicate push stream
-  ID rejection.
+  ID rejection. It also covers duplicate `PUSH_PROMISE` consistency and
+  policy-driven auto-cancellation.
 - `just qpack-interop` runs the optional Go-side fixture harness against
   `github.com/quic-go/qpack`.
 - `just fuzz-smoke` runs the transport-free codec fuzz harness across HTTP/3

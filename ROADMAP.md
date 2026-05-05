@@ -137,8 +137,11 @@ Datagrams / capsules), and the QUIC RFCs already tracked by `nullq`.
   `CANCEL_PUSH` send/receive APIs, typed cancellation events, push stream
   cancellation behavior, push-ID limit checks, invalid frame placement checks,
   and duplicate push stream ID rejection.
-- Next: server push completion polish, including duplicate-promise consistency
-  checks, app-level disable knobs, and cache/authority policy helpers.
+- Done: server push policy/consistency slice with decoded duplicate
+  `PUSH_PROMISE` field comparison, `H3_MESSAGE_ERROR` on inconsistent
+  duplicates, and `PushPolicy.cancel_promises` for app-level auto-cancel.
+- Next: server push completion polish, including cache/authority policy
+  helpers and higher-level pushed-response tracking.
 - Done: HTTP/3 DATAGRAM groundwork over `nullq` DATAGRAM frames, including
   RFC 9297 quarter-stream-id payload codec, SETTINGS/transport negotiation
   checks, typed session/client/server datagram events, tracked send outcome
