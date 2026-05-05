@@ -63,6 +63,10 @@ pub const Datagram = struct {
         return datagram_mod.decodeContextPayload(self.payload);
     }
 
+    pub fn masqueContext(self: Datagram, registry: *const masque_mod.ContextRegistry) masque_mod.Error!masque_mod.ContextPayload {
+        return registry.decodeContextPayload(self.payload);
+    }
+
     pub fn udp(self: Datagram) masque_mod.Error![]const u8 {
         return masque_mod.decodeUdpPayload(self.payload);
     }
@@ -189,15 +193,18 @@ pub const ConnectUdpServerStream = struct {
         return self.writer.stream_id;
     }
 
-    pub fn sendUdp(self: *ConnectUdpServerStream, payload: []const u8) session_mod.Error!void {
+    pub fn sendUdp(self: *ConnectUdpServerStream, payload: []const u8) (session_mod.Error || masque_mod.Error)!void {
+        try masque_mod.validateUdpPayload(payload);
         try self.writer.datagramWithContext(masque_mod.udp_context_id, payload);
     }
 
-    pub fn sendUdpTracked(self: *ConnectUdpServerStream, payload: []const u8) session_mod.Error!u64 {
+    pub fn sendUdpTracked(self: *ConnectUdpServerStream, payload: []const u8) (session_mod.Error || masque_mod.Error)!u64 {
+        try masque_mod.validateUdpPayload(payload);
         return try self.writer.datagramWithContextTracked(masque_mod.udp_context_id, payload);
     }
 
-    pub fn sendUdpCapsule(self: *ConnectUdpServerStream, payload: []const u8) session_mod.Error!void {
+    pub fn sendUdpCapsule(self: *ConnectUdpServerStream, payload: []const u8) (session_mod.Error || masque_mod.Error)!void {
+        try masque_mod.validateUdpPayload(payload);
         try self.writer.datagramContextCapsule(masque_mod.udp_context_id, payload);
     }
 

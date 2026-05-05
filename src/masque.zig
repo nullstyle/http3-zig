@@ -15,14 +15,22 @@ pub const default_connect_udp_path_prefix = "/.well-known/masque/udp";
 pub const capsule_protocol_header = "capsule-protocol";
 pub const capsule_protocol_value = "?1";
 pub const udp_context_id: u64 = 0;
+pub const max_udp_payload_len: usize = 65527;
+pub const max_registered_contexts: usize = 16;
 
 pub const Error = datagram_mod.Error || std.mem.Allocator.Error || error{
     BufferTooSmall,
+    CannotUnregisterDefaultContext,
+    ContextAlreadyRegistered,
+    ContextLimitExceeded,
+    InvalidContextRegistration,
     InvalidConnectUdpPath,
     InvalidConnectUdpTarget,
     InvalidAcceptStatus,
     NotConnectUdp,
+    UdpPayloadTooLarge,
     UnexpectedContext,
+    UnknownContext,
 };
 
 pub const ConnectUdpTarget = struct {
@@ -60,6 +68,99 @@ pub const AcceptOptions = struct {
     status: []const u8 = "200",
     headers: []const qpack.FieldLine = &.{},
     capsule_protocol: bool = true,
+};
+
+pub const ContextKind = enum {
+    connect_udp,
+    extension,
+};
+
+pub const RegisteredContext = struct {
+    context_id: u64,
+    kind: ContextKind,
+};
+
+pub const ContextPayload = struct {
+    context_id: u64,
+    kind: ContextKind,
+    payload: []const u8,
+
+    pub fn raw(self: ContextPayload) datagram_mod.ContextPayload {
+        return .{
+            .context_id = self.context_id,
+            .payload = self.payload,
+        };
+    }
+};
+
+pub const ContextRegistry = struct {
+    entries: [max_registered_contexts]RegisteredContext = [_]RegisteredContext{
+        .{ .context_id = udp_context_id, .kind = .connect_udp },
+    } ** max_registered_contexts,
+    count: usize = 1,
+
+    pub fn init() ContextRegistry {
+        return .{};
+    }
+
+    pub fn kindOf(self: *const ContextRegistry, context_id: u64) ?ContextKind {
+        if (self.indexOf(context_id)) |index| return self.entries[index].kind;
+        return null;
+    }
+
+    pub fn isKnown(self: *const ContextRegistry, context_id: u64) bool {
+        return self.kindOf(context_id) != null;
+    }
+
+    pub fn register(self: *ContextRegistry, context_id: u64, kind: ContextKind) Error!void {
+        if (context_id == udp_context_id or self.indexOf(context_id) != null) {
+            return Error.ContextAlreadyRegistered;
+        }
+        if (kind == .connect_udp) return Error.InvalidContextRegistration;
+        if (self.count >= max_registered_contexts) return Error.ContextLimitExceeded;
+        self.entries[self.count] = .{
+            .context_id = context_id,
+            .kind = kind,
+        };
+        self.count += 1;
+    }
+
+    pub fn registerExtension(self: *ContextRegistry, context_id: u64) Error!void {
+        try self.register(context_id, .extension);
+    }
+
+    pub fn unregister(self: *ContextRegistry, context_id: u64) Error!void {
+        if (context_id == udp_context_id) return Error.CannotUnregisterDefaultContext;
+        const index = self.indexOf(context_id) orelse return Error.UnknownContext;
+        self.count -= 1;
+        if (index != self.count) {
+            self.entries[index] = self.entries[self.count];
+        }
+    }
+
+    pub fn decodeContextPayload(self: *const ContextRegistry, src: []const u8) Error!ContextPayload {
+        const context = try datagram_mod.decodeContextPayload(src);
+        const kind = self.kindOf(context.context_id) orelse return Error.UnknownContext;
+        if (kind == .connect_udp) try validateUdpPayload(context.payload);
+        return .{
+            .context_id = context.context_id,
+            .kind = kind,
+            .payload = context.payload,
+        };
+    }
+
+    pub fn decodeUdpPayload(self: *const ContextRegistry, src: []const u8) Error![]const u8 {
+        const context = try self.decodeContextPayload(src);
+        if (context.kind != .connect_udp) return Error.UnexpectedContext;
+        return context.payload;
+    }
+
+    fn indexOf(self: *const ContextRegistry, context_id: u64) ?usize {
+        for (self.entries[0..self.count], 0..) |entry, index| {
+            if (entry.context_id == context_id) return index;
+        }
+        return null;
+    }
 };
 
 pub fn isProtocolToken(value: []const u8) bool {
@@ -199,14 +300,29 @@ pub fn udpPayloadEncodedLen(payload_len: usize) usize {
     return datagram_mod.contextPayloadEncodedLen(udp_context_id, payload_len);
 }
 
+pub fn udpPayloadEncodedLenChecked(payload_len: usize) Error!usize {
+    try validateUdpPayloadLen(payload_len);
+    return udpPayloadEncodedLen(payload_len);
+}
+
 pub fn encodeUdpPayload(dst: []u8, payload: []const u8) Error!usize {
+    try validateUdpPayload(payload);
     return datagram_mod.encodeContextPayload(dst, udp_context_id, payload);
 }
 
 pub fn decodeUdpPayload(src: []const u8) Error![]const u8 {
     const context = try datagram_mod.decodeContextPayload(src);
     if (context.context_id != udp_context_id) return Error.UnexpectedContext;
+    try validateUdpPayload(context.payload);
     return context.payload;
+}
+
+pub fn validateUdpPayload(payload: []const u8) Error!void {
+    try validateUdpPayloadLen(payload.len);
+}
+
+pub fn validateUdpPayloadLen(payload_len: usize) Error!void {
+    if (payload_len > max_udp_payload_len) return Error.UdpPayloadTooLarge;
 }
 
 fn validatePathPrefix(prefix: []const u8) Error!void {
@@ -334,4 +450,61 @@ test "CONNECT-UDP UDP payload helpers use context zero" {
 
     const bad_n = try datagram_mod.encodeContextPayload(&buf, 7, "packet");
     try std.testing.expectError(Error.UnexpectedContext, decodeUdpPayload(buf[0..bad_n]));
+}
+
+test "CONNECT-UDP context registry classifies known contexts" {
+    var buf: [64]u8 = undefined;
+    var registry = ContextRegistry.init();
+
+    try std.testing.expect(registry.isKnown(udp_context_id));
+    try std.testing.expectEqual(ContextKind.connect_udp, registry.kindOf(udp_context_id).?);
+    try std.testing.expectError(Error.ContextAlreadyRegistered, registry.registerExtension(udp_context_id));
+    try std.testing.expectError(Error.CannotUnregisterDefaultContext, registry.unregister(udp_context_id));
+    try std.testing.expectError(Error.InvalidContextRegistration, registry.register(7, .connect_udp));
+
+    const extension_n = try datagram_mod.encodeContextPayload(&buf, 7, "extension");
+    try std.testing.expectError(Error.UnknownContext, registry.decodeContextPayload(buf[0..extension_n]));
+    try registry.registerExtension(7);
+    try std.testing.expect(registry.isKnown(7));
+
+    const extension = try registry.decodeContextPayload(buf[0..extension_n]);
+    try std.testing.expectEqual(@as(u64, 7), extension.context_id);
+    try std.testing.expectEqual(ContextKind.extension, extension.kind);
+    try std.testing.expectEqualStrings("extension", extension.payload);
+    try std.testing.expectEqual(@as(u64, 7), extension.raw().context_id);
+    try std.testing.expectError(Error.UnexpectedContext, registry.decodeUdpPayload(buf[0..extension_n]));
+    try std.testing.expectError(Error.ContextAlreadyRegistered, registry.registerExtension(7));
+
+    try registry.unregister(7);
+    try std.testing.expect(!registry.isKnown(7));
+    try std.testing.expectError(Error.UnknownContext, registry.unregister(7));
+}
+
+test "CONNECT-UDP context registry enforces fixed capacity" {
+    var registry = ContextRegistry.init();
+
+    var context_id: u64 = 1;
+    while (context_id < max_registered_contexts) : (context_id += 1) {
+        try registry.registerExtension(context_id);
+    }
+    try std.testing.expectEqual(max_registered_contexts, registry.count);
+    try std.testing.expectError(Error.ContextLimitExceeded, registry.registerExtension(max_registered_contexts));
+}
+
+test "CONNECT-UDP UDP payload helpers enforce payload size" {
+    const allocator = std.testing.allocator;
+    const too_large = try allocator.alloc(u8, max_udp_payload_len + 1);
+    defer allocator.free(too_large);
+
+    var small_buf: [1]u8 = undefined;
+    try std.testing.expectError(Error.UdpPayloadTooLarge, udpPayloadEncodedLenChecked(too_large.len));
+    try std.testing.expectError(Error.UdpPayloadTooLarge, encodeUdpPayload(&small_buf, too_large));
+
+    const encoded = try allocator.alloc(u8, udpPayloadEncodedLen(too_large.len));
+    defer allocator.free(encoded);
+    const n = try datagram_mod.encodeContextPayload(encoded, udp_context_id, too_large);
+    try std.testing.expectError(Error.UdpPayloadTooLarge, decodeUdpPayload(encoded[0..n]));
+
+    const registry = ContextRegistry.init();
+    try std.testing.expectError(Error.UdpPayloadTooLarge, registry.decodeContextPayload(encoded[0..n]));
 }

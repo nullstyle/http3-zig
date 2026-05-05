@@ -20,7 +20,8 @@ tracking, response lifecycle tracking, client/server event runners, Extended
 CONNECT negotiation and request metadata, Capsule Protocol codecs,
 context-aware DATAGRAM helpers, WebSocket-over-HTTP/3 tunnel helpers, HTTP/3
 trace callbacks and metrics snapshots, TLS keylog / QUIC qlog passthrough
-hooks, opt-in send-buffer backpressure limits, and lightweight
+hooks, CONNECT-UDP context registry and UDP payload limits, opt-in send-buffer
+backpressure limits, and lightweight
 request-response facades with configurable tracker body and session event-queue
 budgets.
 
@@ -73,8 +74,8 @@ just external-h3-interop
   reusable Context ID payload helpers for datagram-using extensions.
 - `capsule`: RFC 9297 Capsule Protocol TLV codec, including DATAGRAM capsules.
 - `masque`: CONNECT-UDP helper foundation over Extended CONNECT, Context ID 0
-  UDP payloads, DATAGRAM capsules, and `capsule-protocol: ?1` negotiation
-  headers.
+  UDP payloads, checked context registry helpers, DATAGRAM capsules, and
+  `capsule-protocol: ?1` negotiation headers.
 - `driver`: small `nullq`/`null3` transport-driving helpers for tests,
   examples, and interop peers. It keeps socket and clock ownership with the
   embedder while centralizing the handle/poll/tick/session-drain order.
@@ -123,7 +124,8 @@ just external-h3-interop
   `WebSocketClientStream.writeMessage` and `WebSocketServerStream.writeMessage`
   provide typed message writes.
   `Client.startConnectUdp` and `Server.acceptConnectUdp` provide typed
-  CONNECT-UDP tunnel helpers with UDP payload send/receive conveniences.
+  CONNECT-UDP tunnel helpers with UDP payload send/receive conveniences,
+  Context ID 0 validation, and UDP payload length guards.
   Request/response writers can send context-aware unreliable datagrams and
   reliable DATAGRAM capsules.
 
@@ -154,14 +156,15 @@ just external-h3-interop
   events. WebSocket-over-HTTP/3 coverage checks negotiated Extended CONNECT
   gating, tunnel request/accept helpers, RFC 6455 frame encoding/decoding, and
   message byte flow in both directions. CONNECT-UDP coverage checks MASQUE
-  tunnel setup, target parsing, Context ID 0 HTTP Datagrams, and reliable UDP
-  DATAGRAM capsules.
+  tunnel setup, target parsing, Context ID 0 HTTP Datagrams, reliable UDP
+  DATAGRAM capsules, context registry policy, and oversized UDP payload
+  rejection.
 - `just qpack-interop` runs the optional Go-side fixture harness against
   `github.com/quic-go/qpack`.
 - `just fuzz-smoke` runs the transport-free codec fuzz harness across HTTP/3
   frames, SETTINGS, capsules, HTTP/3 DATAGRAM payloads, QPACK integers,
   Huffman strings, field sections, encoder/decoder stream instructions, and
-  WebSocket frames.
+  WebSocket frames, WebSocket messages, and MASQUE CONNECT-UDP helpers.
 - `just curl-h3-interop` builds a small localhost `null3` HTTP/3 server and
   drives `/opt/homebrew/opt/curl/bin/curl --http3-only` through handshake,
   request metadata, status/header checks, POST echo, large upload echo,
