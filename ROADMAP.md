@@ -120,6 +120,9 @@ Datagrams / capsules), and the QUIC RFCs already tracked by `nullq`.
   decoded owned field storage, distinct from encoded HEADERS size limits.
 - Done: outgoing reliable capsule value budgets, including context-aware
   DATAGRAM capsules before their encoded DATA-frame payload allocation.
+- Done: `SessionConfig.production(.{})` preset for conservative field-section,
+  decoded-QPACK, event-queue, capsule, datagram, and send-buffer limits without
+  changing compatibility defaults.
 - Done: first external HTTP/3 client interop harness over ordinary
   `nullq.Connection` APIs, using the public `Client`, `ClientRunner`, and
   transport driver endpoint helpers against IP-literal UDP peers.
@@ -199,8 +202,9 @@ Datagrams / capsules), and the QUIC RFCs already tracked by `nullq`.
   bounded unknown-context buffering limits, and oversized UDP payload
   stream-abort classification.
 - Partial: send-side stream buffering, outgoing capsule values, session event
-  queues, tracker body accumulation, and decoded QPACK field sections now have
-  opt-in caps; broader sustained resource-pressure coverage is still needed,
-  especially around extension-specific capsule state.
+  queues, tracker body accumulation, decoded QPACK field sections, and the
+  production session preset now have opt-in caps; broader sustained
+  resource-pressure coverage is still needed, especially around
+  extension-specific capsule state.
 - Remaining: broader corpus growth plus sustained memory/flow/resource-pressure cases.
 - Interop matrix across quic-go, ngtcp2, lsquic, aioquic, and Chromium/curl where practical.

@@ -3105,6 +3105,57 @@ test "session enforces decoded field-line count budget" {
     try expectLastCloseCode(&pair.server_h3, null3.protocol.ErrorCode.message_error);
 }
 
+test "production session config supports ordinary request flow" {
+    const allocator = std.testing.allocator;
+
+    var pair: H3Pair = undefined;
+    try pair.initStarted(
+        allocator,
+        null3.SessionConfig.production(.{}),
+        null3.SessionConfig.production(.{}),
+    );
+    defer pair.deinit();
+
+    try exchangePairSettings(allocator, &pair);
+    var h3_client = null3.Client.init(&pair.client_h3);
+    const stream_id = try openGetAndAwaitServerHeaders(allocator, &pair, &h3_client);
+    try std.testing.expectEqual(@as(u64, 0), stream_id);
+    try std.testing.expectEqual(@as(?u64, 64 * 1024), pair.client_h3.peer_settings.?.max_field_section_size);
+    try std.testing.expectEqual(@as(u64, 4096), pair.client_h3.peer_settings.?.qpack_max_table_capacity);
+}
+
+test "production session config advertises limits and enforces caps" {
+    const allocator = std.testing.allocator;
+
+    var pair: H3Pair = undefined;
+    try pair.initStarted(
+        allocator,
+        null3.SessionConfig.production(.{}),
+        null3.SessionConfig.production(.{
+            .max_field_lines = 3,
+        }),
+    );
+    defer pair.deinit();
+
+    try exchangePairSettings(allocator, &pair);
+    try std.testing.expectEqual(@as(?u64, 64 * 1024), pair.client_h3.peer_settings.?.max_field_section_size);
+    try std.testing.expectEqual(@as(u64, 4096), pair.client_h3.peer_settings.?.qpack_max_table_capacity);
+
+    const stream_id: u64 = 0;
+    _ = try pair.client.openBidi(stream_id);
+    const fields = [_]null3.FieldLine{
+        .{ .name = ":method", .value = "GET" },
+        .{ .name = ":scheme", .value = "https" },
+        .{ .name = ":path", .value = "/" },
+        .{ .name = ":authority", .value = "localhost" },
+    };
+    try writeHeadersFrame(&pair.client, stream_id, &fields);
+
+    try expectPairH3Error(allocator, &pair, error.TooManyFieldLines);
+    try std.testing.expectEqual(null3.session.ShutdownState.closed, pair.server_h3.shutdownState());
+    try expectLastCloseCode(&pair.server_h3, null3.protocol.ErrorCode.message_error);
+}
+
 test "session exchanges HTTP/3 request and response over nullq streams" {
     const allocator = std.testing.allocator;
 

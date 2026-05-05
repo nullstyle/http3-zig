@@ -26,6 +26,8 @@ pub const client = @import("client.zig");
 pub const server = @import("server.zig");
 
 pub const Session = session.Session;
+pub const SessionConfig = session.Config;
+pub const SessionProductionOptions = session.ProductionOptions;
 pub const ShutdownState = session.ShutdownState;
 pub const Client = client.Client;
 pub const Server = server.Server;

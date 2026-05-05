@@ -58,6 +58,28 @@ pub const Error = nullq.conn.state.Error ||
         EventQueueFull,
     };
 
+pub const ProductionOptions = struct {
+    qpack_decoder_table_capacity: u64 = 4096,
+    qpack_blocked_streams: u64 = 16,
+    qpack_encoder_table_capacity: usize = 0,
+    qpack_indexing: qpack.IndexingPolicy = qpack.IndexingPolicy.static_only,
+    qpack_huffman: bool = true,
+    max_field_lines: usize = 128,
+    max_decoded_field_section_bytes: usize = 128 * 1024,
+    max_field_section_size: usize = 64 * 1024,
+    max_data_frame_payload: usize = 16 * 1024,
+    max_datagram_payload_size: usize = 16 * 1024,
+    max_capsule_value_size: usize = 64 * 1024,
+    max_stream_send_buffered: usize = 1 * 1024 * 1024,
+    max_event_payload_size: usize = 1 * 1024 * 1024,
+    max_event_payload_bytes_per_drain: usize = 4 * 1024 * 1024,
+    max_events_per_drain: usize = 512,
+    enable_connect_protocol: bool = false,
+    enable_datagram: bool = false,
+    max_push_id: ?u64 = null,
+    push_policy: PushPolicy = .accept,
+};
+
 pub const Config = struct {
     settings: settings_mod.Settings = .{},
     /// Literal/static QPACK does not require encoder/decoder streams. Dynamic
@@ -104,6 +126,33 @@ pub const Config = struct {
     observability: observability_mod.Hooks = .{},
     /// Client-only policy for valid incoming PUSH_PROMISE frames.
     push_policy: PushPolicy = .accept,
+
+    pub fn production(options: ProductionOptions) Config {
+        return .{
+            .settings = .{
+                .qpack_max_table_capacity = options.qpack_decoder_table_capacity,
+                .qpack_blocked_streams = options.qpack_blocked_streams,
+                .max_field_section_size = @intCast(options.max_field_section_size),
+                .enable_connect_protocol = options.enable_connect_protocol,
+                .h3_datagram = options.enable_datagram,
+            },
+            .qpack_encoder_table_capacity = options.qpack_encoder_table_capacity,
+            .qpack_indexing = options.qpack_indexing,
+            .qpack_huffman = options.qpack_huffman,
+            .max_field_lines = options.max_field_lines,
+            .max_decoded_field_section_bytes = options.max_decoded_field_section_bytes,
+            .max_field_section_size = options.max_field_section_size,
+            .max_data_frame_payload = options.max_data_frame_payload,
+            .max_datagram_payload_size = options.max_datagram_payload_size,
+            .max_capsule_value_size = options.max_capsule_value_size,
+            .max_push_id = options.max_push_id,
+            .max_stream_send_buffered = options.max_stream_send_buffered,
+            .max_event_payload_size = options.max_event_payload_size,
+            .max_event_payload_bytes_per_drain = options.max_event_payload_bytes_per_drain,
+            .max_events_per_drain = options.max_events_per_drain,
+            .push_policy = options.push_policy,
+        };
+    }
 };
 
 pub const PushPolicy = enum {
@@ -2853,6 +2902,36 @@ test "session caps outgoing capsule values before allocation" {
         Error.CapsuleTooLarge,
         session.sendRequestDatagramContextCapsule(0, 0, "x"),
     );
+}
+
+test "production config applies bounded defaults and feature opt-ins" {
+    const config = Config.production(.{});
+    try std.testing.expectEqual(@as(u64, 4096), config.settings.qpack_max_table_capacity);
+    try std.testing.expectEqual(@as(u64, 16), config.settings.qpack_blocked_streams);
+    try std.testing.expectEqual(@as(?u64, 64 * 1024), config.settings.max_field_section_size);
+    try std.testing.expect(!config.settings.enable_connect_protocol);
+    try std.testing.expect(!config.settings.h3_datagram);
+    try std.testing.expectEqual(@as(?usize, 128), config.max_field_lines);
+    try std.testing.expectEqual(@as(?usize, 128 * 1024), config.max_decoded_field_section_bytes);
+    try std.testing.expectEqual(@as(?usize, 64 * 1024), config.max_field_section_size);
+    try std.testing.expectEqual(@as(usize, 16 * 1024), config.max_data_frame_payload);
+    try std.testing.expectEqual(@as(usize, 16 * 1024), config.max_datagram_payload_size);
+    try std.testing.expectEqual(@as(?usize, 64 * 1024), config.max_capsule_value_size);
+    try std.testing.expectEqual(@as(?usize, 1 * 1024 * 1024), config.max_stream_send_buffered);
+    try std.testing.expectEqual(@as(?usize, 1 * 1024 * 1024), config.max_event_payload_size);
+    try std.testing.expectEqual(@as(?usize, 4 * 1024 * 1024), config.max_event_payload_bytes_per_drain);
+    try std.testing.expectEqual(@as(?usize, 512), config.max_events_per_drain);
+
+    const datagram_config = Config.production(.{
+        .enable_connect_protocol = true,
+        .enable_datagram = true,
+        .max_push_id = 4,
+        .push_policy = .cancel_promises,
+    });
+    try std.testing.expect(datagram_config.settings.enable_connect_protocol);
+    try std.testing.expect(datagram_config.settings.h3_datagram);
+    try std.testing.expectEqual(@as(?u64, 4), datagram_config.max_push_id);
+    try std.testing.expectEqual(PushPolicy.cancel_promises, datagram_config.push_policy);
 }
 
 test "session validates GOAWAY stream ids by role" {

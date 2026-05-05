@@ -26,7 +26,9 @@ and UDP payload limits, first server-push support with `MAX_PUSH_ID`,
 `PUSH_PROMISE`, push streams, `CANCEL_PUSH`, duplicate-promise validation, and
 client push policy, opt-in send-buffer backpressure limits, and lightweight
 request-response facades with configurable tracker body and session event-queue
-budgets.
+budgets. `SessionConfig.production(.{})` provides an opt-in conservative
+session preset with bounded field sections, decoded QPACK storage, event
+payloads, reliable capsules, datagrams, and send buffering.
 
 ```sh
 mise install
@@ -113,6 +115,8 @@ just external-h3-interop
   decode can cap decoded field-line count and decoded field storage separately
   from encoded HEADERS payload size, and outgoing reliable capsules can be
   capped before their DATA-frame payload is allocated.
+  `SessionConfig.production(.{})` collects those caps into a recommended
+  production baseline without changing compatibility-oriented defaults.
 - `connection`: `nullq.Connection` adapter for control stream, optional QPACK
   streams, and request/data frame writes.
 - `client` / `server`: BoringSSL TLS context helpers with ALPN set to `h3`,
@@ -169,9 +173,9 @@ just external-h3-interop
   session/client/server APIs. It also covers negotiated HTTP/3 DATAGRAM exchange
   in both directions over `nullq` DATAGRAM frames, including tracked send IDs
   and DATAGRAM ACK propagation, nullq connection-ID replenishment events,
-  send-buffer cap enforcement, tracker body-budget enforcement, capsule
-  send-budget enforcement, session event-budget and QPACK decoded-field budget
-  enforcement, RFC 9204 Appendix B exact-byte
+  send-buffer cap enforcement, tracker body-budget enforcement, production
+  session preset coverage, capsule send-budget enforcement, session
+  event-budget and QPACK decoded-field budget enforcement, RFC 9204 Appendix B exact-byte
   QPACK examples for dynamic table insertion, field-section references,
   acknowledgments, cancellations, and eviction, a dedicated dynamic-table
   QPACK fixture runner for those exact bytes, an opt-in dynamic QPACK response
