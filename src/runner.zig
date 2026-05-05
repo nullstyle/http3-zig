@@ -14,6 +14,8 @@ pub const BatchStats = struct {
     observed: usize = 0,
     ignored: usize = 0,
     settings: usize = 0,
+    push_state_updates: usize = 0,
+    push_completions: usize = 0,
     datagrams: usize = 0,
     datagram_acks: usize = 0,
     datagram_losses: usize = 0,
@@ -32,6 +34,8 @@ pub const ClientObservation = union(enum) {
     settings: settings_mod.Settings,
     response_updated: *client_mod.ResponseState,
     response_complete: *client_mod.ResponseState,
+    pushed_response_updated: *client_mod.PushedResponseState,
+    pushed_response_complete: *client_mod.PushedResponseState,
     datagram: client_mod.Datagram,
     datagram_acked: client_mod.DatagramSend,
     datagram_lost: client_mod.DatagramSend,
@@ -61,6 +65,7 @@ pub const ServerObservation = union(enum) {
 
 pub const ClientRunnerConfig = struct {
     response_tracker: client_mod.ResponseTrackerConfig = .{},
+    pushed_response_tracker: client_mod.PushedResponseTrackerConfig = .{},
 };
 
 pub const ServerRunnerConfig = struct {
@@ -69,24 +74,40 @@ pub const ServerRunnerConfig = struct {
 
 pub const ClientRunner = struct {
     tracker: client_mod.ResponseTracker,
+    push_tracker: client_mod.PushedResponseTracker,
     peer_settings: ?settings_mod.Settings = null,
     last_goaway: ?u64 = null,
     connection_closed_seen: bool = false,
 
     pub fn init(allocator: std.mem.Allocator) ClientRunner {
-        return .{ .tracker = client_mod.ResponseTracker.init(allocator) };
+        return .{
+            .tracker = client_mod.ResponseTracker.init(allocator),
+            .push_tracker = client_mod.PushedResponseTracker.init(allocator),
+        };
     }
 
     pub fn initWithConfig(allocator: std.mem.Allocator, config: ClientRunnerConfig) ClientRunner {
-        return .{ .tracker = client_mod.ResponseTracker.initWithConfig(allocator, config.response_tracker) };
+        return .{
+            .tracker = client_mod.ResponseTracker.initWithConfig(allocator, config.response_tracker),
+            .push_tracker = client_mod.PushedResponseTracker.initWithConfig(allocator, config.pushed_response_tracker),
+        };
     }
 
     pub fn deinit(self: *ClientRunner) void {
         self.tracker.deinit();
+        self.push_tracker.deinit();
     }
 
     pub fn getResponse(self: *const ClientRunner, stream_id: u64) ?*client_mod.ResponseState {
         return self.tracker.get(stream_id);
+    }
+
+    pub fn getPushedResponse(self: *const ClientRunner, push_id: u64) ?*client_mod.PushedResponseState {
+        return self.push_tracker.get(push_id);
+    }
+
+    pub fn getPushedResponseByStream(self: *const ClientRunner, stream_id: u64) ?*client_mod.PushedResponseState {
+        return self.push_tracker.getByStream(stream_id);
     }
 
     pub fn observe(
@@ -111,7 +132,10 @@ pub const ClientRunner = struct {
             .datagram_lost => |lost| return .{ .datagram_lost = lost },
             .flow_blocked => |blocked| return .{ .flow_blocked = blocked },
             .connection_ids_needed => |needed| return .{ .connection_ids_needed = needed },
-            .cancel_push => |cancel| return .{ .cancel_push = cancel },
+            .cancel_push => |cancel| {
+                _ = try self.push_tracker.observe(event);
+                return .{ .cancel_push = cancel };
+            },
             .goaway => |id| {
                 self.last_goaway = id;
                 return .{ .goaway = id };
@@ -123,6 +147,7 @@ pub const ClientRunner = struct {
             .ignored_unknown_frame => |unknown| return .{ .ignored_unknown_frame = unknown },
             .headers, .data, .trailers, .push_promise => {
                 const response = (try self.tracker.observe(event)) orelse return .ignored;
+                _ = try self.push_tracker.observe(event);
                 return .{ .response_updated = response };
             },
             .finished, .reset => {
@@ -133,9 +158,16 @@ pub const ClientRunner = struct {
             .push_headers,
             .push_data,
             .push_trailers,
+            => {
+                const pushed = (try self.push_tracker.observe(event)) orelse return .ignored;
+                return .{ .pushed_response_updated = pushed };
+            },
             .push_finished,
             .push_reset,
-            => return .ignored,
+            => {
+                const pushed = (try self.push_tracker.observe(event)) orelse return .ignored;
+                return .{ .pushed_response_complete = pushed };
+            },
         }
     }
 
@@ -245,6 +277,8 @@ fn noteClientObservation(
             stats.completions += 1;
             if (completed) |out| try out.append(allocator, response);
         },
+        .pushed_response_updated => stats.push_state_updates += 1,
+        .pushed_response_complete => stats.push_completions += 1,
         .datagram => stats.datagrams += 1,
         .datagram_acked => stats.datagram_acks += 1,
         .datagram_lost => stats.datagram_losses += 1,

@@ -1693,9 +1693,7 @@ test "server push sends PUSH_PROMISE and push stream response" {
                     saw_push_promise = true;
                     try std.testing.expectEqual(request_stream_id, promise.stream_id);
                     try std.testing.expectEqual(@as(u64, 0), promise.push_id);
-                    const fields = try null3.qpack.decodeFieldSection(allocator, promise.field_section);
-                    defer null3.qpack.freeFieldSection(allocator, fields);
-                    try std.testing.expectEqualStrings("/style.css", fieldValue(fields, ":path").?);
+                    try std.testing.expectEqualStrings("/style.css", fieldValue(promise.fields, ":path").?);
                 },
                 .push_stream => |push| {
                     saw_push_stream = true;
@@ -1721,6 +1719,152 @@ test "server push sends PUSH_PROMISE and push stream response" {
         }
         clearSessionEvents(allocator, &client_events);
     }
+}
+
+test "server push helpers build and validate same-authority cacheable promises" {
+    const allocator = std.testing.allocator;
+
+    var request_headers = [_]null3.FieldLine{
+        .{ .name = ":method", .value = "GET" },
+        .{ .name = ":scheme", .value = "https" },
+        .{ .name = ":path", .value = "/" },
+        .{ .name = ":authority", .value = "example.com" },
+    };
+    var request_state = null3.RequestState{
+        .stream_id = 0,
+        .headers = &request_headers,
+    };
+    const request = request_state.reader();
+
+    const built = try null3.server.allocPushPromiseFields(allocator, request, .{
+        .path = "/style.css",
+        .headers = &[_]null3.FieldLine{
+            .{ .name = "accept", .value = "text/css" },
+        },
+    });
+    defer allocator.free(built);
+    try std.testing.expectEqualStrings("GET", fieldValue(built, ":method").?);
+    try std.testing.expectEqualStrings("https", fieldValue(built, ":scheme").?);
+    try std.testing.expectEqualStrings("example.com", fieldValue(built, ":authority").?);
+    try std.testing.expectEqualStrings("/style.css", fieldValue(built, ":path").?);
+    try null3.server.validatePushPromisePolicy(request, built, .{});
+
+    const cross_authority = [_]null3.FieldLine{
+        .{ .name = ":method", .value = "GET" },
+        .{ .name = ":scheme", .value = "https" },
+        .{ .name = ":path", .value = "/style.css" },
+        .{ .name = ":authority", .value = "cdn.example.com" },
+    };
+    try std.testing.expectError(
+        error.CrossAuthorityPush,
+        null3.server.validatePushPromisePolicy(request, &cross_authority, .{}),
+    );
+    try null3.server.validatePushPromisePolicy(request, &cross_authority, .{
+        .require_same_authority = false,
+    });
+
+    const post_promise = [_]null3.FieldLine{
+        .{ .name = ":method", .value = "POST" },
+        .{ .name = ":scheme", .value = "https" },
+        .{ .name = ":path", .value = "/mutate" },
+        .{ .name = ":authority", .value = "example.com" },
+    };
+    try std.testing.expectError(
+        error.UncacheablePushMethod,
+        null3.server.validatePushPromisePolicy(request, &post_promise, .{}),
+    );
+
+    const extended_connect = [_]null3.FieldLine{
+        .{ .name = ":method", .value = "CONNECT" },
+        .{ .name = ":scheme", .value = "https" },
+        .{ .name = ":path", .value = "/tunnel" },
+        .{ .name = ":authority", .value = "example.com" },
+        .{ .name = ":protocol", .value = "websocket" },
+    };
+    try std.testing.expectError(
+        error.ExtendedConnectPush,
+        null3.server.validatePushPromisePolicy(request, &extended_connect, .{
+            .require_cacheable_method = false,
+        }),
+    );
+}
+
+test "client pushed response tracker assembles promised response lifecycle" {
+    const allocator = std.testing.allocator;
+
+    var promise_fields = [_]null3.FieldLine{
+        .{ .name = ":method", .value = "GET" },
+        .{ .name = ":scheme", .value = "https" },
+        .{ .name = ":path", .value = "/style.css" },
+        .{ .name = ":authority", .value = "example.com" },
+    };
+    var promise_block: [128]u8 = undefined;
+    const promise_block_n = try null3.qpack.encodeFieldSection(&promise_block, &promise_fields);
+    var response_headers = [_]null3.FieldLine{
+        .{ .name = ":status", .value = "200" },
+        .{ .name = "content-type", .value = "text/css" },
+    };
+    var response_trailers = [_]null3.FieldLine{
+        .{ .name = "x-push-complete", .value = "yes" },
+    };
+
+    var tracker = null3.PushedResponseTracker.initWithConfig(allocator, .{
+        .max_body_bytes = 64,
+        .max_promise_field_section_bytes = 128,
+    });
+    defer tracker.deinit();
+
+    const promised = (try tracker.observe(.{ .push_promise = .{
+        .stream_id = 0,
+        .push_id = 7,
+        .field_section = promise_block[0..promise_block_n],
+        .fields = &promise_fields,
+    } })).?;
+    try std.testing.expectEqual(@as(u64, 7), promised.push_id);
+    try std.testing.expectEqual(@as(usize, 1), promised.requestStreamIds().len);
+    try std.testing.expectEqual(@as(u64, 0), promised.requestStreamIds()[0]);
+
+    try std.testing.expectEqualStrings("/style.css", fieldValue(promised.reader().promiseFields(), ":path").?);
+
+    _ = try tracker.observe(.{ .push_stream = .{ .stream_id = 14, .push_id = 7 } });
+    _ = try tracker.observe(.{ .push_headers = .{ .stream_id = 14, .fields = &response_headers } });
+    _ = try tracker.observe(.{ .push_data = .{ .stream_id = 14, .bytes = "body { color: #111; }" } });
+    _ = try tracker.observe(.{ .push_trailers = .{ .stream_id = 14, .fields = &response_trailers } });
+    const completed = (try tracker.observe(.{ .push_finished = .{ .stream_id = 14 } })).?;
+
+    const by_stream = tracker.getByStream(14).?;
+    try std.testing.expectEqual(completed, by_stream);
+    const reader = completed.reader();
+    try std.testing.expectEqual(@as(?u64, 14), reader.streamId());
+    try std.testing.expectEqualStrings("200", reader.status().?);
+    try std.testing.expectEqualStrings("body { color: #111; }", reader.body());
+    try std.testing.expectEqualStrings("yes", fieldValue(reader.trailers(), "x-push-complete").?);
+    try std.testing.expect(reader.complete());
+    try std.testing.expect(!reader.cancelled());
+
+    var runner = null3.ClientRunner.init(allocator);
+    defer runner.deinit();
+    _ = try runner.observeResponseEvent(.{ .push_promise = .{
+        .stream_id = 0,
+        .push_id = 9,
+        .field_section = promise_block[0..promise_block_n],
+        .fields = &promise_fields,
+    } });
+    switch (try runner.observeResponseEvent(.{ .push_stream = .{ .stream_id = 18, .push_id = 9 } })) {
+        .pushed_response_updated => |pushed| try std.testing.expectEqual(@as(u64, 9), pushed.push_id),
+        else => return error.ExpectedPushedResponseUpdate,
+    }
+    _ = try runner.observeResponseEvent(.{ .push_headers = .{ .stream_id = 18, .fields = &response_headers } });
+    _ = try runner.observeResponseEvent(.{ .push_data = .{ .stream_id = 18, .bytes = "ok" } });
+    switch (try runner.observeResponseEvent(.{ .push_finished = .{ .stream_id = 18 } })) {
+        .pushed_response_complete => |pushed| {
+            try std.testing.expectEqual(@as(u64, 9), pushed.push_id);
+            try std.testing.expectEqualStrings("ok", pushed.bodyBytes());
+        },
+        else => return error.ExpectedPushedResponseCompletion,
+    }
+    try std.testing.expect(runner.getPushedResponse(9).?.complete);
+    try std.testing.expectEqual(runner.getPushedResponse(9).?, runner.getPushedResponseByStream(18).?);
 }
 
 test "server push requires client MAX_PUSH_ID opt-in" {

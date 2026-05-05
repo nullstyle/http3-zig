@@ -127,6 +127,7 @@ pub const PushPromiseEvent = struct {
     stream_id: u64,
     push_id: u64,
     field_section: []u8,
+    fields: []qpack.FieldLine,
 };
 
 pub const PushStreamEvent = struct {
@@ -252,7 +253,10 @@ pub const Event = union(enum) {
             .trailers => |event| freeFields(allocator, event.fields),
             .data => |event| allocator.free(event.data),
             .datagram => |event| allocator.free(event.payload),
-            .push_promise => |event| allocator.free(event.field_section),
+            .push_promise => |event| {
+                allocator.free(event.field_section);
+                freeFields(allocator, event.fields);
+            },
             .connection_closed => |event| event.deinit(allocator),
             else => {},
         }
@@ -1242,7 +1246,7 @@ pub const Session = struct {
                     try self.completeQpackFieldSection(state.id, decoded_fields.required_insert_count);
                     state.blocked_on_qpack = false;
 
-                    try budget.reserve(promise.field_section.len);
+                    try budget.reserve(promise.field_section.len + fieldsOwnedBytes(decoded_fields.fields));
                     const maybe_push_event = decoder.observe(self.allocator, decoded.frame) catch |err| {
                         self.closeForError(err);
                         return err;
@@ -1419,10 +1423,15 @@ pub const Session = struct {
             } },
             .push_promise => |promise| blk: {
                 try self.validateReceivedPushId(promise.push_id);
+                const fields = self.received_push_promises.get(promise.push_id) orelse return Error.InvalidPushId;
+                const field_section = try self.allocator.dupe(u8, promise.field_section);
+                errdefer self.allocator.free(field_section);
+                const fields_copy = try cloneFields(self.allocator, fields);
                 break :blk .{ .push_promise = .{
                     .stream_id = stream_id,
                     .push_id = promise.push_id,
-                    .field_section = try self.allocator.dupe(u8, promise.field_section),
+                    .field_section = field_section,
+                    .fields = fields_copy,
                 } };
             },
             .ignored_unknown => |frame_type| .{ .ignored_unknown_frame = .{
@@ -2390,7 +2399,7 @@ fn eventOwnedPayloadBytes(event: Event) usize {
         .trailers => |field_event| fieldsOwnedBytes(field_event.fields),
         .data => |data| data.data.len,
         .datagram => |datagram| datagram.payload.len,
-        .push_promise => |promise| promise.field_section.len,
+        .push_promise => |promise| promise.field_section.len + fieldsOwnedBytes(promise.fields),
         .connection_closed => |closed| closed.reason.len,
         else => 0,
     };

@@ -139,6 +139,10 @@ just external-h3-interop
   `CANCEL_PUSH` control frames for promised resources. Client sessions track
   duplicate `PUSH_PROMISE` IDs by decoded request fields and can use
   `PushPolicy.cancel_promises` to auto-cancel valid promised resources.
+  `PushedResponseTracker` assembles pushed response headers, body, trailers,
+  completion, reset, cancellation, and originating promise metadata, while
+  `Server.startPushFromRequest` / `Server.pushFromRequest` provide same-origin
+  cacheable promise helpers for ordinary request-derived pushes.
   Request/response writers can send context-aware unreliable datagrams and
   reliable DATAGRAM capsules.
 
@@ -179,7 +183,8 @@ just external-h3-interop
   DATA, pushed stream completion, `CANCEL_PUSH` in both directions, invalid
   cancellation placement, push-ID limit enforcement, and duplicate push stream
   ID rejection. It also covers duplicate `PUSH_PROMISE` consistency and
-  policy-driven auto-cancellation.
+  policy-driven auto-cancellation, same-origin/cacheable push promise helper
+  validation, and higher-level pushed-response tracking through `ClientRunner`.
 - `just qpack-interop` runs the optional Go-side fixture harness against
   `github.com/quic-go/qpack`.
 - `just qpack-dynamic-interop` runs the transport-free dynamic-table fixture

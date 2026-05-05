@@ -353,6 +353,7 @@ pub const WebSocketClientStream = struct {
 pub const PushPromise = struct {
     push_id: u64,
     field_section: []u8,
+    fields: []qpack.FieldLine,
 };
 
 pub const ResponseReader = struct {
@@ -499,7 +500,10 @@ pub const ResponseState = struct {
     pub fn deinit(self: *ResponseState, allocator: std.mem.Allocator) void {
         if (self.headers) |fields| freeFields(allocator, fields);
         if (self.trailers) |fields| freeFields(allocator, fields);
-        for (self.push_promises.items) |promise| allocator.free(promise.field_section);
+        for (self.push_promises.items) |promise| {
+            allocator.free(promise.field_section);
+            freeFields(allocator, promise.fields);
+        }
         self.push_promises.deinit(allocator);
         self.body.deinit(allocator);
     }
@@ -567,9 +571,12 @@ pub const ResponseState = struct {
     ) std.mem.Allocator.Error!void {
         const field_section = try allocator.dupe(u8, promise.field_section);
         errdefer allocator.free(field_section);
+        const fields = try cloneFields(allocator, promise.fields);
+        errdefer freeFields(allocator, fields);
         try self.push_promises.append(allocator, .{
             .push_id = promise.push_id,
             .field_section = field_section,
+            .fields = fields,
         });
     }
 
@@ -594,6 +601,9 @@ pub const ResponseTrackerConfig = struct {
 
 pub const ResponseTrackerError = std.mem.Allocator.Error || error{
     BodyTooLarge,
+    PushPromiseTooLarge,
+    MissingPushStream,
+    DuplicatePushStream,
 };
 
 pub const ResponseTracker = struct {
@@ -692,6 +702,312 @@ pub const ResponseTracker = struct {
         response.* = .{ .stream_id = stream_id };
         try self.responses.put(self.allocator, stream_id, response);
         return response;
+    }
+};
+
+pub const PushedResponseReader = struct {
+    pushed: *const PushedResponseState,
+
+    pub fn pushId(self: PushedResponseReader) u64 {
+        return self.pushed.push_id;
+    }
+
+    pub fn requestStreamIds(self: PushedResponseReader) []const u64 {
+        return self.pushed.requestStreamIds();
+    }
+
+    pub fn streamId(self: PushedResponseReader) ?u64 {
+        return self.pushed.stream_id;
+    }
+
+    pub fn promiseFieldSection(self: PushedResponseReader) []const u8 {
+        return self.pushed.promiseFieldSection();
+    }
+
+    pub fn promiseFields(self: PushedResponseReader) []const qpack.FieldLine {
+        return self.pushed.promiseFields();
+    }
+
+    pub fn headers(self: PushedResponseReader) []const qpack.FieldLine {
+        return self.pushed.headerFields();
+    }
+
+    pub fn trailers(self: PushedResponseReader) []const qpack.FieldLine {
+        return self.pushed.trailerFields();
+    }
+
+    pub fn body(self: PushedResponseReader) []const u8 {
+        return self.pushed.bodyBytes();
+    }
+
+    pub fn status(self: PushedResponseReader) ?[]const u8 {
+        return self.pushed.status();
+    }
+
+    pub fn complete(self: PushedResponseReader) bool {
+        return self.pushed.complete;
+    }
+
+    pub fn cancelled(self: PushedResponseReader) bool {
+        return self.pushed.cancelled;
+    }
+
+    pub fn reset(self: PushedResponseReader) ?StreamReset {
+        return self.pushed.reset;
+    }
+};
+
+pub const PushedResponseState = struct {
+    push_id: u64,
+    request_stream_ids: std.ArrayList(u64) = .empty,
+    stream_id: ?u64 = null,
+    promise_field_section: ?[]u8 = null,
+    promise_fields: ?[]qpack.FieldLine = null,
+    headers: ?[]qpack.FieldLine = null,
+    body: std.ArrayList(u8) = .empty,
+    trailers: ?[]qpack.FieldLine = null,
+    complete: bool = false,
+    cancelled: bool = false,
+    reset: ?StreamReset = null,
+
+    pub fn deinit(self: *PushedResponseState, allocator: std.mem.Allocator) void {
+        self.request_stream_ids.deinit(allocator);
+        if (self.promise_field_section) |field_section| allocator.free(field_section);
+        if (self.promise_fields) |fields| freeFields(allocator, fields);
+        if (self.headers) |fields| freeFields(allocator, fields);
+        if (self.trailers) |fields| freeFields(allocator, fields);
+        self.body.deinit(allocator);
+    }
+
+    pub fn reader(self: *const PushedResponseState) PushedResponseReader {
+        return .{ .pushed = self };
+    }
+
+    pub fn requestStreamIds(self: *const PushedResponseState) []const u64 {
+        return self.request_stream_ids.items;
+    }
+
+    pub fn promiseFieldSection(self: *const PushedResponseState) []const u8 {
+        return self.promise_field_section orelse &.{};
+    }
+
+    pub fn promiseFields(self: *const PushedResponseState) []const qpack.FieldLine {
+        return self.promise_fields orelse &.{};
+    }
+
+    pub fn headerFields(self: *const PushedResponseState) []const qpack.FieldLine {
+        return self.headers orelse &.{};
+    }
+
+    pub fn trailerFields(self: *const PushedResponseState) []const qpack.FieldLine {
+        return self.trailers orelse &.{};
+    }
+
+    pub fn bodyBytes(self: *const PushedResponseState) []const u8 {
+        return self.body.items;
+    }
+
+    pub fn status(self: *const PushedResponseState) ?[]const u8 {
+        return fieldValue(self.headerFields(), ":status");
+    }
+
+    fn addRequestStreamId(
+        self: *PushedResponseState,
+        allocator: std.mem.Allocator,
+        stream_id: u64,
+    ) std.mem.Allocator.Error!void {
+        for (self.request_stream_ids.items) |existing| {
+            if (existing == stream_id) return;
+        }
+        try self.request_stream_ids.append(allocator, stream_id);
+    }
+
+    fn setPromiseFieldSection(
+        self: *PushedResponseState,
+        allocator: std.mem.Allocator,
+        field_section: []const u8,
+        fields: []const qpack.FieldLine,
+        max_field_section_bytes: ?usize,
+    ) ResponseTrackerError!void {
+        if (max_field_section_bytes) |max| {
+            if (field_section.len > max) return error.PushPromiseTooLarge;
+        }
+        if (self.promise_field_section != null) return;
+        const field_section_copy = try allocator.dupe(u8, field_section);
+        errdefer allocator.free(field_section_copy);
+        const fields_copy = try cloneFields(allocator, fields);
+        self.promise_field_section = field_section_copy;
+        self.promise_fields = fields_copy;
+    }
+
+    fn setHeaders(
+        self: *PushedResponseState,
+        allocator: std.mem.Allocator,
+        fields: []const qpack.FieldLine,
+    ) std.mem.Allocator.Error!void {
+        const copy = try cloneFields(allocator, fields);
+        if (self.headers) |old| freeFields(allocator, old);
+        self.headers = copy;
+    }
+
+    fn setTrailers(
+        self: *PushedResponseState,
+        allocator: std.mem.Allocator,
+        fields: []const qpack.FieldLine,
+    ) std.mem.Allocator.Error!void {
+        const copy = try cloneFields(allocator, fields);
+        if (self.trailers) |old| freeFields(allocator, old);
+        self.trailers = copy;
+    }
+
+    fn appendBody(
+        self: *PushedResponseState,
+        allocator: std.mem.Allocator,
+        bytes: []const u8,
+        max_body_bytes: ?usize,
+    ) ResponseTrackerError!void {
+        if (max_body_bytes) |max| {
+            if (bytes.len > max or self.body.items.len > max - bytes.len) {
+                return error.BodyTooLarge;
+            }
+        }
+        try self.body.appendSlice(allocator, bytes);
+    }
+};
+
+pub const PushedResponseTrackerConfig = struct {
+    max_body_bytes: ?usize = null,
+    max_promise_field_section_bytes: ?usize = null,
+};
+
+pub const PushedResponseTracker = struct {
+    allocator: std.mem.Allocator,
+    config: PushedResponseTrackerConfig = .{},
+    pushes: std.AutoHashMapUnmanaged(u64, *PushedResponseState) = .empty,
+    push_id_by_stream: std.AutoHashMapUnmanaged(u64, u64) = .empty,
+
+    pub fn init(allocator: std.mem.Allocator) PushedResponseTracker {
+        return .{ .allocator = allocator };
+    }
+
+    pub fn initWithConfig(allocator: std.mem.Allocator, config: PushedResponseTrackerConfig) PushedResponseTracker {
+        return .{ .allocator = allocator, .config = config };
+    }
+
+    pub fn deinit(self: *PushedResponseTracker) void {
+        var it = self.pushes.iterator();
+        while (it.next()) |entry| {
+            const pushed = entry.value_ptr.*;
+            pushed.deinit(self.allocator);
+            self.allocator.destroy(pushed);
+        }
+        self.pushes.deinit(self.allocator);
+        self.push_id_by_stream.deinit(self.allocator);
+    }
+
+    pub fn get(self: *const PushedResponseTracker, push_id: u64) ?*PushedResponseState {
+        return self.pushes.get(push_id);
+    }
+
+    pub fn getByStream(self: *const PushedResponseTracker, stream_id: u64) ?*PushedResponseState {
+        const push_id = self.push_id_by_stream.get(stream_id) orelse return null;
+        return self.get(push_id);
+    }
+
+    pub fn remove(self: *PushedResponseTracker, push_id: u64) ?*PushedResponseState {
+        const entry = self.pushes.fetchRemove(push_id) orelse return null;
+        if (entry.value.stream_id) |stream_id| _ = self.push_id_by_stream.remove(stream_id);
+        return entry.value;
+    }
+
+    pub fn observe(
+        self: *PushedResponseTracker,
+        event: ResponseEvent,
+    ) ResponseTrackerError!?*PushedResponseState {
+        switch (event) {
+            .push_promise => |promise| {
+                const pushed = try self.ensure(promise.push_id);
+                try pushed.addRequestStreamId(self.allocator, promise.stream_id);
+                try pushed.setPromiseFieldSection(
+                    self.allocator,
+                    promise.field_section,
+                    promise.fields,
+                    self.config.max_promise_field_section_bytes,
+                );
+                return pushed;
+            },
+            .push_stream => |push| {
+                const pushed = try self.ensure(push.push_id);
+                try self.bindStream(pushed, push.stream_id);
+                return pushed;
+            },
+            .push_headers => |headers| {
+                const pushed = try self.ensureForStream(headers.stream_id);
+                try pushed.setHeaders(self.allocator, headers.fields);
+                return pushed;
+            },
+            .push_data => |data| {
+                const pushed = try self.ensureForStream(data.stream_id);
+                try pushed.appendBody(self.allocator, data.bytes, self.config.max_body_bytes);
+                return pushed;
+            },
+            .push_trailers => |trailers| {
+                const pushed = try self.ensureForStream(trailers.stream_id);
+                try pushed.setTrailers(self.allocator, trailers.fields);
+                return pushed;
+            },
+            .push_finished => |finished| {
+                const pushed = try self.ensureForStream(finished.stream_id);
+                pushed.complete = true;
+                return pushed;
+            },
+            .push_reset => |reset| {
+                const pushed = try self.ensureForStream(reset.stream_id);
+                pushed.reset = reset;
+                pushed.complete = true;
+                return pushed;
+            },
+            .cancel_push => |cancel| {
+                const pushed = try self.ensure(cancel.push_id);
+                pushed.cancelled = true;
+                pushed.complete = true;
+                return pushed;
+            },
+            else => return null,
+        }
+    }
+
+    fn ensure(self: *PushedResponseTracker, push_id: u64) std.mem.Allocator.Error!*PushedResponseState {
+        if (self.pushes.get(push_id)) |pushed| return pushed;
+
+        const pushed = try self.allocator.create(PushedResponseState);
+        errdefer self.allocator.destroy(pushed);
+        pushed.* = .{ .push_id = push_id };
+        try self.pushes.put(self.allocator, push_id, pushed);
+        return pushed;
+    }
+
+    fn ensureForStream(self: *PushedResponseTracker, stream_id: u64) ResponseTrackerError!*PushedResponseState {
+        const push_id = self.push_id_by_stream.get(stream_id) orelse return error.MissingPushStream;
+        return self.pushes.get(push_id) orelse error.MissingPushStream;
+    }
+
+    fn bindStream(
+        self: *PushedResponseTracker,
+        pushed: *PushedResponseState,
+        stream_id: u64,
+    ) ResponseTrackerError!void {
+        if (self.push_id_by_stream.get(stream_id)) |existing_push_id| {
+            if (existing_push_id != pushed.push_id) return error.DuplicatePushStream;
+        } else {
+            try self.push_id_by_stream.put(self.allocator, stream_id, pushed.push_id);
+        }
+
+        if (pushed.stream_id) |existing_stream_id| {
+            if (existing_stream_id != stream_id) return error.DuplicatePushStream;
+        } else {
+            pushed.stream_id = stream_id;
+        }
     }
 };
 

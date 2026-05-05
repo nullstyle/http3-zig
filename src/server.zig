@@ -129,6 +129,47 @@ pub const PushOptions = struct {
     response: ResponseOptions = .{},
 };
 
+pub const PushPromisePolicy = struct {
+    /// Promise `:scheme` must match the request `:scheme`.
+    require_same_scheme: bool = true,
+    /// Promise `:authority` must match the request `:authority`.
+    require_same_authority: bool = true,
+    /// Promise method must be a safe, cache-oriented method (`GET` or `HEAD`).
+    require_cacheable_method: bool = true,
+};
+
+pub const PushPromisePolicyError = error{
+    MissingRequestScheme,
+    MissingRequestAuthority,
+    MissingPromiseMethod,
+    MissingPromiseScheme,
+    MissingPromiseAuthority,
+    MissingPromisePath,
+    CrossSchemePush,
+    CrossAuthorityPush,
+    UncacheablePushMethod,
+    ExtendedConnectPush,
+};
+
+pub const PushPromiseRequestOptions = struct {
+    method: []const u8 = "GET",
+    scheme: ?[]const u8 = null,
+    authority: ?[]const u8 = null,
+    path: []const u8,
+    headers: []const qpack.FieldLine = &.{},
+    policy: PushPromisePolicy = .{},
+};
+
+pub const PushFromRequestHeadOptions = struct {
+    promise: PushPromiseRequestOptions,
+    response: ResponseHeadOptions = .{},
+};
+
+pub const PushFromRequestOptions = struct {
+    promise: PushPromiseRequestOptions,
+    response: ResponseOptions = .{},
+};
+
 pub const Push = session_mod.LocalPush;
 
 pub const ResponseWriter = struct {
@@ -703,6 +744,33 @@ pub const Server = struct {
         };
     }
 
+    pub fn pushFromRequest(
+        self: *Server,
+        allocator: std.mem.Allocator,
+        request: RequestReader,
+        options: PushFromRequestOptions,
+    ) (session_mod.Error || PushPromisePolicyError)!Push {
+        var writer = try self.startPushFromRequest(allocator, request, .{
+            .promise = options.promise,
+            .response = .{
+                .status = options.response.status,
+                .headers = options.response.headers,
+            },
+        });
+
+        if (options.response.body) |body| {
+            try writer.write(body);
+        }
+        if (options.response.trailers.len > 0) try writer.trailers(options.response.trailers);
+        if (options.response.end_stream) try writer.finish();
+
+        return .{
+            .request_stream_id = writer.request_stream_id,
+            .push_id = writer.push_id,
+            .stream_id = writer.stream_id,
+        };
+    }
+
     pub fn startPush(
         self: *Server,
         allocator: std.mem.Allocator,
@@ -722,6 +790,20 @@ pub const Server = struct {
             .push_id = push_info.push_id,
             .stream_id = push_info.stream_id,
         };
+    }
+
+    pub fn startPushFromRequest(
+        self: *Server,
+        allocator: std.mem.Allocator,
+        request: RequestReader,
+        options: PushFromRequestHeadOptions,
+    ) (session_mod.Error || PushPromisePolicyError)!PushWriter {
+        const promise_fields = try allocPushPromiseFields(allocator, request, options.promise);
+        defer allocator.free(promise_fields);
+        return try self.startPush(allocator, request.streamId(), .{
+            .promise_headers = promise_fields,
+            .response = options.response,
+        });
     }
 
     pub fn startResponse(
@@ -995,6 +1077,61 @@ fn buildResponseFields(
     fields[0] = .{ .name = ":status", .value = options.status };
     for (options.headers, 0..) |header, i| fields[1 + i] = header;
     return fields;
+}
+
+pub fn allocPushPromiseFields(
+    allocator: std.mem.Allocator,
+    request: RequestReader,
+    options: PushPromiseRequestOptions,
+) (std.mem.Allocator.Error || PushPromisePolicyError)![]qpack.FieldLine {
+    const scheme = options.scheme orelse request.scheme() orelse return error.MissingRequestScheme;
+    const authority = options.authority orelse request.authority() orelse return error.MissingRequestAuthority;
+    const fields = try allocator.alloc(qpack.FieldLine, 4 + options.headers.len);
+    fields[0] = .{ .name = ":method", .value = options.method };
+    fields[1] = .{ .name = ":scheme", .value = scheme };
+    fields[2] = .{ .name = ":path", .value = options.path };
+    fields[3] = .{ .name = ":authority", .value = authority };
+    for (options.headers, 0..) |header, i| fields[4 + i] = header;
+    errdefer allocator.free(fields);
+
+    try validatePushPromisePolicy(request, fields, options.policy);
+    return fields;
+}
+
+pub fn validatePushPromisePolicy(
+    request: RequestReader,
+    promise_fields: []const qpack.FieldLine,
+    policy: PushPromisePolicy,
+) PushPromisePolicyError!void {
+    if (fieldValue(promise_fields, ":protocol") != null) return error.ExtendedConnectPush;
+
+    const method = fieldValue(promise_fields, ":method") orelse return error.MissingPromiseMethod;
+    if (policy.require_cacheable_method and !isCacheablePushMethod(method)) {
+        return error.UncacheablePushMethod;
+    }
+
+    const promise_scheme = fieldValue(promise_fields, ":scheme") orelse return error.MissingPromiseScheme;
+    const promise_authority = fieldValue(promise_fields, ":authority") orelse return error.MissingPromiseAuthority;
+    const promise_path = fieldValue(promise_fields, ":path") orelse return error.MissingPromisePath;
+    if (promise_path.len == 0) return error.MissingPromisePath;
+
+    if (policy.require_same_scheme) {
+        const request_scheme = request.scheme() orelse return error.MissingRequestScheme;
+        if (!std.ascii.eqlIgnoreCase(request_scheme, promise_scheme)) {
+            return error.CrossSchemePush;
+        }
+    }
+
+    if (policy.require_same_authority) {
+        const request_authority = request.authority() orelse return error.MissingRequestAuthority;
+        if (!std.ascii.eqlIgnoreCase(request_authority, promise_authority)) {
+            return error.CrossAuthorityPush;
+        }
+    }
+}
+
+pub fn isCacheablePushMethod(method: []const u8) bool {
+    return std.ascii.eqlIgnoreCase(method, "GET") or std.ascii.eqlIgnoreCase(method, "HEAD");
 }
 
 fn cloneFields(

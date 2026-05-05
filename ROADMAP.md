@@ -143,8 +143,9 @@ Datagrams / capsules), and the QUIC RFCs already tracked by `nullq`.
 - Done: server push policy/consistency slice with decoded duplicate
   `PUSH_PROMISE` field comparison, `H3_MESSAGE_ERROR` on inconsistent
   duplicates, and `PushPolicy.cancel_promises` for app-level auto-cancel.
-- Next: server push completion polish, including cache/authority policy
-  helpers and higher-level pushed-response tracking.
+- Done: server push completion polish with same-origin/cacheable promise
+  helpers, request-derived push convenience APIs, `PushedResponseTracker`, and
+  `ClientRunner` pushed-response lifecycle observations.
 - Done: HTTP/3 DATAGRAM groundwork over `nullq` DATAGRAM frames, including
   RFC 9297 quarter-stream-id payload codec, SETTINGS/transport negotiation
   checks, typed session/client/server datagram events, tracked send outcome
