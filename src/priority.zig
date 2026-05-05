@@ -6,6 +6,8 @@
 
 const std = @import("std");
 
+const qpack = @import("qpack/root.zig");
+
 pub const Error = error{
     InvalidParameter,
     InvalidUrgency,
@@ -13,34 +15,15 @@ pub const Error = error{
     BufferTooSmall,
 };
 
+pub const field_name = "priority";
+
 pub const Priority = struct {
     urgency: u3 = 3,
     incremental: bool = false,
 
     pub fn parse(src: []const u8) Error!Priority {
         var out: Priority = .{};
-        var it = std.mem.splitScalar(u8, src, ',');
-        while (it.next()) |raw_member| {
-            const member = std.mem.trim(u8, raw_member, " \t");
-            if (member.len == 0) continue;
-
-            const eq = std.mem.indexOfScalar(u8, member, '=');
-            const key = if (eq) |i| std.mem.trim(u8, member[0..i], " \t") else member;
-            const value = if (eq) |i| std.mem.trim(u8, member[i + 1 ..], " \t") else "";
-            if (key.len == 0) return Error.InvalidParameter;
-
-            if (std.mem.eql(u8, key, "u")) {
-                if (value.len == 0) return Error.InvalidUrgency;
-                const parsed = std.fmt.parseInt(u8, value, 10) catch return Error.InvalidUrgency;
-                if (parsed > 7) return Error.InvalidUrgency;
-                out.urgency = @intCast(parsed);
-            } else if (std.mem.eql(u8, key, "i")) {
-                out.incremental = try parseSfBoolean(value);
-            } else {
-                // Extension parameters are intentionally ignored by the core
-                // scheduler scaffold; later phases can expose them losslessly.
-            }
-        }
+        try parseInto(&out, src);
         return out;
     }
 
@@ -52,6 +35,45 @@ pub const Priority = struct {
         return out.len;
     }
 };
+
+pub fn fromFieldLines(fields: []const qpack.FieldLine) Error!?Priority {
+    var out: Priority = .{};
+    var found = false;
+    for (fields) |field| {
+        if (std.ascii.eqlIgnoreCase(field.name, field_name)) {
+            try parseInto(&out, field.value);
+            found = true;
+        }
+    }
+    return if (found) out else null;
+}
+
+pub fn fieldLine(value: []const u8) qpack.FieldLine {
+    return .{ .name = field_name, .value = value };
+}
+
+fn parseInto(out: *Priority, src: []const u8) Error!void {
+    var it = std.mem.splitScalar(u8, src, ',');
+    while (it.next()) |raw_member| {
+        const member = std.mem.trim(u8, raw_member, " \t");
+        if (member.len == 0) continue;
+
+        const eq = std.mem.indexOfScalar(u8, member, '=');
+        const key = if (eq) |i| std.mem.trim(u8, member[0..i], " \t") else member;
+        const value = if (eq) |i| std.mem.trim(u8, member[i + 1 ..], " \t") else "";
+        if (key.len == 0) return Error.InvalidParameter;
+
+        if (std.mem.eql(u8, key, "u")) {
+            if (value.len != 1 or value[0] < '0' or value[0] > '7') return Error.InvalidUrgency;
+            out.urgency = @intCast(value[0] - '0');
+        } else if (std.mem.eql(u8, key, "i")) {
+            out.incremental = try parseSfBoolean(value);
+        } else {
+            // Extension parameters are intentionally ignored by the core
+            // scheduler scaffold; later phases can expose them losslessly.
+        }
+    }
+}
 
 fn parseSfBoolean(value: []const u8) Error!bool {
     if (value.len == 0) return true;
@@ -76,4 +98,21 @@ test "priority parse defaults and parameters" {
     var buf: [16]u8 = undefined;
     const n = try p.encode(&buf);
     try std.testing.expectEqualStrings("u=7", buf[0..n]);
+
+    try std.testing.expectError(Error.InvalidUrgency, Priority.parse("u=07"));
+}
+
+test "priority extracts Priority field lines case-insensitively" {
+    const fields = [_]qpack.FieldLine{
+        .{ .name = ":method", .value = "GET" },
+        .{ .name = "Priority", .value = "u=2" },
+        .{ .name = "priority", .value = "i" },
+    };
+    const p = (try fromFieldLines(&fields)).?;
+    try std.testing.expectEqual(@as(u3, 2), p.urgency);
+    try std.testing.expect(p.incremental);
+
+    const generated = fieldLine("u=4");
+    try std.testing.expectEqualStrings("priority", generated.name);
+    try std.testing.expectEqualStrings("u=4", generated.value);
 }

@@ -7,6 +7,7 @@ const datagram_mod = @import("datagram.zig");
 const errors_mod = @import("errors.zig");
 const masque_mod = @import("masque.zig");
 const observability_mod = @import("observability.zig");
+const priority_mod = @import("priority.zig");
 const protocol = @import("protocol.zig");
 const qpack = @import("qpack/root.zig");
 const session_mod = @import("session.zig");
@@ -97,6 +98,7 @@ pub const StreamReset = struct {
 pub const RequestRejected = session_mod.RequestRejectedEvent;
 pub const UnknownFrame = session_mod.UnknownFrameEvent;
 pub const ConnectionClosed = session_mod.ConnectionClosedEvent;
+pub const PriorityUpdate = session_mod.PriorityUpdateEvent;
 pub const DatagramSend = session_mod.DatagramSendEvent;
 pub const FlowBlocked = session_mod.FlowBlockedEvent;
 pub const ConnectionIdsNeeded = session_mod.ConnectionIdsNeededEvent;
@@ -465,6 +467,10 @@ pub const RequestReader = struct {
         return self.request.protocol();
     }
 
+    pub fn priority(self: RequestReader) priority_mod.Error!?priority_mod.Priority {
+        return try self.request.priority();
+    }
+
     pub fn isExtendedConnect(self: RequestReader) bool {
         return self.request.isExtendedConnect();
     }
@@ -520,6 +526,7 @@ pub const RequestEvent = union(enum) {
     reset: StreamReset,
     rejected: RequestRejected,
     cancel_push: session_mod.CancelPushEvent,
+    priority_update: PriorityUpdate,
     goaway: u64,
     connection_closed: ConnectionClosed,
     ignored_unknown_frame: UnknownFrame,
@@ -557,6 +564,7 @@ pub const RequestEvent = union(enum) {
             } else null,
             .request_rejected => |rejected| .{ .rejected = rejected },
             .cancel_push => |cancel| .{ .cancel_push = cancel },
+            .priority_update => |update| .{ .priority_update = update },
             .goaway => |id| .{ .goaway = id },
             .connection_closed => |closed| .{ .connection_closed = closed },
             .ignored_unknown_frame => |unknown| .{ .ignored_unknown_frame = unknown },
@@ -687,6 +695,14 @@ pub const Server = struct {
 
     pub fn cancelPush(self: *Server, push_id: u64) session_mod.Error!void {
         try self.session.cancelPush(push_id);
+    }
+
+    pub fn priorityForRequest(self: *const Server, stream_id: u64) ?priority_mod.Priority {
+        return self.session.priorityForRequest(stream_id);
+    }
+
+    pub fn priorityForPush(self: *const Server, push_id: u64) ?priority_mod.Priority {
+        return self.session.priorityForPush(push_id);
     }
 
     pub fn reject(self: *Server, stream_id: u64) session_mod.Error!void {
@@ -916,6 +932,10 @@ pub const RequestState = struct {
         return fieldValue(self.headerFields(), ":protocol");
     }
 
+    pub fn priority(self: *const RequestState) priority_mod.Error!?priority_mod.Priority {
+        return try priority_mod.fromFieldLines(self.headerFields());
+    }
+
     pub fn isExtendedConnect(self: *const RequestState) bool {
         return self.protocol() != null;
     }
@@ -1051,6 +1071,7 @@ pub const RequestTracker = struct {
             .flow_blocked,
             .connection_ids_needed,
             .cancel_push,
+            .priority_update,
             .goaway,
             .connection_closed,
             .ignored_unknown_frame,

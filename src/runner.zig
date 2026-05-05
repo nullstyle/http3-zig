@@ -22,6 +22,7 @@ pub const BatchStats = struct {
     flow_blocked: usize = 0,
     connection_id_replenishments: usize = 0,
     cancel_pushes: usize = 0,
+    priority_updates: usize = 0,
     goaways: usize = 0,
     connection_closes: usize = 0,
     ignored_unknown_frames: usize = 0,
@@ -58,6 +59,7 @@ pub const ServerObservation = union(enum) {
     flow_blocked: server_mod.FlowBlocked,
     connection_ids_needed: server_mod.ConnectionIdsNeeded,
     cancel_push: session_mod.CancelPushEvent,
+    priority_update: session_mod.PriorityUpdateEvent,
     goaway: u64,
     connection_closed: server_mod.ConnectionClosed,
     ignored_unknown_frame: server_mod.UnknownFrame,
@@ -229,6 +231,7 @@ pub const ServerRunner = struct {
             .flow_blocked => |blocked| return .{ .flow_blocked = blocked },
             .connection_ids_needed => |needed| return .{ .connection_ids_needed = needed },
             .cancel_push => |cancel| return .{ .cancel_push = cancel },
+            .priority_update => |update| return .{ .priority_update = update },
             .goaway => |id| {
                 self.last_goaway = id;
                 return .{ .goaway = id };
@@ -312,6 +315,7 @@ fn noteServerObservation(
         .flow_blocked => stats.flow_blocked += 1,
         .connection_ids_needed => stats.connection_id_replenishments += 1,
         .cancel_push => stats.cancel_pushes += 1,
+        .priority_update => stats.priority_updates += 1,
         .goaway => stats.goaways += 1,
         .connection_closed => stats.connection_closes += 1,
         .ignored_unknown_frame => stats.ignored_unknown_frames += 1,

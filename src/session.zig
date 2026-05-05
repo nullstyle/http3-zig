@@ -15,6 +15,7 @@ const frame_mod = @import("frame.zig");
 const headers_mod = @import("headers.zig");
 const message_mod = @import("message.zig");
 const observability_mod = @import("observability.zig");
+const priority_mod = @import("priority.zig");
 const protocol = @import("protocol.zig");
 const qpack = @import("qpack/root.zig");
 const settings_mod = @import("settings.zig");
@@ -27,6 +28,7 @@ pub const Error = nullq.conn.state.Error ||
     capsule_mod.Error ||
     datagram_mod.Error ||
     message_mod.Error ||
+    priority_mod.Error ||
     stream_mod.FrameValidationError ||
     settings_mod.Error ||
     qpack.Error ||
@@ -43,6 +45,7 @@ pub const Error = nullq.conn.state.Error ||
         ClosedCriticalStream,
         InvalidGoawayId,
         InvalidPushId,
+        InvalidPriorityTarget,
         InconsistentPushPromise,
         RequestBlockedByGoaway,
         PushNotEnabled,
@@ -137,6 +140,17 @@ pub const PushStreamEvent = struct {
 
 pub const CancelPushEvent = struct {
     push_id: u64,
+};
+
+pub const PriorityTarget = union(enum) {
+    request_stream: u64,
+    push: u64,
+};
+
+pub const PriorityUpdateEvent = struct {
+    target: PriorityTarget,
+    priority: priority_mod.Priority,
+    priority_field_value: []u8,
 };
 
 pub const LocalPush = struct {
@@ -240,6 +254,7 @@ pub const Event = union(enum) {
     push_promise: PushPromiseEvent,
     push_stream: PushStreamEvent,
     cancel_push: CancelPushEvent,
+    priority_update: PriorityUpdateEvent,
     goaway: u64,
     stream_finished: StreamFinishedEvent,
     stream_reset: StreamResetEvent,
@@ -257,6 +272,7 @@ pub const Event = union(enum) {
                 allocator.free(event.field_section);
                 freeFields(allocator, event.fields);
             },
+            .priority_update => |event| allocator.free(event.priority_field_value),
             .connection_closed => |event| event.deinit(allocator),
             else => {},
         }
@@ -335,6 +351,8 @@ pub const Session = struct {
 
     streams: std.AutoHashMapUnmanaged(u64, *StreamState) = .empty,
     received_push_promises: std.AutoHashMapUnmanaged(u64, []qpack.FieldLine) = .empty,
+    request_priorities: std.AutoHashMapUnmanaged(u64, priority_mod.Priority) = .empty,
+    push_priorities: std.AutoHashMapUnmanaged(u64, priority_mod.Priority) = .empty,
 
     pub fn init(
         allocator: std.mem.Allocator,
@@ -369,6 +387,8 @@ pub const Session = struct {
         var promises = self.received_push_promises.valueIterator();
         while (promises.next()) |fields| freeFields(self.allocator, fields.*);
         self.received_push_promises.deinit(self.allocator);
+        self.request_priorities.deinit(self.allocator);
+        self.push_priorities.deinit(self.allocator);
         self.qpack_encoder_table.deinit();
         self.qpack_decoder_table.deinit();
         self.qpack_encoder_state.deinit();
@@ -544,6 +564,61 @@ pub const Session = struct {
             .client => self.stopReceivingPushIfOpen(push_id),
             .server => self.abortLocalPushIfOpen(push_id),
         }
+    }
+
+    pub fn sendPriorityUpdateForRequest(
+        self: *Session,
+        stream_id: u64,
+        priority: priority_mod.Priority,
+    ) Error!void {
+        if (self.role != .client) return Error.InvalidRole;
+        try validatePriorityRequestStreamId(stream_id);
+        var priority_value_buf: [32]u8 = undefined;
+        const priority_value_n = try priority.encode(&priority_value_buf);
+        try self.sendPriorityUpdate(.{
+            .priority_update_request = .{
+                .prioritized_element_id = stream_id,
+                .priority_field_value = priority_value_buf[0..priority_value_n],
+            },
+        });
+        self.trace(.{
+            .name = .priority_update_sent,
+            .role = self.role,
+            .stream_id = stream_id,
+            .frame_type = protocol.FrameType.priority_update_request,
+            .value = @as(u64, priority.urgency),
+        });
+    }
+
+    pub fn sendPriorityUpdateForPush(
+        self: *Session,
+        push_id: u64,
+        priority: priority_mod.Priority,
+    ) Error!void {
+        if (self.role != .client) return Error.InvalidRole;
+        try self.validateLocalPriorityPushId(push_id);
+        var priority_value_buf: [32]u8 = undefined;
+        const priority_value_n = try priority.encode(&priority_value_buf);
+        try self.sendPriorityUpdate(.{
+            .priority_update_push = .{
+                .prioritized_element_id = push_id,
+                .priority_field_value = priority_value_buf[0..priority_value_n],
+            },
+        });
+        self.trace(.{
+            .name = .priority_update_sent,
+            .role = self.role,
+            .frame_type = protocol.FrameType.priority_update_push,
+            .value = push_id,
+        });
+    }
+
+    pub fn priorityForRequest(self: *const Session, stream_id: u64) ?priority_mod.Priority {
+        return self.request_priorities.get(stream_id);
+    }
+
+    pub fn priorityForPush(self: *const Session, push_id: u64) ?priority_mod.Priority {
+        return self.push_priorities.get(push_id);
     }
 
     pub fn finishStream(self: *Session, stream_id: u64) Error!void {
@@ -1040,6 +1115,34 @@ pub const Session = struct {
                     };
                     try self.observeCancelPush(push_id);
                     try self.appendReservedEvent(events, .{ .cancel_push = .{ .push_id = push_id } });
+                },
+                .priority_update_request => |update| {
+                    try budget.reserve(update.priority_field_value.len);
+                    state.control_validator.?.observe(frame_type) catch |err| {
+                        self.closeForError(err);
+                        return err;
+                    };
+                    const event = self.observePriorityUpdate(.{
+                        .request_stream = update.prioritized_element_id,
+                    }, update.priority_field_value) catch |err| {
+                        self.closeForError(err);
+                        return err;
+                    };
+                    try self.appendReservedEvent(events, .{ .priority_update = event });
+                },
+                .priority_update_push => |update| {
+                    try budget.reserve(update.priority_field_value.len);
+                    state.control_validator.?.observe(frame_type) catch |err| {
+                        self.closeForError(err);
+                        return err;
+                    };
+                    const event = self.observePriorityUpdate(.{
+                        .push = update.prioritized_element_id,
+                    }, update.priority_field_value) catch |err| {
+                        self.closeForError(err);
+                        return err;
+                    };
+                    try self.appendReservedEvent(events, .{ .priority_update = event });
                 },
                 .unknown => |unknown| {
                     try budget.reserve(0);
@@ -1685,6 +1788,13 @@ pub const Session = struct {
         }
     }
 
+    fn validateLocalPriorityPushId(self: *const Session, push_id: u64) Error!void {
+        if (self.role != .client) return Error.InvalidRole;
+        const max_push_id = self.config.max_push_id orelse return Error.PushNotEnabled;
+        if (push_id > max_push_id) return Error.InvalidPriorityTarget;
+        if (self.received_push_promises.get(push_id) == null) return Error.InvalidPriorityTarget;
+    }
+
     fn pushIdInUse(self: *const Session, push_id: u64, except_stream_id: u64) bool {
         var it = self.streams.iterator();
         while (it.next()) |entry| {
@@ -1733,6 +1843,11 @@ pub const Session = struct {
         defer self.allocator.free(buf);
         const n = try frame_mod.encode(buf, frame);
         try self.writeAll(stream_id, buf[0..n]);
+    }
+
+    fn sendPriorityUpdate(self: *Session, frame: frame_mod.Frame) Error!void {
+        try self.start();
+        try self.writeControlFrame(frame);
     }
 
     fn reservePushId(self: *Session) Error!u64 {
@@ -2163,6 +2278,41 @@ pub const Session = struct {
         }
     }
 
+    fn observePriorityUpdate(
+        self: *Session,
+        target: PriorityTarget,
+        priority_field_value: []const u8,
+    ) Error!PriorityUpdateEvent {
+        if (self.role != .server) return Error.FrameUnexpected;
+
+        switch (target) {
+            .request_stream => |stream_id| try validatePriorityRequestStreamId(stream_id),
+            .push => |push_id| try self.validatePriorityPushId(push_id),
+        }
+
+        const priority = try priority_mod.Priority.parse(priority_field_value);
+        const owned = try self.allocator.dupe(u8, priority_field_value);
+        errdefer self.allocator.free(owned);
+
+        switch (target) {
+            .request_stream => |stream_id| try self.request_priorities.put(self.allocator, stream_id, priority),
+            .push => |push_id| try self.push_priorities.put(self.allocator, push_id, priority),
+        }
+
+        return .{
+            .target = target,
+            .priority = priority,
+            .priority_field_value = owned,
+        };
+    }
+
+    fn validatePriorityPushId(self: *const Session, push_id: u64) Error!void {
+        const max_push_id = self.peer_max_push_id orelse return Error.InvalidPriorityTarget;
+        if (push_id > max_push_id or push_id >= self.next_push_id) {
+            return Error.InvalidPriorityTarget;
+        }
+    }
+
     fn stopReceivingPushIfOpen(self: *Session, push_id: u64) void {
         const stream_id = self.findPushStream(push_id) orelse return;
         self.stopSending(stream_id, protocol.ErrorCode.request_cancelled) catch {};
@@ -2302,6 +2452,23 @@ pub const Session = struct {
                 .frame_type = protocol.FrameType.cancel_push,
                 .value = cancel.push_id,
             }),
+            .priority_update => |update| self.trace(.{
+                .name = .priority_update_received,
+                .role = self.role,
+                .stream_id = switch (update.target) {
+                    .request_stream => |stream_id| @as(?u64, stream_id),
+                    .push => null,
+                },
+                .frame_type = switch (update.target) {
+                    .request_stream => protocol.FrameType.priority_update_request,
+                    .push => protocol.FrameType.priority_update_push,
+                },
+                .bytes = update.priority_field_value.len,
+                .value = switch (update.target) {
+                    .request_stream => @as(u64, update.priority.urgency),
+                    .push => |push_id| push_id,
+                },
+            }),
             .goaway => |id| self.trace(.{
                 .name = .goaway_received,
                 .role = self.role,
@@ -2400,6 +2567,7 @@ fn eventOwnedPayloadBytes(event: Event) usize {
         .data => |data| data.data.len,
         .datagram => |datagram| datagram.payload.len,
         .push_promise => |promise| promise.field_section.len + fieldsOwnedBytes(promise.fields),
+        .priority_update => |update| update.priority_field_value.len,
         .connection_closed => |closed| closed.reason.len,
         else => 0,
     };
@@ -2451,6 +2619,12 @@ fn varintEncodedLenChecked(value: u64) Error!usize {
 fn validateClientBidiStreamId(id: u64) Error!void {
     if (stream_mod.isUnidirectional(id) or !stream_mod.isClientInitiated(id)) {
         return Error.InvalidGoawayId;
+    }
+}
+
+fn validatePriorityRequestStreamId(id: u64) Error!void {
+    if (stream_mod.isUnidirectional(id) or !stream_mod.isClientInitiated(id)) {
+        return Error.InvalidPriorityTarget;
     }
 }
 

@@ -132,7 +132,11 @@ Datagrams / capsules), and the QUIC RFCs already tracked by `nullq`.
 
 ## Phase 4: Production Extensions
 
-- RFC 9218 Priority header parsing and PRIORITY_UPDATE scheduling hooks.
+- Done: RFC 9218 Priority header helpers and HTTP/3 PRIORITY_UPDATE
+  scheduling hooks, including client request/push send APIs, server receive
+  events, latest-priority state, runner observations, metrics, and invalid
+  target/value hardening. Remaining application policy: use that state to
+  order queued response writes once nullq exposes the right scheduling knobs.
 - Done: first server push API slice with client `MAX_PUSH_ID` opt-in,
   server-side `PUSH_PROMISE` emission, server-initiated push streams, typed
   pushed response events, and in-process coverage.

@@ -10,7 +10,7 @@ constants, SETTINGS and frame codecs, non-blocking QPACK field-section
 encoding/decoding with static-table, Huffman string, and dynamic table core
 support plus dynamic field-section representations, encoder/decoder stream
 instruction codecs, state-sync accounting, and configurable indexing policy,
-header validation, priority parameter parsing, TLS context helpers,
+header validation, Priority field parsing, HTTP/3 PRIORITY_UPDATE hooks, TLS context helpers,
 transport-free message codecs, critical stream setup, SETTINGS exchange,
 opt-in dynamic QPACK stream integration, GOAWAY handling, graceful-drain state,
 reset events, transport close events, structured HTTP/3/QPACK error
@@ -66,7 +66,8 @@ just external-h3-interop
   cancellation, and field-section prefix accounting helpers.
 - `headers`: HTTP field validation for request/response scaffolding.
   Extended CONNECT `:protocol` validation is gated by negotiated support.
-- `priority`: RFC 9218 urgency/incremental parameter parsing.
+- `priority`: RFC 9218 Priority field helpers for urgency/incremental
+  parameters, including request/response field extraction.
 - `errors`: structured HTTP/3 application error code metadata plus local
   cause, connection-close, and stream-reset classification helpers.
 - `stream`: stream type helpers plus frame-context validation.
@@ -99,6 +100,9 @@ just external-h3-interop
   DATAGRAM events over QUIC DATAGRAM frames, DATAGRAM capsule send helpers,
   server push opt-in and push-stream decoding, nullq flow-control blocked
   events, reset/close events, and deep-owned application events.
+  Client sessions can emit request and push `PRIORITY_UPDATE` frames; server
+  sessions surface typed priority-update events and retain latest priority
+  state for application scheduling policy.
   `Session.Config.max_stream_send_buffered` can cap
   per-stream bytes accepted by nullq but not yet acknowledged, and
   `StreamSendState` exposes written/acked/buffered byte counters. Session
@@ -143,6 +147,9 @@ just external-h3-interop
   completion, reset, cancellation, and originating promise metadata, while
   `Server.startPushFromRequest` / `Server.pushFromRequest` provide same-origin
   cacheable promise helpers for ordinary request-derived pushes.
+  Request/response readers expose parsed Priority fields, request writers can
+  send request priority updates, clients can reprioritize promised pushes, and
+  servers can query latest request/push priority state.
   Request/response writers can send context-aware unreliable datagrams and
   reliable DATAGRAM capsules.
 
@@ -185,6 +192,9 @@ just external-h3-interop
   ID rejection. It also covers duplicate `PUSH_PROMISE` consistency and
   policy-driven auto-cancellation, same-origin/cacheable push promise helper
   validation, and higher-level pushed-response tracking through `ClientRunner`.
+  Priority coverage checks typed Priority field extraction, request and push
+  `PRIORITY_UPDATE` send/receive state, observability counters, invalid target
+  rejection, forbidden server senders, and malformed Priority field values.
 - `just qpack-interop` runs the optional Go-side fixture harness against
   `github.com/quic-go/qpack`.
 - `just qpack-dynamic-interop` runs the transport-free dynamic-table fixture

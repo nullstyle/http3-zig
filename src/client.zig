@@ -7,6 +7,7 @@ const datagram_mod = @import("datagram.zig");
 const errors_mod = @import("errors.zig");
 const masque_mod = @import("masque.zig");
 const observability_mod = @import("observability.zig");
+const priority_mod = @import("priority.zig");
 const protocol = @import("protocol.zig");
 const qpack = @import("qpack/root.zig");
 const session_mod = @import("session.zig");
@@ -175,6 +176,10 @@ pub const RequestWriter = struct {
         payload: []const u8,
     ) session_mod.Error!void {
         try self.client.sendDatagramContextCapsule(self.stream_id, context_id, payload);
+    }
+
+    pub fn updatePriority(self: *RequestWriter, priority: priority_mod.Priority) session_mod.Error!void {
+        try self.client.sendPriorityUpdateForRequest(self.stream_id, priority);
     }
 
     pub fn trailers(self: *RequestWriter, fields: []const qpack.FieldLine) session_mod.Error!void {
@@ -379,6 +384,10 @@ pub const ResponseReader = struct {
         return self.response.status();
     }
 
+    pub fn priority(self: ResponseReader) priority_mod.Error!?priority_mod.Priority {
+        return try self.response.priority();
+    }
+
     pub fn webSocketAccepted(self: ResponseReader) bool {
         return self.response.webSocketAccepted();
     }
@@ -484,6 +493,7 @@ pub const ResponseEvent = union(enum) {
             .connection_closed => |closed| .{ .connection_closed = closed },
             .ignored_unknown_frame => |unknown| .{ .ignored_unknown_frame = unknown },
             .request_rejected => null,
+            .priority_update => null,
         };
     }
 };
@@ -526,6 +536,10 @@ pub const ResponseState = struct {
 
     pub fn status(self: *const ResponseState) ?[]const u8 {
         return fieldValue(self.headerFields(), ":status");
+    }
+
+    pub fn priority(self: *const ResponseState) priority_mod.Error!?priority_mod.Priority {
+        return try priority_mod.fromFieldLines(self.headerFields());
     }
 
     pub fn webSocketAccepted(self: *const ResponseState) bool {
@@ -744,6 +758,10 @@ pub const PushedResponseReader = struct {
         return self.pushed.status();
     }
 
+    pub fn priority(self: PushedResponseReader) priority_mod.Error!?priority_mod.Priority {
+        return try self.pushed.priority();
+    }
+
     pub fn complete(self: PushedResponseReader) bool {
         return self.pushed.complete;
     }
@@ -809,6 +827,10 @@ pub const PushedResponseState = struct {
 
     pub fn status(self: *const PushedResponseState) ?[]const u8 {
         return fieldValue(self.headerFields(), ":status");
+    }
+
+    pub fn priority(self: *const PushedResponseState) priority_mod.Error!?priority_mod.Priority {
+        return try priority_mod.fromFieldLines(self.headerFields());
     }
 
     fn addRequestStreamId(
@@ -1124,6 +1146,22 @@ pub const Client = struct {
 
     pub fn cancelPush(self: *Client, push_id: u64) session_mod.Error!void {
         try self.session.cancelPush(push_id);
+    }
+
+    pub fn sendPriorityUpdateForRequest(
+        self: *Client,
+        stream_id: u64,
+        priority: priority_mod.Priority,
+    ) session_mod.Error!void {
+        try self.session.sendPriorityUpdateForRequest(stream_id, priority);
+    }
+
+    pub fn sendPriorityUpdateForPush(
+        self: *Client,
+        push_id: u64,
+        priority: priority_mod.Priority,
+    ) session_mod.Error!void {
+        try self.session.sendPriorityUpdateForPush(push_id, priority);
     }
 
     pub fn request(

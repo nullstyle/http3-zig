@@ -201,6 +201,7 @@ pub fn codeForError(err: anyerror) u64 {
         => protocol.ErrorCode.stream_creation_error,
         error.InvalidGoawayId,
         error.InvalidPushId,
+        error.InvalidPriorityTarget,
         => protocol.ErrorCode.id_error,
         error.InvalidDatagramStream => protocol.ErrorCode.id_error,
         error.RequestBlockedByGoaway => protocol.ErrorCode.request_rejected,
