@@ -184,6 +184,9 @@ Datagrams / capsules), and the QUIC RFCs already tracked by `nullq`.
 - Done: deeper MASQUE receive state, including endpoint Context ID allocation
   checks, bounded unknown-context datagram buffering, and explicit
   drain/drop helpers for extension registration policy.
+- Done: capsule-aware MASQUE pending-buffer helpers with sustained
+  unknown-context DATAGRAM capsule pressure coverage and exact byte-accounting
+  checks across fill, reject, drain, and drop cycles.
 - Next: extension-specific capsule registration semantics and external proxy
   interop.
 
@@ -201,10 +204,13 @@ Datagrams / capsules), and the QUIC RFCs already tracked by `nullq`.
   table capacity/entry overflow, plus CONNECT-UDP context registry failures,
   bounded unknown-context buffering limits, and oversized UDP payload
   stream-abort classification.
+- Done: sustained MASQUE unknown-context DATAGRAM capsule pressure cases now
+  cover bounded pending-buffer count/byte limits, malformed capsule
+  non-buffering, ignored capsule types, and repeated drain/drop accounting.
 - Partial: send-side stream buffering, outgoing capsule values, session event
   queues, tracker body accumulation, decoded QPACK field sections, and the
   production session preset now have opt-in caps; broader sustained
-  resource-pressure coverage is still needed, especially around
-  extension-specific capsule state.
+  resource-pressure coverage is still needed around long-lived streams,
+  flow-control stalls, and external-peer traffic patterns.
 - Remaining: broader corpus growth plus sustained memory/flow/resource-pressure cases.
 - Interop matrix across quic-go, ngtcp2, lsquic, aioquic, and Chromium/curl where practical.

@@ -272,6 +272,20 @@ pub const PendingDatagramBuffer = struct {
         return disposition;
     }
 
+    pub fn classifyCapsuleOrBuffer(
+        self: *PendingDatagramBuffer,
+        registry: *const ContextRegistry,
+        capsule: capsule_mod.Capsule,
+    ) Error!ReceiveDisposition {
+        if (!capsule.isDatagram()) return .{ .ignored_capsule_type = capsule.capsule_type };
+        const disposition = registry.classifyDatagramPayload(capsule.value);
+        switch (disposition) {
+            .unknown_context => |context| try self.bufferUnknown(context),
+            else => {},
+        }
+        return receiveDispositionFromDatagram(disposition);
+    }
+
     pub fn drainContext(
         self: *PendingDatagramBuffer,
         out_allocator: std.mem.Allocator,
@@ -870,6 +884,154 @@ test "CONNECT-UDP pending datagram buffer enforces limits and drops contexts" {
 
     const large_n = try datagram_mod.encodeContextPayload(&buf, 6, "abcdef");
     try std.testing.expectError(Error.ContextBufferFull, pending.classifyOrBuffer(&registry, buf[0..large_n]));
+}
+
+test "CONNECT-UDP pending datagram buffer classifies DATAGRAM capsules under pressure" {
+    const allocator = std.testing.allocator;
+    var context_buf: [64]u8 = undefined;
+    var capsule_buf: [96]u8 = undefined;
+    var registry = ContextRegistry.init();
+    var pending = PendingDatagramBuffer.initWithConfig(allocator, .{
+        .max_datagrams = 2,
+        .max_payload_bytes = 8,
+    });
+    defer pending.deinit();
+
+    const first_context_n = try datagram_mod.encodeContextPayload(&context_buf, 8, "abcd");
+    const first_capsule_n = try capsule_mod.encodeDatagram(&capsule_buf, context_buf[0..first_context_n]);
+    const first_capsule = (try capsule_mod.decode(capsule_buf[0..first_capsule_n])).capsule;
+    switch (try pending.classifyCapsuleOrBuffer(&registry, first_capsule)) {
+        .unknown_context => |context| {
+            try std.testing.expectEqual(@as(u64, 8), context.context_id);
+            try std.testing.expectEqualStrings("abcd", context.payload);
+        },
+        else => return error.UnexpectedDisposition,
+    }
+    try std.testing.expectEqual(@as(usize, 1), pending.len());
+    try std.testing.expectEqual(@as(usize, 4), pending.bufferedPayloadBytes());
+
+    const second_context_n = try datagram_mod.encodeContextPayload(&context_buf, 10, "efgh");
+    const second_capsule_n = try capsule_mod.encodeDatagram(&capsule_buf, context_buf[0..second_context_n]);
+    const second_capsule = (try capsule_mod.decode(capsule_buf[0..second_capsule_n])).capsule;
+    _ = try pending.classifyCapsuleOrBuffer(&registry, second_capsule);
+    try std.testing.expectEqual(@as(usize, 2), pending.len());
+    try std.testing.expectEqual(@as(usize, 8), pending.bufferedPayloadBytes());
+
+    const ignored = try pending.classifyCapsuleOrBuffer(&registry, .{
+        .capsule_type = 0x29 * 3 + 0x17,
+        .value = "ignore",
+    });
+    try std.testing.expect(ignored.canSilentlyDrop());
+    try std.testing.expectEqual(@as(usize, 2), pending.len());
+    try std.testing.expectEqual(@as(usize, 8), pending.bufferedPayloadBytes());
+
+    const malformed = try pending.classifyCapsuleOrBuffer(&registry, .{
+        .capsule_type = capsule_mod.Type.datagram,
+        .value = "",
+    });
+    switch (malformed) {
+        .abort_stream => |abort| try std.testing.expectEqual(AbortReason.malformed_context, abort.reason),
+        else => return error.UnexpectedDisposition,
+    }
+    try std.testing.expectEqual(@as(usize, 2), pending.len());
+    try std.testing.expectEqual(@as(usize, 8), pending.bufferedPayloadBytes());
+
+    const third_context_n = try datagram_mod.encodeContextPayload(&context_buf, 12, "");
+    const third_capsule_n = try capsule_mod.encodeDatagram(&capsule_buf, context_buf[0..third_context_n]);
+    const third_capsule = (try capsule_mod.decode(capsule_buf[0..third_capsule_n])).capsule;
+    try std.testing.expectError(Error.ContextBufferFull, pending.classifyCapsuleOrBuffer(&registry, third_capsule));
+    try std.testing.expectEqual(@as(usize, 2), pending.len());
+    try std.testing.expectEqual(@as(usize, 8), pending.bufferedPayloadBytes());
+
+    try registry.registerAllocatedExtension(.client, 8);
+    var drained: std.ArrayList(BufferedDatagram) = .empty;
+    defer {
+        freeBufferedDatagrams(allocator, drained.items);
+        drained.deinit(allocator);
+    }
+    try std.testing.expectEqual(@as(usize, 1), try pending.drainContext(allocator, 8, &drained));
+    try std.testing.expectEqual(@as(usize, 1), pending.len());
+    try std.testing.expectEqual(@as(usize, 4), pending.bufferedPayloadBytes());
+    try std.testing.expectEqualStrings("abcd", drained.items[0].payload);
+
+    const known_context_n = try datagram_mod.encodeContextPayload(&context_buf, 8, "known");
+    const known_capsule_n = try capsule_mod.encodeDatagram(&capsule_buf, context_buf[0..known_context_n]);
+    const known_capsule = (try capsule_mod.decode(capsule_buf[0..known_capsule_n])).capsule;
+    switch (try pending.classifyCapsuleOrBuffer(&registry, known_capsule)) {
+        .extension_payload => |context| {
+            try std.testing.expectEqual(@as(u64, 8), context.context_id);
+            try std.testing.expectEqualStrings("known", context.payload);
+        },
+        else => return error.UnexpectedDisposition,
+    }
+    try std.testing.expectEqual(@as(usize, 1), pending.len());
+    try std.testing.expectEqual(@as(usize, 4), pending.bufferedPayloadBytes());
+
+    try std.testing.expectEqual(@as(usize, 1), pending.dropContext(10));
+    try std.testing.expectEqual(@as(usize, 0), pending.len());
+    try std.testing.expectEqual(@as(usize, 0), pending.bufferedPayloadBytes());
+}
+
+test "CONNECT-UDP pending datagram buffer survives sustained capsule fill and drain cycles" {
+    const allocator = std.testing.allocator;
+    const payloads = [_][]const u8{ "aa", "bbb", "c", "dddd" };
+    var context_buf: [64]u8 = undefined;
+    var capsule_buf: [96]u8 = undefined;
+    var registry = ContextRegistry.init();
+    var pending = PendingDatagramBuffer.initWithConfig(allocator, .{
+        .max_datagrams = payloads.len,
+        .max_payload_bytes = 10,
+    });
+    defer pending.deinit();
+
+    var cycle: usize = 0;
+    while (cycle < 32) : (cycle += 1) {
+        const context_id: u64 = 8 + @as(u64, @intCast(cycle)) * 2;
+        var total_payload_bytes: usize = 0;
+        for (payloads) |payload| {
+            total_payload_bytes += payload.len;
+            const context_n = try datagram_mod.encodeContextPayload(&context_buf, context_id, payload);
+            const capsule_n = try capsule_mod.encodeDatagram(&capsule_buf, context_buf[0..context_n]);
+            const capsule = (try capsule_mod.decode(capsule_buf[0..capsule_n])).capsule;
+            switch (try pending.classifyCapsuleOrBuffer(&registry, capsule)) {
+                .unknown_context => |context| {
+                    try std.testing.expectEqual(context_id, context.context_id);
+                    try std.testing.expectEqualStrings(payload, context.payload);
+                },
+                else => return error.UnexpectedDisposition,
+            }
+        }
+
+        try std.testing.expectEqual(payloads.len, pending.len());
+        try std.testing.expectEqual(total_payload_bytes, pending.bufferedPayloadBytes());
+
+        const overflow_context_n = try datagram_mod.encodeContextPayload(&context_buf, context_id, "z");
+        const overflow_capsule_n = try capsule_mod.encodeDatagram(&capsule_buf, context_buf[0..overflow_context_n]);
+        const overflow_capsule = (try capsule_mod.decode(capsule_buf[0..overflow_capsule_n])).capsule;
+        try std.testing.expectError(
+            Error.ContextBufferFull,
+            pending.classifyCapsuleOrBuffer(&registry, overflow_capsule),
+        );
+        try std.testing.expectEqual(payloads.len, pending.len());
+        try std.testing.expectEqual(total_payload_bytes, pending.bufferedPayloadBytes());
+
+        try registry.registerAllocatedExtension(.client, context_id);
+        var drained: std.ArrayList(BufferedDatagram) = .empty;
+        try std.testing.expectEqual(payloads.len, try pending.drainContext(allocator, context_id, &drained));
+        try std.testing.expectEqual(@as(usize, 0), pending.len());
+        try std.testing.expectEqual(@as(usize, 0), pending.bufferedPayloadBytes());
+        for (payloads) |payload| {
+            var found = false;
+            for (drained.items) |datagram| {
+                try std.testing.expectEqual(context_id, datagram.context_id);
+                if (std.mem.eql(u8, payload, datagram.payload)) found = true;
+            }
+            try std.testing.expect(found);
+        }
+        freeBufferedDatagrams(allocator, drained.items);
+        drained.deinit(allocator);
+        try registry.unregister(context_id);
+    }
 }
 
 test "CONNECT-UDP datagram disposition separates unknown context from stream aborts" {
