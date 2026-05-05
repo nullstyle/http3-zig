@@ -137,8 +137,10 @@ Datagrams / capsules), and the QUIC RFCs already tracked by `nullq`.
 - Done: observability hooks for TLS keylog callback configuration, QUIC qlog
   callback passthrough, typed HTTP/3 trace events, and session/client/server
   metrics snapshots.
-- Next: WebSocket-over-H3 and concrete MASQUE-style protocols layered on
-  Extended CONNECT, capsules, and context-aware datagrams.
+- Done: WebSocket-over-H3 foundation with negotiated Extended CONNECT helpers,
+  typed request/accept wrappers, and bidirectional byte-flow coverage.
+- Next: RFC 6455 WebSocket frame codec plus concrete MASQUE-style protocols
+  layered on Extended CONNECT, capsules, and context-aware datagrams.
 
 ## Phase 5: Hardening
 

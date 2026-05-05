@@ -1169,6 +1169,128 @@ test "session negotiates and surfaces extended CONNECT requests" {
     try std.testing.expectEqualStrings("websocket", request.protocol().?);
 }
 
+test "WebSocket helper requires negotiated Extended CONNECT support" {
+    const allocator = std.testing.allocator;
+
+    var pair: H3Pair = undefined;
+    try pair.initStarted(allocator, .{}, .{});
+    defer pair.deinit();
+
+    try exchangePairSettings(allocator, &pair);
+
+    var h3_client = null3.Client.init(&pair.client_h3);
+    try std.testing.expectError(
+        error.ExtendedConnectNotEnabled,
+        h3_client.startWebSocket(allocator, .{
+            .authority = "localhost",
+            .path = "/chat",
+        }),
+    );
+}
+
+test "WebSocket over HTTP/3 helper opens tunnel and streams bytes" {
+    const allocator = std.testing.allocator;
+    const h3_settings: null3.Settings = .{ .enable_connect_protocol = true };
+
+    var pair: H3Pair = undefined;
+    try pair.initStarted(allocator, .{ .settings = h3_settings }, .{ .settings = h3_settings });
+    defer pair.deinit();
+
+    try exchangePairSettings(allocator, &pair);
+
+    var h3_client = null3.Client.init(&pair.client_h3);
+    var h3_server = null3.Server.init(&pair.server_h3);
+
+    var client_ws = try h3_client.startWebSocket(allocator, .{
+        .authority = "localhost",
+        .path = "/chat",
+    });
+    const stream_id = client_ws.streamId();
+    try client_ws.write("ping");
+    try client_ws.finishSend();
+
+    var client_runner = null3.ClientRunner.init(allocator);
+    defer client_runner.deinit();
+    var server_runner = null3.ServerRunner.init(allocator);
+    defer server_runner.deinit();
+
+    var client_events: std.ArrayList(null3.session.Event) = .empty;
+    defer {
+        clearSessionEvents(allocator, &client_events);
+        client_events.deinit(allocator);
+    }
+    var server_events: std.ArrayList(null3.session.Event) = .empty;
+    defer {
+        clearSessionEvents(allocator, &server_events);
+        server_events.deinit(allocator);
+    }
+
+    var accepted = false;
+    var server_complete = false;
+    var client_complete = false;
+    var now_us: u64 = 1_000_000;
+    var iters: u32 = 0;
+    while (!(accepted and server_complete and client_complete)) : (iters += 1) {
+        try std.testing.expect(iters < 20_000);
+        try pumpH3(
+            &pair.client,
+            &pair.server,
+            &pair.client_h3,
+            &pair.server_h3,
+            &client_events,
+            &server_events,
+            &now_us,
+        );
+
+        for (server_events.items) |event| {
+            switch (try server_runner.observe(event)) {
+                .request_updated, .request_complete => |request_state| {
+                    const request = request_state.reader();
+                    if (!accepted and request.headers().len > 0) {
+                        try std.testing.expectEqual(stream_id, request.streamId());
+                        try std.testing.expect(request.isExtendedConnect());
+                        try std.testing.expect(request.isWebSocket());
+                        try std.testing.expectEqualStrings("CONNECT", request.method().?);
+                        try std.testing.expectEqualStrings("/chat", request.path().?);
+                        try std.testing.expectEqualStrings(null3.websocket.protocol_token, request.protocol().?);
+
+                        var server_ws = try h3_server.acceptWebSocket(allocator, request, .{});
+                        try server_ws.write("pong");
+                        try server_ws.finishSend();
+                        accepted = true;
+                    }
+
+                    if (request.complete()) {
+                        try std.testing.expectEqualStrings("ping", request.body());
+                        server_complete = true;
+                    }
+                },
+                else => {},
+            }
+        }
+        clearSessionEvents(allocator, &server_events);
+
+        for (client_events.items) |event| {
+            switch (try client_runner.observe(event)) {
+                .response_updated, .response_complete => |response_state| {
+                    const response = response_state.reader();
+                    if (response.headers().len > 0) {
+                        try std.testing.expect(response.webSocketAccepted());
+                        try std.testing.expectEqualStrings("200", response.status().?);
+                    }
+
+                    if (response.complete()) {
+                        try std.testing.expectEqualStrings("pong", response.body());
+                        client_complete = true;
+                    }
+                },
+                else => {},
+            }
+        }
+        clearSessionEvents(allocator, &client_events);
+    }
+}
+
 test "session rejects duplicate peer SETTINGS" {
     const allocator = std.testing.allocator;
 

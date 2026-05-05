@@ -10,6 +10,7 @@ const protocol = @import("protocol.zig");
 const qpack = @import("qpack/root.zig");
 const session_mod = @import("session.zig");
 const settings_mod = @import("settings.zig");
+const websocket_mod = @import("websocket.zig");
 
 pub const TlsOptions = struct {
     verify: boringssl.tls.VerifyMode = .none,
@@ -174,6 +175,36 @@ pub const ResponseWriter = struct {
     }
 };
 
+pub const WebSocketAcceptOptions = websocket_mod.AcceptOptions;
+
+pub const WebSocketServerStream = struct {
+    writer: ResponseWriter,
+
+    pub fn streamId(self: *const WebSocketServerStream) u64 {
+        return self.writer.stream_id;
+    }
+
+    pub fn write(self: *WebSocketServerStream, bytes: []const u8) session_mod.Error!void {
+        try self.writer.write(bytes);
+    }
+
+    pub fn finishSend(self: *WebSocketServerStream) session_mod.Error!void {
+        try self.writer.finish();
+    }
+
+    pub fn reset(self: *WebSocketServerStream, error_code: u64) session_mod.Error!void {
+        try self.writer.reset(error_code);
+    }
+
+    pub fn abort(self: *WebSocketServerStream) session_mod.Error!void {
+        try self.writer.abort();
+    }
+
+    pub fn responseWriter(self: *WebSocketServerStream) *ResponseWriter {
+        return &self.writer;
+    }
+};
+
 pub const RequestReader = struct {
     request: *const RequestState,
 
@@ -215,6 +246,10 @@ pub const RequestReader = struct {
 
     pub fn isExtendedConnect(self: RequestReader) bool {
         return self.request.isExtendedConnect();
+    }
+
+    pub fn isWebSocket(self: RequestReader) bool {
+        return self.request.isWebSocket();
     }
 
     pub fn complete(self: RequestReader) bool {
@@ -441,6 +476,22 @@ pub const Server = struct {
         };
     }
 
+    pub fn acceptWebSocket(
+        self: *Server,
+        allocator: std.mem.Allocator,
+        request: RequestReader,
+        options: WebSocketAcceptOptions,
+    ) (session_mod.Error || websocket_mod.Error)!WebSocketServerStream {
+        if (!request.isWebSocket()) return error.NotWebSocket;
+        if (!websocket_mod.isAcceptedStatus(options.status)) return error.InvalidAcceptStatus;
+        return .{
+            .writer = try self.startResponse(allocator, request.streamId(), .{
+                .status = options.status,
+                .headers = options.headers,
+            }),
+        };
+    }
+
     pub fn classify(self: *const Server, event: session_mod.Event) ?RequestEvent {
         _ = self;
         return RequestEvent.from(event);
@@ -500,6 +551,10 @@ pub const RequestState = struct {
 
     pub fn isExtendedConnect(self: *const RequestState) bool {
         return self.protocol() != null;
+    }
+
+    pub fn isWebSocket(self: *const RequestState) bool {
+        return websocket_mod.isRequest(self.headerFields());
     }
 
     fn setHeaders(

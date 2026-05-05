@@ -10,6 +10,7 @@ const protocol = @import("protocol.zig");
 const qpack = @import("qpack/root.zig");
 const session_mod = @import("session.zig");
 const settings_mod = @import("settings.zig");
+const websocket_mod = @import("websocket.zig");
 
 pub const TlsOptions = struct {
     verify: boringssl.tls.VerifyMode = .system,
@@ -180,6 +181,36 @@ pub const RequestWriter = struct {
     }
 };
 
+pub const WebSocketConnectOptions = websocket_mod.ConnectOptions;
+
+pub const WebSocketClientStream = struct {
+    writer: RequestWriter,
+
+    pub fn streamId(self: *const WebSocketClientStream) u64 {
+        return self.writer.stream_id;
+    }
+
+    pub fn write(self: *WebSocketClientStream, bytes: []const u8) session_mod.Error!void {
+        try self.writer.write(bytes);
+    }
+
+    pub fn finishSend(self: *WebSocketClientStream) session_mod.Error!void {
+        try self.writer.finish();
+    }
+
+    pub fn reset(self: *WebSocketClientStream, error_code: u64) session_mod.Error!void {
+        try self.writer.reset(error_code);
+    }
+
+    pub fn abort(self: *WebSocketClientStream) session_mod.Error!void {
+        try self.writer.abort();
+    }
+
+    pub fn requestWriter(self: *WebSocketClientStream) *RequestWriter {
+        return &self.writer;
+    }
+};
+
 pub const PushPromise = struct {
     push_id: u64,
     field_section: []u8,
@@ -206,6 +237,10 @@ pub const ResponseReader = struct {
 
     pub fn status(self: ResponseReader) ?[]const u8 {
         return self.response.status();
+    }
+
+    pub fn webSocketAccepted(self: ResponseReader) bool {
+        return self.response.webSocketAccepted();
     }
 
     pub fn complete(self: ResponseReader) bool {
@@ -317,6 +352,10 @@ pub const ResponseState = struct {
 
     pub fn status(self: *const ResponseState) ?[]const u8 {
         return fieldValue(self.headerFields(), ":status");
+    }
+
+    pub fn webSocketAccepted(self: *const ResponseState) bool {
+        return websocket_mod.responseAccepted(self.headerFields());
     }
 
     pub fn pushPromises(self: *const ResponseState) []const PushPromise {
@@ -615,6 +654,23 @@ pub const Client = struct {
         return .{
             .client = self,
             .stream_id = try self.open(fields),
+        };
+    }
+
+    pub fn startWebSocket(
+        self: *Client,
+        allocator: std.mem.Allocator,
+        options: WebSocketConnectOptions,
+    ) session_mod.Error!WebSocketClientStream {
+        return .{
+            .writer = try self.startRequest(allocator, .{
+                .method = "CONNECT",
+                .scheme = options.scheme,
+                .authority = options.authority,
+                .path = options.path,
+                .connect_protocol = websocket_mod.protocol_token,
+                .headers = options.headers,
+            }),
         };
     }
 

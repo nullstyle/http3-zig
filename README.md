@@ -18,10 +18,11 @@ classification, QUIC flow-control blocked observability, HTTP/3 DATAGRAM
 send/receive groundwork, reusable transport driver helpers, request lifecycle
 tracking, response lifecycle tracking, client/server event runners, Extended
 CONNECT negotiation and request metadata, Capsule Protocol codecs,
-context-aware DATAGRAM helpers, HTTP/3 trace callbacks and metrics snapshots,
-TLS keylog / QUIC qlog passthrough hooks, opt-in send-buffer backpressure
-limits, and lightweight request-response facades with configurable tracker body
-and session event-queue budgets.
+context-aware DATAGRAM helpers, WebSocket-over-HTTP/3 tunnel helpers, HTTP/3
+trace callbacks and metrics snapshots, TLS keylog / QUIC qlog passthrough
+hooks, opt-in send-buffer backpressure limits, and lightweight
+request-response facades with configurable tracker body and session event-queue
+budgets.
 
 ```sh
 mise install
@@ -78,6 +79,8 @@ just example-loopback-get
 - `observability`: embedder-owned diagnostics hooks: TLS keylog callback
   aliases, QUIC qlog callback aliases, typed HTTP/3 trace events, and metrics
   counters.
+- `websocket`: RFC 9220 handshake helpers for WebSocket-over-HTTP/3 Extended
+  CONNECT tunnels. The tunneled byte stream remains application-owned for now.
 - `session`: HTTP/3 session state over `nullq.Connection`, including control
   streams, peer SETTINGS, request stream draining, response writes, FIN
   validation, optional dynamic QPACK encoder/decoder stream processing,
@@ -105,7 +108,9 @@ just example-loopback-get
   for applications that want batch-oriented event processing.
   `RequestHeadOptions.connect_protocol` opens the Extended CONNECT path once
   the peer advertises support, and `RequestReader.protocol` exposes the
-  received protocol token.
+  received protocol token. `Client.startWebSocket` and `Server.acceptWebSocket`
+  provide the first typed Extended CONNECT tunnel helpers for the
+  `websocket` protocol token.
   Request/response writers can send context-aware unreliable datagrams and
   reliable DATAGRAM capsules.
 
@@ -133,7 +138,8 @@ just example-loopback-get
   DATAGRAM capsules and context-aware payloads over both QUIC DATAGRAM frames
   and DATA-frame capsules. Observability coverage checks TLS keylog hook
   configuration plus HTTP/3 trace callback and metrics accounting for emitted
-  events.
+  events. WebSocket-over-HTTP/3 coverage checks negotiated Extended CONNECT
+  gating, tunnel request/accept helpers, and byte flow in both directions.
 - `just qpack-interop` runs the optional Go-side fixture harness against
   `github.com/quic-go/qpack`.
 - `just fuzz-smoke` runs the transport-free codec fuzz harness across HTTP/3
