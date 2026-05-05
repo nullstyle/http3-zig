@@ -140,8 +140,10 @@ Datagrams / capsules), and the QUIC RFCs already tracked by `nullq`.
 
 ## Phase 5: Hardening
 
-- Fuzz frame/QPACK decoders.
 - Memory-budget enforcement and field-section size limits.
+- Done: transport-free codec fuzz harness and smoke corpus for HTTP/3 frames,
+  SETTINGS, capsules, DATAGRAM payloads, QPACK integers, Huffman strings,
+  field sections, and encoder/decoder stream instructions.
 - Done: abuse tests now cover critical stream closure, duplicate SETTINGS,
   invalid frame placement, duplicate critical streams, server-side push streams,
   malformed peer GOAWAY sequencing, DATAGRAM negotiation and size failures,
@@ -152,5 +154,5 @@ Datagrams / capsules), and the QUIC RFCs already tracked by `nullq`.
   queues, tracker body accumulation, and decoded QPACK field sections now have
   opt-in caps; broader sustained resource-pressure coverage is still needed,
   especially around extension-specific capsule state.
-- Remaining: broader fuzzing plus sustained memory/flow/resource-pressure cases.
+- Remaining: broader corpus growth plus sustained memory/flow/resource-pressure cases.
 - Interop matrix across quic-go, ngtcp2, lsquic, aioquic, and Chromium/curl where practical.

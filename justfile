@@ -13,7 +13,13 @@ curl-h3-interop:
 example-loopback-get:
     zig build run-example-loopback-get
 
+fuzz-codecs:
+    zig build fuzz-codecs
+
+fuzz-smoke:
+    zig build run-fuzz-smoke
+
 fmt:
-    zig fmt build.zig src tests interop/curl_h3 examples
+    zig fmt build.zig src tests interop/curl_h3 examples fuzz
 
 check: fmt test

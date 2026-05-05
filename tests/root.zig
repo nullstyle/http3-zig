@@ -1,5 +1,6 @@
 const std = @import("std");
 const boringssl = @import("boringssl");
+const fuzz_codecs = @import("null3_fuzz_codecs");
 const null3 = @import("null3");
 const nullq = @import("nullq");
 
@@ -256,6 +257,67 @@ fn exchangePairSettings(allocator: std.mem.Allocator, pair: *H3Pair) !void {
         clearSessionEvents(allocator, &client_events);
         clearSessionEvents(allocator, &server_events);
     }
+}
+
+test "codec fuzz target names parse" {
+    try std.testing.expectEqual(@as(?fuzz_codecs.Target, .all), fuzz_codecs.targetFromName("all"));
+    for (fuzz_codecs.concrete_targets) |target| {
+        try std.testing.expectEqual(@as(?fuzz_codecs.Target, target), fuzz_codecs.targetFromName(fuzz_codecs.targetName(target)));
+    }
+    try std.testing.expectEqual(@as(?fuzz_codecs.Target, .qpack_integer), fuzz_codecs.targetFromName("qpack_integer"));
+    try std.testing.expect(fuzz_codecs.targetFromName("not-a-target") == null);
+}
+
+test "codec fuzz harness smoke corpus" {
+    const allocator = std.testing.allocator;
+    for (fuzz_codecs.smokeInputs()) |input| {
+        try fuzz_codecs.runTarget(allocator, .all, input);
+    }
+}
+
+test "codec fuzz harness accepts representative valid encodings" {
+    const allocator = std.testing.allocator;
+    var buf: [512]u8 = undefined;
+
+    const frame_n = try null3.frame.encode(&buf, .{ .data = "hello" });
+    try fuzz_codecs.runTarget(allocator, .frame, buf[0..frame_n]);
+
+    const settings_n = try (null3.Settings{
+        .enable_connect_protocol = true,
+        .h3_datagram = true,
+    }).encode(&buf);
+    try fuzz_codecs.runTarget(allocator, .settings, buf[0..settings_n]);
+
+    const capsule_n = try null3.capsule.encodeDatagram(&buf, "payload");
+    try fuzz_codecs.runTarget(allocator, .capsule, buf[0..capsule_n]);
+
+    const datagram_n = try null3.datagram.encodeWithContext(&buf, 4, 7, "payload");
+    try fuzz_codecs.runTarget(allocator, .datagram, buf[0..datagram_n]);
+
+    const integer_n = try null3.qpack.integer.encode(&buf, 5, 0, 1337);
+    try fuzz_codecs.runTarget(allocator, .qpack_integer, buf[0..integer_n]);
+
+    const huffman_n = try null3.qpack.huffman.encode(&buf, "www.example.com");
+    try fuzz_codecs.runTarget(allocator, .qpack_huffman, buf[0..huffman_n]);
+
+    const fields = [_]null3.FieldLine{
+        .{ .name = ":method", .value = "GET" },
+        .{ .name = "x-null3-fuzz", .value = "ok" },
+    };
+    const static_section_n = try null3.qpack.encodeFieldSection(&buf, &fields);
+    try fuzz_codecs.runTarget(allocator, .qpack_field_static, buf[0..static_section_n]);
+    try fuzz_codecs.runTarget(allocator, .qpack_field_literal, buf[0..static_section_n]);
+
+    var table = null3.DynamicTable.init(allocator, 0);
+    defer table.deinit();
+    const dynamic_section_n = try null3.qpack.encodeDynamicFieldSection(&buf, &table, &fields);
+    try fuzz_codecs.runTarget(allocator, .qpack_field_dynamic, buf[0..dynamic_section_n]);
+
+    const encoder_instruction_n = try null3.qpack.instructions.encodeEncoderInstruction(&buf, .{ .set_capacity = 0 });
+    try fuzz_codecs.runTarget(allocator, .qpack_encoder_instruction, buf[0..encoder_instruction_n]);
+
+    const decoder_instruction_n = try null3.qpack.instructions.encodeDecoderInstruction(&buf, .{ .insert_count_increment = 1 });
+    try fuzz_codecs.runTarget(allocator, .qpack_decoder_instruction, buf[0..decoder_instruction_n]);
 }
 
 fn sendRawH3Datagram(conn: *nullq.Connection, stream_id: u64, payload: []const u8) !void {

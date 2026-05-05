@@ -25,6 +25,7 @@ event-queue budgets.
 ```sh
 mise install
 just test
+just fuzz-smoke
 just example-loopback-get
 ```
 
@@ -129,6 +130,9 @@ just example-loopback-get
   and DATA-frame capsules.
 - `just qpack-interop` runs the optional Go-side fixture harness against
   `github.com/quic-go/qpack`.
+- `just fuzz-smoke` runs the transport-free codec fuzz harness across HTTP/3
+  frames, SETTINGS, capsules, HTTP/3 DATAGRAM payloads, QPACK integers,
+  Huffman strings, field sections, and encoder/decoder stream instructions.
 - `just curl-h3-interop` builds a small localhost `null3` HTTP/3 server and
   drives `/opt/homebrew/opt/curl/bin/curl --http3-only` through handshake,
   request metadata, status/header checks, POST echo, large upload echo,
