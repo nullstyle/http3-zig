@@ -155,8 +155,10 @@ Datagrams / capsules), and the QUIC RFCs already tracked by `nullq`.
 - Done: CONNECT-UDP helper foundation layered on Extended CONNECT, capsules,
   and context-aware datagrams, including target path construction/parsing,
   Context ID 0 UDP payload helpers, typed client/server tunnel wrappers,
-  checked context registry helpers, drop/buffer/abort receive disposition,
-  UDP payload length guards, integration coverage, and fuzz smoke coverage.
+  checked context registry helpers, reusable per-tunnel receive classification
+  for DATAGRAM frames and DATAGRAM capsules, drop/buffer/abort receive
+  disposition, UDP payload length guards, integration coverage, and fuzz smoke
+  coverage.
 - Next: deeper MASQUE protocol state, including extension-specific capsule
   registration semantics and external proxy interop.
 

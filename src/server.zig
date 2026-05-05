@@ -67,6 +67,14 @@ pub const Datagram = struct {
         return registry.decodeContextPayload(self.payload);
     }
 
+    pub fn masqueDisposition(self: Datagram, registry: *const masque_mod.ContextRegistry) masque_mod.DatagramDisposition {
+        return registry.classifyDatagramPayload(self.payload);
+    }
+
+    pub fn connectUdp(self: Datagram, receiver: *const masque_mod.ConnectUdpReceiver) masque_mod.ReceiveDisposition {
+        return receiver.classifyDatagramPayload(self.payload);
+    }
+
     pub fn udp(self: Datagram) masque_mod.Error![]const u8 {
         return masque_mod.decodeUdpPayload(self.payload);
     }

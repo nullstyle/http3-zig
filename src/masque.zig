@@ -7,6 +7,7 @@
 
 const std = @import("std");
 
+const capsule_mod = @import("capsule.zig");
 const datagram_mod = @import("datagram.zig");
 const protocol = @import("protocol.zig");
 const qpack = @import("qpack/root.zig");
@@ -113,6 +114,64 @@ pub const DatagramDisposition = union(enum) {
     extension_payload: ContextPayload,
     unknown_context: datagram_mod.ContextPayload,
     abort_stream: StreamAbort,
+
+    pub fn streamAbort(self: DatagramDisposition) ?StreamAbort {
+        return switch (self) {
+            .abort_stream => |abort| abort,
+            else => null,
+        };
+    }
+};
+
+pub const ReceiveDisposition = union(enum) {
+    udp_payload: []const u8,
+    extension_payload: ContextPayload,
+    unknown_context: datagram_mod.ContextPayload,
+    ignored_capsule_type: u64,
+    abort_stream: StreamAbort,
+
+    pub fn streamAbort(self: ReceiveDisposition) ?StreamAbort {
+        return switch (self) {
+            .abort_stream => |abort| abort,
+            else => null,
+        };
+    }
+
+    pub fn canSilentlyDrop(self: ReceiveDisposition) bool {
+        return switch (self) {
+            .unknown_context, .ignored_capsule_type => true,
+            else => false,
+        };
+    }
+};
+
+pub const ConnectUdpReceiver = struct {
+    registry: ContextRegistry = ContextRegistry.init(),
+
+    pub fn init() ConnectUdpReceiver {
+        return .{};
+    }
+
+    pub fn contextRegistry(self: *ConnectUdpReceiver) *ContextRegistry {
+        return &self.registry;
+    }
+
+    pub fn registerExtension(self: *ConnectUdpReceiver, context_id: u64) Error!void {
+        try self.registry.registerExtension(context_id);
+    }
+
+    pub fn unregister(self: *ConnectUdpReceiver, context_id: u64) Error!void {
+        try self.registry.unregister(context_id);
+    }
+
+    pub fn classifyDatagramPayload(self: *const ConnectUdpReceiver, payload: []const u8) ReceiveDisposition {
+        return receiveDispositionFromDatagram(self.registry.classifyDatagramPayload(payload));
+    }
+
+    pub fn classifyCapsule(self: *const ConnectUdpReceiver, capsule: capsule_mod.Capsule) ReceiveDisposition {
+        if (!capsule.isDatagram()) return .{ .ignored_capsule_type = capsule.capsule_type };
+        return self.classifyDatagramPayload(capsule.value);
+    }
 };
 
 pub const ContextRegistry = struct {
@@ -206,6 +265,15 @@ pub const ContextRegistry = struct {
         return null;
     }
 };
+
+fn receiveDispositionFromDatagram(disposition: DatagramDisposition) ReceiveDisposition {
+    return switch (disposition) {
+        .udp_payload => |payload| .{ .udp_payload = payload },
+        .extension_payload => |context| .{ .extension_payload = context },
+        .unknown_context => |context| .{ .unknown_context = context },
+        .abort_stream => |abort| .{ .abort_stream = abort },
+    };
+}
 
 pub fn streamAbortForError(err: anyerror) StreamAbort {
     return .{
@@ -593,6 +661,58 @@ test "CONNECT-UDP datagram disposition separates unknown context from stream abo
             try std.testing.expectEqual(AbortReason.udp_payload_too_large, abort.reason);
             try std.testing.expectEqual(error.UdpPayloadTooLarge, abort.cause.?);
         },
+        else => return error.UnexpectedDisposition,
+    }
+}
+
+test "CONNECT-UDP receiver classifies datagram capsules" {
+    var context_buf: [64]u8 = undefined;
+    var capsule_buf: [128]u8 = undefined;
+    var receiver = ConnectUdpReceiver.init();
+
+    const payload_n = try encodeUdpPayload(&context_buf, "packet");
+    const capsule_n = try capsule_mod.encodeDatagram(&capsule_buf, context_buf[0..payload_n]);
+    const decoded = try capsule_mod.decode(capsule_buf[0..capsule_n]);
+    switch (receiver.classifyCapsule(decoded.capsule)) {
+        .udp_payload => |payload| try std.testing.expectEqualStrings("packet", payload),
+        else => return error.UnexpectedDisposition,
+    }
+
+    const unknown_context_n = try datagram_mod.encodeContextPayload(&context_buf, 8, "optimistic");
+    const unknown_capsule_n = try capsule_mod.encodeDatagram(&capsule_buf, context_buf[0..unknown_context_n]);
+    const unknown_decoded = try capsule_mod.decode(capsule_buf[0..unknown_capsule_n]);
+    const unknown = receiver.classifyCapsule(unknown_decoded.capsule);
+    try std.testing.expect(unknown.canSilentlyDrop());
+    switch (unknown) {
+        .unknown_context => |context| {
+            try std.testing.expectEqual(@as(u64, 8), context.context_id);
+            try std.testing.expectEqualStrings("optimistic", context.payload);
+        },
+        else => return error.UnexpectedDisposition,
+    }
+
+    try receiver.registerExtension(8);
+    switch (receiver.classifyCapsule(unknown_decoded.capsule)) {
+        .extension_payload => |context| {
+            try std.testing.expectEqual(@as(u64, 8), context.context_id);
+            try std.testing.expectEqual(ContextKind.extension, context.kind);
+            try std.testing.expectEqualStrings("optimistic", context.payload);
+        },
+        else => return error.UnexpectedDisposition,
+    }
+
+    const ignored = receiver.classifyCapsule(.{
+        .capsule_type = 0x29 * 3 + 0x17,
+        .value = "ignore",
+    });
+    try std.testing.expect(ignored.canSilentlyDrop());
+    switch (ignored) {
+        .ignored_capsule_type => |capsule_type| try std.testing.expectEqual(@as(u64, 0x92), capsule_type),
+        else => return error.UnexpectedDisposition,
+    }
+
+    switch (receiver.classifyDatagramPayload("")) {
+        .abort_stream => |abort| try std.testing.expectEqual(AbortReason.malformed_context, abort.reason),
         else => return error.UnexpectedDisposition,
     }
 }

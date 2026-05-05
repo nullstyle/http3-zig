@@ -258,4 +258,10 @@ fn fuzzMasque(allocator: std.mem.Allocator, input: []const u8) void {
     if (registry.decodeContextPayload(input)) |_| {} else |_| {}
     if (registry.decodeUdpPayload(input)) |_| {} else |_| {}
     _ = registry.classifyDatagramPayload(input);
+
+    var receiver = null3.masque.ConnectUdpReceiver.init();
+    _ = receiver.classifyDatagramPayload(input);
+    if (null3.capsule.decode(input)) |decoded| {
+        _ = receiver.classifyCapsule(decoded.capsule);
+    } else |_| {}
 }

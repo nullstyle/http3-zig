@@ -1370,6 +1370,8 @@ test "CONNECT-UDP helper opens MASQUE tunnel and exchanges UDP payloads" {
     }
 
     var server_udp: ?null3.ConnectUdpServerStream = null;
+    var client_udp_receiver = null3.MasqueConnectUdpReceiver.init();
+    var server_udp_receiver = null3.MasqueConnectUdpReceiver.init();
     var accepted = false;
     var client_saw_response = false;
     var now_us: u64 = 1_000_000;
@@ -1461,7 +1463,10 @@ test "CONNECT-UDP helper opens MASQUE tunnel and exchanges UDP payloads" {
                 .datagram => |datagram| {
                     server_saw_udp = true;
                     try std.testing.expectEqual(stream_id, datagram.stream_id);
-                    try std.testing.expectEqualStrings("client-packet", try datagram.udp());
+                    switch (datagram.connectUdp(&server_udp_receiver)) {
+                        .udp_payload => |payload| try std.testing.expectEqualStrings("client-packet", payload),
+                        else => return error.UnexpectedConnectUdpDisposition,
+                    }
                 },
                 .request_updated => |request_state| {
                     const request = request_state.reader();
@@ -1469,7 +1474,10 @@ test "CONNECT-UDP helper opens MASQUE tunnel and exchanges UDP payloads" {
                         server_saw_capsule = true;
                         const decoded_capsule = try null3.capsule.decode(request.body());
                         try std.testing.expect(decoded_capsule.capsule.isDatagram());
-                        try std.testing.expectEqualStrings("client-capsule", try null3.masque.decodeUdpPayload(decoded_capsule.capsule.value));
+                        switch (server_udp_receiver.classifyCapsule(decoded_capsule.capsule)) {
+                            .udp_payload => |payload| try std.testing.expectEqualStrings("client-capsule", payload),
+                            else => return error.UnexpectedConnectUdpDisposition,
+                        }
                     }
                 },
                 else => {},
@@ -1482,7 +1490,10 @@ test "CONNECT-UDP helper opens MASQUE tunnel and exchanges UDP payloads" {
                 .datagram => |datagram| {
                     client_saw_udp = true;
                     try std.testing.expectEqual(stream_id, datagram.stream_id);
-                    try std.testing.expectEqualStrings("server-packet", try datagram.udp());
+                    switch (datagram.connectUdp(&client_udp_receiver)) {
+                        .udp_payload => |payload| try std.testing.expectEqualStrings("server-packet", payload),
+                        else => return error.UnexpectedConnectUdpDisposition,
+                    }
                 },
                 .datagram_acked => |acked| {
                     if (acked.id == tracked_client_datagram_id) client_saw_ack = true;
@@ -1493,7 +1504,10 @@ test "CONNECT-UDP helper opens MASQUE tunnel and exchanges UDP payloads" {
                         client_saw_capsule = true;
                         const decoded_capsule = try null3.capsule.decode(response.body());
                         try std.testing.expect(decoded_capsule.capsule.isDatagram());
-                        try std.testing.expectEqualStrings("server-capsule", try null3.masque.decodeUdpPayload(decoded_capsule.capsule.value));
+                        switch (client_udp_receiver.classifyCapsule(decoded_capsule.capsule)) {
+                            .udp_payload => |payload| try std.testing.expectEqualStrings("server-capsule", payload),
+                            else => return error.UnexpectedConnectUdpDisposition,
+                        }
                     }
                 },
                 else => {},
