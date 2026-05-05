@@ -8,6 +8,8 @@ const std = @import("std");
 
 const qpack = @import("qpack/root.zig");
 
+pub const frame = @import("websocket_frame.zig");
+
 pub const protocol_token = "websocket";
 
 pub const Error = error{

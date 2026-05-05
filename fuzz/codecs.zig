@@ -21,6 +21,7 @@ pub const Target = enum {
     qpack_field_dynamic,
     qpack_encoder_instruction,
     qpack_decoder_instruction,
+    websocket_frame,
 };
 
 pub const concrete_targets = [_]Target{
@@ -35,6 +36,7 @@ pub const concrete_targets = [_]Target{
     .qpack_field_dynamic,
     .qpack_encoder_instruction,
     .qpack_decoder_instruction,
+    .websocket_frame,
 };
 
 const smoke_inputs = [_][]const u8{
@@ -70,6 +72,7 @@ pub fn targetName(target: Target) []const u8 {
         .qpack_field_dynamic => "qpack-field-dynamic",
         .qpack_encoder_instruction => "qpack-encoder-instruction",
         .qpack_decoder_instruction => "qpack-decoder-instruction",
+        .websocket_frame => "websocket-frame",
     };
 }
 
@@ -86,6 +89,7 @@ pub fn targetFromName(name: []const u8) ?Target {
     if (std.mem.eql(u8, name, "qpack-field-dynamic") or std.mem.eql(u8, name, "qpack_field_dynamic")) return .qpack_field_dynamic;
     if (std.mem.eql(u8, name, "qpack-encoder-instruction") or std.mem.eql(u8, name, "qpack_encoder_instruction")) return .qpack_encoder_instruction;
     if (std.mem.eql(u8, name, "qpack-decoder-instruction") or std.mem.eql(u8, name, "qpack_decoder_instruction")) return .qpack_decoder_instruction;
+    if (std.mem.eql(u8, name, "websocket-frame") or std.mem.eql(u8, name, "websocket_frame")) return .websocket_frame;
     return null;
 }
 
@@ -107,6 +111,7 @@ pub fn runTarget(allocator: std.mem.Allocator, target: Target, input: []const u8
         .qpack_field_dynamic => fuzzQpackFieldDynamic(allocator, input),
         .qpack_encoder_instruction => fuzzQpackEncoderInstruction(allocator, input),
         .qpack_decoder_instruction => fuzzQpackDecoderInstruction(input),
+        .websocket_frame => fuzzWebSocketFrame(allocator, input),
     }
 }
 
@@ -186,4 +191,24 @@ fn fuzzQpackEncoderInstruction(allocator: std.mem.Allocator, input: []const u8) 
 
 fn fuzzQpackDecoderInstruction(input: []const u8) void {
     if (null3.qpack.instructions.decodeDecoderInstruction(input)) |_| {} else |_| {}
+}
+
+fn fuzzWebSocketFrame(allocator: std.mem.Allocator, input: []const u8) void {
+    if (null3.websocket.frame.decode(allocator, input, .{
+        .max_payload_len = 16 * 1024,
+    })) |decoded| {
+        decoded.deinit(allocator);
+    } else |_| {}
+
+    var decoder = null3.websocket.frame.Decoder.init(allocator, .{
+        .max_payload_len = 16 * 1024,
+    });
+    defer decoder.deinit();
+    decoder.push(input) catch return;
+    var count: usize = 0;
+    while (count < max_iterator_items) : (count += 1) {
+        const maybe = decoder.next() catch break;
+        const frame = maybe orelse break;
+        frame.deinit(allocator);
+    }
 }

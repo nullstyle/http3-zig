@@ -139,8 +139,11 @@ Datagrams / capsules), and the QUIC RFCs already tracked by `nullq`.
   metrics snapshots.
 - Done: WebSocket-over-H3 foundation with negotiated Extended CONNECT helpers,
   typed request/accept wrappers, and bidirectional byte-flow coverage.
-- Next: RFC 6455 WebSocket frame codec plus concrete MASQUE-style protocols
-  layered on Extended CONNECT, capsules, and context-aware datagrams.
+- Done: RFC 6455 WebSocket frame codec with masking, close-code validation,
+  control-frame abuse checks, incremental fragmentation tracking, stream
+  writer helpers, and fuzz smoke coverage.
+- Next: higher-level WebSocket message assembly plus concrete MASQUE-style
+  protocols layered on Extended CONNECT, capsules, and context-aware datagrams.
 
 ## Phase 5: Hardening
 

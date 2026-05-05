@@ -80,7 +80,8 @@ just example-loopback-get
   aliases, QUIC qlog callback aliases, typed HTTP/3 trace events, and metrics
   counters.
 - `websocket`: RFC 9220 handshake helpers for WebSocket-over-HTTP/3 Extended
-  CONNECT tunnels. The tunneled byte stream remains application-owned for now.
+  CONNECT tunnels plus an RFC 6455 frame codec with masking, close-code checks,
+  and incremental fragmentation tracking.
 - `session`: HTTP/3 session state over `nullq.Connection`, including control
   streams, peer SETTINGS, request stream draining, response writes, FIN
   validation, optional dynamic QPACK encoder/decoder stream processing,
@@ -109,8 +110,10 @@ just example-loopback-get
   `RequestHeadOptions.connect_protocol` opens the Extended CONNECT path once
   the peer advertises support, and `RequestReader.protocol` exposes the
   received protocol token. `Client.startWebSocket` and `Server.acceptWebSocket`
-  provide the first typed Extended CONNECT tunnel helpers for the
-  `websocket` protocol token.
+  provide typed Extended CONNECT tunnel helpers for the `websocket` protocol
+  token. `null3.websocket.frame` provides the transport-free WebSocket frame
+  codec used by `WebSocketClientStream.writeText` and
+  `WebSocketServerStream.writeText`.
   Request/response writers can send context-aware unreliable datagrams and
   reliable DATAGRAM capsules.
 
@@ -139,12 +142,14 @@ just example-loopback-get
   and DATA-frame capsules. Observability coverage checks TLS keylog hook
   configuration plus HTTP/3 trace callback and metrics accounting for emitted
   events. WebSocket-over-HTTP/3 coverage checks negotiated Extended CONNECT
-  gating, tunnel request/accept helpers, and byte flow in both directions.
+  gating, tunnel request/accept helpers, RFC 6455 frame encoding/decoding, and
+  message byte flow in both directions.
 - `just qpack-interop` runs the optional Go-side fixture harness against
   `github.com/quic-go/qpack`.
 - `just fuzz-smoke` runs the transport-free codec fuzz harness across HTTP/3
   frames, SETTINGS, capsules, HTTP/3 DATAGRAM payloads, QPACK integers,
-  Huffman strings, field sections, and encoder/decoder stream instructions.
+  Huffman strings, field sections, encoder/decoder stream instructions, and
+  WebSocket frames.
 - `just curl-h3-interop` builds a small localhost `null3` HTTP/3 server and
   drives `/opt/homebrew/opt/curl/bin/curl --http3-only` through handshake,
   request metadata, status/header checks, POST echo, large upload echo,

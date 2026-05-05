@@ -194,6 +194,63 @@ pub const WebSocketClientStream = struct {
         try self.writer.write(bytes);
     }
 
+    pub fn writeFrameWithOptions(
+        self: *WebSocketClientStream,
+        frame: websocket_mod.frame.Frame,
+        options: websocket_mod.frame.EncodeOptions,
+    ) (session_mod.Error || websocket_mod.frame.Error)!void {
+        const allocator = self.writer.client.session.allocator;
+        const len = try websocket_mod.frame.encodedLen(frame, options);
+        const buf = try allocator.alloc(u8, len);
+        defer allocator.free(buf);
+        const n = try websocket_mod.frame.encode(buf, frame, options);
+        try self.writer.write(buf[0..n]);
+    }
+
+    pub fn writeFrame(
+        self: *WebSocketClientStream,
+        frame: websocket_mod.frame.Frame,
+        masking_key: [4]u8,
+    ) (session_mod.Error || websocket_mod.frame.Error)!void {
+        try self.writeFrameWithOptions(frame, .{
+            .mask = true,
+            .masking_key = masking_key,
+        });
+    }
+
+    pub fn writeText(
+        self: *WebSocketClientStream,
+        payload: []const u8,
+        masking_key: [4]u8,
+    ) (session_mod.Error || websocket_mod.frame.Error)!void {
+        try self.writeFrame(.{ .opcode = .text, .payload = payload }, masking_key);
+    }
+
+    pub fn writeBinary(
+        self: *WebSocketClientStream,
+        payload: []const u8,
+        masking_key: [4]u8,
+    ) (session_mod.Error || websocket_mod.frame.Error)!void {
+        try self.writeFrame(.{ .opcode = .binary, .payload = payload }, masking_key);
+    }
+
+    pub fn writeClose(
+        self: *WebSocketClientStream,
+        code: ?u16,
+        reason: []const u8,
+        masking_key: [4]u8,
+    ) (session_mod.Error || websocket_mod.frame.Error)!void {
+        const allocator = self.writer.client.session.allocator;
+        var stack_buf: [131]u8 = undefined;
+        const n = try websocket_mod.frame.encodeClose(&stack_buf, code, reason, .{
+            .mask = true,
+            .masking_key = masking_key,
+        });
+        const buf = try allocator.dupe(u8, stack_buf[0..n]);
+        defer allocator.free(buf);
+        try self.writer.write(buf);
+    }
+
     pub fn finishSend(self: *WebSocketClientStream) session_mod.Error!void {
         try self.writer.finish();
     }

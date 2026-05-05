@@ -188,6 +188,50 @@ pub const WebSocketServerStream = struct {
         try self.writer.write(bytes);
     }
 
+    pub fn writeFrameWithOptions(
+        self: *WebSocketServerStream,
+        frame: websocket_mod.frame.Frame,
+        options: websocket_mod.frame.EncodeOptions,
+    ) (session_mod.Error || websocket_mod.frame.Error)!void {
+        const allocator = self.writer.server.session.allocator;
+        const len = try websocket_mod.frame.encodedLen(frame, options);
+        const buf = try allocator.alloc(u8, len);
+        defer allocator.free(buf);
+        const n = try websocket_mod.frame.encode(buf, frame, options);
+        try self.writer.write(buf[0..n]);
+    }
+
+    pub fn writeFrame(
+        self: *WebSocketServerStream,
+        frame: websocket_mod.frame.Frame,
+    ) (session_mod.Error || websocket_mod.frame.Error)!void {
+        try self.writeFrameWithOptions(frame, .{});
+    }
+
+    pub fn writeText(
+        self: *WebSocketServerStream,
+        payload: []const u8,
+    ) (session_mod.Error || websocket_mod.frame.Error)!void {
+        try self.writeFrame(.{ .opcode = .text, .payload = payload });
+    }
+
+    pub fn writeBinary(
+        self: *WebSocketServerStream,
+        payload: []const u8,
+    ) (session_mod.Error || websocket_mod.frame.Error)!void {
+        try self.writeFrame(.{ .opcode = .binary, .payload = payload });
+    }
+
+    pub fn writeClose(
+        self: *WebSocketServerStream,
+        code: ?u16,
+        reason: []const u8,
+    ) (session_mod.Error || websocket_mod.frame.Error)!void {
+        var buf: [127]u8 = undefined;
+        const n = try websocket_mod.frame.encodeClose(&buf, code, reason, .{});
+        try self.writer.write(buf[0..n]);
+    }
+
     pub fn finishSend(self: *WebSocketServerStream) session_mod.Error!void {
         try self.writer.finish();
     }

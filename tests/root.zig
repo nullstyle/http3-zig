@@ -335,6 +335,12 @@ test "codec fuzz harness accepts representative valid encodings" {
 
     const decoder_instruction_n = try null3.qpack.instructions.encodeDecoderInstruction(&buf, .{ .insert_count_increment = 1 });
     try fuzz_codecs.runTarget(allocator, .qpack_decoder_instruction, buf[0..decoder_instruction_n]);
+
+    const websocket_n = try null3.websocket.frame.encodeText(&buf, "hello", .{
+        .mask = true,
+        .masking_key = .{ 1, 2, 3, 4 },
+    });
+    try fuzz_codecs.runTarget(allocator, .websocket_frame, buf[0..websocket_n]);
 }
 
 fn sendRawH3Datagram(conn: *nullq.Connection, stream_id: u64, payload: []const u8) !void {
@@ -1206,7 +1212,7 @@ test "WebSocket over HTTP/3 helper opens tunnel and streams bytes" {
         .path = "/chat",
     });
     const stream_id = client_ws.streamId();
-    try client_ws.write("ping");
+    try client_ws.writeText("ping", .{ 1, 2, 3, 4 });
     try client_ws.finishSend();
 
     var client_runner = null3.ClientRunner.init(allocator);
@@ -1255,13 +1261,16 @@ test "WebSocket over HTTP/3 helper opens tunnel and streams bytes" {
                         try std.testing.expectEqualStrings(null3.websocket.protocol_token, request.protocol().?);
 
                         var server_ws = try h3_server.acceptWebSocket(allocator, request, .{});
-                        try server_ws.write("pong");
+                        try server_ws.writeText("pong");
                         try server_ws.finishSend();
                         accepted = true;
                     }
 
-                    if (request.complete()) {
-                        try std.testing.expectEqualStrings("ping", request.body());
+                    if (!server_complete and request.complete()) {
+                        const decoded = try null3.websocket.frame.decode(allocator, request.body(), .{ .mask_policy = .required });
+                        defer decoded.deinit(allocator);
+                        try std.testing.expectEqual(null3.WebSocketOpcode.text, decoded.frame.opcode);
+                        try std.testing.expectEqualStrings("ping", decoded.frame.payload);
                         server_complete = true;
                     }
                 },
@@ -1279,8 +1288,11 @@ test "WebSocket over HTTP/3 helper opens tunnel and streams bytes" {
                         try std.testing.expectEqualStrings("200", response.status().?);
                     }
 
-                    if (response.complete()) {
-                        try std.testing.expectEqualStrings("pong", response.body());
+                    if (!client_complete and response.complete()) {
+                        const decoded = try null3.websocket.frame.decode(allocator, response.body(), .{ .mask_policy = .forbidden });
+                        defer decoded.deinit(allocator);
+                        try std.testing.expectEqual(null3.WebSocketOpcode.text, decoded.frame.opcode);
+                        try std.testing.expectEqualStrings("pong", decoded.frame.payload);
                         client_complete = true;
                     }
                 },
