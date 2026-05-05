@@ -5,6 +5,7 @@ const boringssl = @import("boringssl");
 const capsule_mod = @import("capsule.zig");
 const datagram_mod = @import("datagram.zig");
 const errors_mod = @import("errors.zig");
+const observability_mod = @import("observability.zig");
 const protocol = @import("protocol.zig");
 const qpack = @import("qpack/root.zig");
 const session_mod = @import("session.zig");
@@ -13,6 +14,7 @@ const settings_mod = @import("settings.zig");
 pub const TlsOptions = struct {
     verify: boringssl.tls.VerifyMode = .none,
     early_data_enabled: bool = false,
+    keylog_callback: ?observability_mod.KeylogCallback = null,
 };
 
 pub fn initTlsContext(
@@ -27,6 +29,7 @@ pub fn initTlsContext(
         .early_data_enabled = options.early_data_enabled,
     });
     errdefer ctx.deinit();
+    if (options.keylog_callback) |callback| try ctx.setKeylogCallback(callback);
     try ctx.loadCertChainAndKey(cert_chain_pem, private_key_pem);
     return ctx;
 }
@@ -313,6 +316,22 @@ pub const Server = struct {
 
     pub fn canSendData(self: *const Server, stream_id: u64, data_len: usize) session_mod.Error!bool {
         return try self.session.canSendData(stream_id, data_len);
+    }
+
+    pub fn metrics(self: *const Server) observability_mod.Metrics {
+        return self.session.metrics();
+    }
+
+    pub fn setObservabilityHooks(self: *Server, hooks: observability_mod.Hooks) void {
+        self.session.setObservabilityHooks(hooks);
+    }
+
+    pub fn setQuicQlogCallback(
+        self: *Server,
+        callback: ?observability_mod.QuicQlogCallback,
+        user_data: ?*anyopaque,
+    ) void {
+        self.session.setQuicQlogCallback(callback, user_data);
     }
 
     pub fn sendDatagram(self: *Server, stream_id: u64, payload: []const u8) session_mod.Error!void {

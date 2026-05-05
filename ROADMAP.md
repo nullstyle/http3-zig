@@ -134,9 +134,11 @@ Datagrams / capsules), and the QUIC RFCs already tracked by `nullq`.
   DATAGRAM capsule codecs, Context ID payload helpers, request/response writer
   send paths, and in-process coverage over both QUIC DATAGRAM frames and
   reliable DATA-frame capsules.
+- Done: observability hooks for TLS keylog callback configuration, QUIC qlog
+  callback passthrough, typed HTTP/3 trace events, and session/client/server
+  metrics snapshots.
 - Next: WebSocket-over-H3 and concrete MASQUE-style protocols layered on
   Extended CONNECT, capsules, and context-aware datagrams.
-- Observability hooks: keylog passthrough, qlog-friendly events, metrics counters.
 
 ## Phase 5: Hardening
 

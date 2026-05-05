@@ -14,6 +14,7 @@ const datagram_mod = @import("datagram.zig");
 const frame_mod = @import("frame.zig");
 const headers_mod = @import("headers.zig");
 const message_mod = @import("message.zig");
+const observability_mod = @import("observability.zig");
 const protocol = @import("protocol.zig");
 const qpack = @import("qpack/root.zig");
 const settings_mod = @import("settings.zig");
@@ -89,6 +90,9 @@ pub const Config = struct {
     max_event_payload_bytes_per_drain: ?usize = null,
     /// Optional cap on the number of events emitted by one `drain` call.
     max_events_per_drain: ?usize = null,
+    /// Optional typed HTTP/3 trace callback. Metrics are always tracked; the
+    /// callback lets embedders translate events into logs or qlog JSON.
+    observability: observability_mod.Hooks = .{},
 };
 
 pub const FieldEvent = struct {
@@ -282,6 +286,7 @@ pub const Session = struct {
     peer_goaway_id: ?u64 = null,
     shutdown_state: ShutdownState = .active,
     last_close_error: ?errors_mod.ConnectionError = null,
+    metrics_counters: observability_mod.Metrics = .{},
 
     qpack_encoder_table: qpack.DynamicTable,
     qpack_decoder_table: qpack.DynamicTable,
@@ -348,6 +353,12 @@ pub const Session = struct {
         const state = try self.ensureMessageState(id, .response, .request);
         const encoder = try self.ensureEncoder(state, .request);
         try self.writeHeadersWithEncoder(id, encoder, fields);
+        self.trace(.{
+            .name = .request_opened,
+            .role = self.role,
+            .stream_id = id,
+            .count = fields.len,
+        });
         return id;
     }
 
@@ -451,7 +462,15 @@ pub const Session = struct {
         const encoded = try self.allocator.alloc(u8, len);
         defer self.allocator.free(encoded);
         const n = try datagram_mod.encode(encoded, stream_id, payload);
-        return try self.quic.sendDatagramTracked(encoded[0..n]);
+        const id = try self.quic.sendDatagramTracked(encoded[0..n]);
+        self.trace(.{
+            .name = .datagram_sent,
+            .role = self.role,
+            .stream_id = stream_id,
+            .bytes = payload.len,
+            .value = id,
+        });
+        return id;
     }
 
     pub fn sendDatagramWithContext(
@@ -476,12 +495,26 @@ pub const Session = struct {
         const encoded = try self.allocator.alloc(u8, len);
         defer self.allocator.free(encoded);
         const n = try datagram_mod.encodeWithContext(encoded, stream_id, context_id, payload);
-        return try self.quic.sendDatagramTracked(encoded[0..n]);
+        const id = try self.quic.sendDatagramTracked(encoded[0..n]);
+        self.trace(.{
+            .name = .datagram_sent,
+            .role = self.role,
+            .stream_id = stream_id,
+            .bytes = payload.len,
+            .value = id,
+        });
+        return id;
     }
 
     pub fn resetStream(self: *Session, stream_id: u64, application_error_code: u64) Error!void {
         self.qpack_encoder_state.cancelStream(stream_id);
         try self.quic.streamReset(stream_id, application_error_code);
+        self.trace(.{
+            .name = .stream_reset_sent,
+            .role = self.role,
+            .stream_id = stream_id,
+            .error_code = application_error_code,
+        });
     }
 
     pub fn resetRequest(self: *Session, stream_id: u64, application_error_code: u64) Error!void {
@@ -504,6 +537,12 @@ pub const Session = struct {
         try self.writeControlFrame(.{ .goaway = id });
         self.sent_goaway_id = id;
         self.enterDraining();
+        self.trace(.{
+            .name = .goaway_sent,
+            .role = self.role,
+            .value = id,
+            .frame_type = protocol.FrameType.goaway,
+        });
     }
 
     pub fn stopSending(self: *Session, stream_id: u64, application_error_code: u64) Error!void {
@@ -526,6 +565,22 @@ pub const Session = struct {
 
     pub fn lastCloseError(self: *const Session) ?errors_mod.ConnectionError {
         return self.last_close_error;
+    }
+
+    pub fn metrics(self: *const Session) observability_mod.Metrics {
+        return self.metrics_counters;
+    }
+
+    pub fn setObservabilityHooks(self: *Session, hooks: observability_mod.Hooks) void {
+        self.config.observability = hooks;
+    }
+
+    pub fn setQuicQlogCallback(
+        self: *Session,
+        callback: ?observability_mod.QuicQlogCallback,
+        user_data: ?*anyopaque,
+    ) void {
+        self.quic.setQlogCallback(callback, user_data);
     }
 
     pub fn streamSendState(self: *const Session, stream_id: u64) Error!StreamSendState {
@@ -578,6 +633,12 @@ pub const Session = struct {
         self.shutdown_state = .closed;
         self.last_close_error = errors_mod.localConnectionCode(error_code);
         self.quic.close(false, error_code, reason);
+        self.trace(.{
+            .name = .connection_close_sent,
+            .role = self.role,
+            .bytes = reason.len,
+            .error_code = error_code,
+        });
     }
 
     pub fn drain(self: *Session, events: *std.ArrayList(Event)) Error!void {
@@ -744,6 +805,17 @@ pub const Session = struct {
         errdefer self.control_stream_id = null;
 
         try self.writeControlFrame(.{ .settings = self.local_settings });
+        self.trace(.{
+            .name = .control_stream_opened,
+            .role = self.role,
+            .stream_id = id,
+        });
+        self.trace(.{
+            .name = .settings_sent,
+            .role = self.role,
+            .stream_id = id,
+            .frame_type = protocol.FrameType.settings,
+        });
     }
 
     fn openQpackStreams(self: *Session) Error!void {
@@ -761,6 +833,12 @@ pub const Session = struct {
 
         self.qpack_encoder_stream_id = enc_id;
         self.qpack_decoder_stream_id = dec_id;
+        self.trace(.{
+            .name = .qpack_streams_opened,
+            .role = self.role,
+            .stream_id = enc_id,
+            .count = 2,
+        });
     }
 
     fn processState(
@@ -884,6 +962,12 @@ pub const Session = struct {
                 &self.qpack_decoder_table,
                 decoded.instruction,
             );
+            self.trace(.{
+                .name = .qpack_encoder_instruction_received,
+                .role = self.role,
+                .stream_id = state.id,
+                .bytes = decoded.bytes_read,
+            });
             try compactRx(state, decoded.bytes_read);
         }
 
@@ -904,6 +988,12 @@ pub const Session = struct {
                 return err;
             };
             try self.qpack_encoder_state.receiveDecoderInstruction(decoded.instruction);
+            self.trace(.{
+                .name = .qpack_decoder_instruction_received,
+                .role = self.role,
+                .stream_id = state.id,
+                .bytes = decoded.bytes_read,
+            });
             try compactRx(state, decoded.bytes_read);
         }
     }
@@ -1183,6 +1273,7 @@ pub const Session = struct {
         event: Event,
     ) Error!void {
         try appendRawEvent(self.allocator, events, event);
+        self.traceEmittedEvent(event);
     }
 
     const DecodedFieldSection = struct {
@@ -1429,6 +1520,13 @@ pub const Session = struct {
             defer self.allocator.free(buf);
             const n = try encoder.encodeData(buf, chunk);
             try self.writeAll(stream_id, buf[0..n]);
+            self.trace(.{
+                .name = .data_sent,
+                .role = self.role,
+                .stream_id = stream_id,
+                .frame_type = protocol.FrameType.data,
+                .bytes = chunk.len,
+            });
             offset = end;
         }
     }
@@ -1473,6 +1571,13 @@ pub const Session = struct {
         defer self.allocator.free(encoded);
         const n = try capsule_mod.encode(encoded, capsule_type, value);
         try self.writeDataWithEncoder(stream_id, encoder, encoded[0..n]);
+        self.trace(.{
+            .name = .capsule_sent,
+            .role = self.role,
+            .stream_id = stream_id,
+            .bytes = value.len,
+            .value = capsule_type,
+        });
     }
 
     fn validateCapsuleValueSize(self: *const Session, value_len: usize) Error!void {
@@ -1514,6 +1619,7 @@ pub const Session = struct {
             .trailers => try encoder.encodeTrailers(buf, fields),
         };
         try self.writeAll(stream_id, buf[0..n]);
+        self.traceFieldSectionSent(section_kind, stream_id, payload_len, fields.len);
     }
 
     fn writeDynamicFieldSectionWithEncoder(
@@ -1550,6 +1656,7 @@ pub const Session = struct {
             .trailers => try encoder.encodeTrailersBlock(buf, fields, field_section[0..field_section_n]),
         };
         try self.writeAll(stream_id, buf[0..n]);
+        self.traceFieldSectionSent(section_kind, stream_id, field_section_n, fields.len);
         return true;
     }
 
@@ -1630,6 +1737,12 @@ pub const Session = struct {
     fn writeQpackEncoderBytes(self: *Session, bytes: []const u8) Error!void {
         const stream_id = self.qpack_encoder_stream_id orelse return Error.MissingStream;
         try self.writeAll(stream_id, bytes);
+        self.trace(.{
+            .name = .qpack_encoder_bytes_sent,
+            .role = self.role,
+            .stream_id = stream_id,
+            .bytes = bytes.len,
+        });
     }
 
     fn writeQpackDecoderInstruction(
@@ -1640,6 +1753,12 @@ pub const Session = struct {
         var buf: [16]u8 = undefined;
         const n = try qpack.instructions.encodeDecoderInstruction(&buf, instruction);
         try self.writeAll(stream_id, buf[0..n]);
+        self.trace(.{
+            .name = .qpack_decoder_instruction_sent,
+            .role = self.role,
+            .stream_id = stream_id,
+            .bytes = n,
+        });
     }
 
     fn writeStreamType(self: *Session, stream_id: u64, stream_type: u64) Error!void {
@@ -1697,6 +1816,141 @@ pub const Session = struct {
         if (self.shutdown_state == .active) self.shutdown_state = .draining;
     }
 
+    fn trace(self: *Session, event: observability_mod.TraceEvent) void {
+        self.metrics_counters.observe(event);
+        self.config.observability.emit(event);
+    }
+
+    fn traceFieldSectionSent(
+        self: *Session,
+        section_kind: FieldSectionKind,
+        stream_id: u64,
+        payload_len: usize,
+        field_count: usize,
+    ) void {
+        self.trace(.{
+            .name = switch (section_kind) {
+                .headers => .headers_sent,
+                .trailers => .trailers_sent,
+            },
+            .role = self.role,
+            .stream_id = stream_id,
+            .frame_type = protocol.FrameType.headers,
+            .bytes = payload_len,
+            .count = field_count,
+        });
+    }
+
+    fn traceEmittedEvent(self: *Session, event: Event) void {
+        switch (event) {
+            .peer_settings => self.trace(.{
+                .name = .settings_received,
+                .role = self.role,
+                .frame_type = protocol.FrameType.settings,
+            }),
+            .headers => |headers| self.trace(.{
+                .name = .headers_received,
+                .role = self.role,
+                .stream_id = headers.stream_id,
+                .frame_type = protocol.FrameType.headers,
+                .bytes = fieldsOwnedBytes(headers.fields),
+                .count = headers.fields.len,
+            }),
+            .trailers => |trailers| self.trace(.{
+                .name = .trailers_received,
+                .role = self.role,
+                .stream_id = trailers.stream_id,
+                .frame_type = protocol.FrameType.headers,
+                .bytes = fieldsOwnedBytes(trailers.fields),
+                .count = trailers.fields.len,
+            }),
+            .data => |data| self.trace(.{
+                .name = .data_received,
+                .role = self.role,
+                .stream_id = data.stream_id,
+                .frame_type = protocol.FrameType.data,
+                .bytes = data.data.len,
+            }),
+            .datagram => |datagram| self.trace(.{
+                .name = .datagram_received,
+                .role = self.role,
+                .stream_id = datagram.stream_id,
+                .bytes = datagram.payload.len,
+                .early_data = datagram.arrived_in_early_data,
+            }),
+            .datagram_acked => |acked| self.trace(.{
+                .name = .datagram_acked,
+                .role = self.role,
+                .bytes = acked.len,
+                .value = acked.id,
+                .early_data = acked.arrived_in_early_data,
+            }),
+            .datagram_lost => |lost| self.trace(.{
+                .name = .datagram_lost,
+                .role = self.role,
+                .bytes = lost.len,
+                .value = lost.id,
+                .early_data = lost.arrived_in_early_data,
+            }),
+            .flow_blocked => |blocked| self.trace(.{
+                .name = .flow_blocked,
+                .role = self.role,
+                .stream_id = blocked.stream_id,
+                .value = blocked.limit,
+            }),
+            .connection_ids_needed => |needed| self.trace(.{
+                .name = .connection_ids_needed,
+                .role = self.role,
+                .count = needed.issue_budget,
+                .value = needed.next_sequence_number,
+            }),
+            .push_promise => |promise| self.trace(.{
+                .name = .headers_received,
+                .role = self.role,
+                .stream_id = promise.stream_id,
+                .frame_type = protocol.FrameType.push_promise,
+                .bytes = promise.field_section.len,
+                .value = promise.push_id,
+            }),
+            .goaway => |id| self.trace(.{
+                .name = .goaway_received,
+                .role = self.role,
+                .frame_type = protocol.FrameType.goaway,
+                .value = id,
+            }),
+            .stream_finished => |finished| self.trace(.{
+                .name = .stream_finished,
+                .role = self.role,
+                .stream_id = finished.stream_id,
+            }),
+            .stream_reset => |reset| self.trace(.{
+                .name = .stream_reset_received,
+                .role = self.role,
+                .stream_id = reset.stream_id,
+                .error_code = reset.error_code,
+                .value = reset.final_size,
+            }),
+            .request_rejected => |rejected| self.trace(.{
+                .name = .request_rejected,
+                .role = self.role,
+                .stream_id = rejected.stream_id,
+                .error_code = rejected.error_code,
+            }),
+            .connection_closed => |closed| self.trace(.{
+                .name = .connection_closed,
+                .role = self.role,
+                .bytes = closed.reason.len,
+                .error_code = closed.error_code,
+            }),
+            .ignored_unknown_frame => |unknown| self.trace(.{
+                .name = .ignored_unknown_frame,
+                .role = self.role,
+                .stream_id = unknown.stream_id,
+                .frame_type = unknown.frame_type,
+            }),
+        }
+    }
+
     fn validateLocalGoawayId(self: *const Session, id: u64) Error!void {
         switch (self.role) {
             .client => {},
@@ -1716,6 +1970,12 @@ pub const Session = struct {
         self.shutdown_state = .closed;
         self.last_close_error = close_error;
         self.quic.close(false, close_error.application.code, close_error.reason());
+        self.trace(.{
+            .name = .connection_close_sent,
+            .role = self.role,
+            .bytes = close_error.reason().len,
+            .error_code = close_error.application.code,
+        });
     }
 };
 
@@ -1881,6 +2141,69 @@ test "session emits deep-owned message events" {
         else => return error.TestExpectedEqual,
     }
     try std.testing.expectEqual(@as(usize, 0), state.rx.items.len);
+}
+
+const TraceRecorder = struct {
+    events: [16]observability_mod.TraceEvent = undefined,
+    count: usize = 0,
+
+    fn callback(user_data: ?*anyopaque, event: observability_mod.TraceEvent) void {
+        const self: *TraceRecorder = @ptrCast(@alignCast(user_data.?));
+        if (self.count < self.events.len) {
+            self.events[self.count] = event;
+            self.count += 1;
+        }
+    }
+
+    fn contains(self: *const TraceRecorder, name: observability_mod.TraceEventName) bool {
+        for (self.events[0..self.count]) |event| {
+            if (event.name == name) return true;
+        }
+        return false;
+    }
+};
+
+test "session observability hooks record emitted events and metrics" {
+    const allocator = std.testing.allocator;
+    var client_quic: nullq.Connection = undefined;
+    var recorder: TraceRecorder = .{};
+
+    var session = Session.init(allocator, .client, &client_quic, .{
+        .observability = .{
+            .callback = TraceRecorder.callback,
+            .user_data = &recorder,
+        },
+    });
+    defer session.deinit();
+
+    const fields = [_]qpack.FieldLine{
+        .{ .name = ":status", .value = "200" },
+    };
+
+    const state = try session.ensureMessageState(0, .response, .request);
+    var enc = message_mod.Encoder.init(.response, .{});
+    var buf: [256]u8 = undefined;
+    var pos: usize = 0;
+    pos += try enc.encodeHeaders(buf[pos..], &fields);
+    pos += try enc.encodeData(buf[pos..], "hello");
+    try state.rx.appendSlice(allocator, buf[0..pos]);
+
+    var events: std.ArrayList(Event) = .empty;
+    defer {
+        for (events.items) |event| event.deinit(allocator);
+        events.deinit(allocator);
+    }
+
+    var budget = session.drainBudget();
+    try session.processMessageState(state, &events, &budget);
+
+    const snapshot = session.metrics();
+    try std.testing.expectEqual(@as(u64, 2), snapshot.frames_received);
+    try std.testing.expectEqual(@as(u64, 1), snapshot.headers_received);
+    try std.testing.expectEqual(@as(u64, 1), snapshot.data_frames_received);
+    try std.testing.expectEqual(@as(u64, 5), snapshot.data_bytes_received);
+    try std.testing.expect(recorder.contains(.headers_received));
+    try std.testing.expect(recorder.contains(.data_received));
 }
 
 test "session event budget resumes pending trailers" {

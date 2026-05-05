@@ -10,6 +10,23 @@ const test_key_pem = @embedFile("data/test_key.pem");
 const ClientCid = [_]u8{ 0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37, 0x38 };
 const ServerCid = [_]u8{ 0x91, 0x92, 0x93, 0x94, 0x95, 0x96, 0x97, 0x98 };
 
+fn discardKeylog(line: []const u8) void {
+    _ = line;
+}
+
+test "TLS context helpers accept keylog callbacks" {
+    var client_tls = try null3.client.initTlsContext(.{
+        .verify = .none,
+        .keylog_callback = discardKeylog,
+    });
+    defer client_tls.deinit();
+
+    var server_tls = try null3.server.initTlsContext(.{
+        .keylog_callback = discardKeylog,
+    }, test_cert_pem, test_key_pem);
+    defer server_tls.deinit();
+}
+
 fn handshake(client: *nullq.Connection, server: *nullq.Connection) !void {
     var step: u32 = 0;
     while (step < 50) : (step += 1) {

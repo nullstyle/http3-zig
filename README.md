@@ -18,9 +18,10 @@ classification, QUIC flow-control blocked observability, HTTP/3 DATAGRAM
 send/receive groundwork, reusable transport driver helpers, request lifecycle
 tracking, response lifecycle tracking, client/server event runners, Extended
 CONNECT negotiation and request metadata, Capsule Protocol codecs,
-context-aware DATAGRAM helpers, opt-in send-buffer backpressure limits, and
-lightweight request-response facades with configurable tracker body and session
-event-queue budgets.
+context-aware DATAGRAM helpers, HTTP/3 trace callbacks and metrics snapshots,
+TLS keylog / QUIC qlog passthrough hooks, opt-in send-buffer backpressure
+limits, and lightweight request-response facades with configurable tracker body
+and session event-queue budgets.
 
 ```sh
 mise install
@@ -74,6 +75,9 @@ just example-loopback-get
 - `runner`: client/server event runners that compose raw `session.Event`
   classification with owned request/response lifecycle trackers and batch
   completion summaries.
+- `observability`: embedder-owned diagnostics hooks: TLS keylog callback
+  aliases, QUIC qlog callback aliases, typed HTTP/3 trace events, and metrics
+  counters.
 - `session`: HTTP/3 session state over `nullq.Connection`, including control
   streams, peer SETTINGS, request stream draining, response writes, FIN
   validation, optional dynamic QPACK encoder/decoder stream processing,
@@ -127,7 +131,9 @@ just example-loopback-get
   Extended CONNECT coverage checks SETTINGS negotiation, client-side gating,
   and server-side `:protocol` request metadata. Capsule coverage includes
   DATAGRAM capsules and context-aware payloads over both QUIC DATAGRAM frames
-  and DATA-frame capsules.
+  and DATA-frame capsules. Observability coverage checks TLS keylog hook
+  configuration plus HTTP/3 trace callback and metrics accounting for emitted
+  events.
 - `just qpack-interop` runs the optional Go-side fixture harness against
   `github.com/quic-go/qpack`.
 - `just fuzz-smoke` runs the transport-free codec fuzz harness across HTTP/3
