@@ -5,6 +5,7 @@ const boringssl = @import("boringssl");
 const capsule_mod = @import("capsule.zig");
 const datagram_mod = @import("datagram.zig");
 const errors_mod = @import("errors.zig");
+const masque_mod = @import("masque.zig");
 const observability_mod = @import("observability.zig");
 const protocol = @import("protocol.zig");
 const qpack = @import("qpack/root.zig");
@@ -60,6 +61,10 @@ pub const Datagram = struct {
 
     pub fn context(self: Datagram) datagram_mod.Error!datagram_mod.ContextPayload {
         return datagram_mod.decodeContextPayload(self.payload);
+    }
+
+    pub fn udp(self: Datagram) masque_mod.Error![]const u8 {
+        return masque_mod.decodeUdpPayload(self.payload);
     }
 };
 
@@ -172,6 +177,48 @@ pub const ResponseWriter = struct {
 
     pub fn abort(self: *ResponseWriter) session_mod.Error!void {
         try self.reset(protocol.ErrorCode.internal_error);
+    }
+};
+
+pub const ConnectUdpAcceptOptions = masque_mod.AcceptOptions;
+
+pub const ConnectUdpServerStream = struct {
+    writer: ResponseWriter,
+
+    pub fn streamId(self: *const ConnectUdpServerStream) u64 {
+        return self.writer.stream_id;
+    }
+
+    pub fn sendUdp(self: *ConnectUdpServerStream, payload: []const u8) session_mod.Error!void {
+        try self.writer.datagramWithContext(masque_mod.udp_context_id, payload);
+    }
+
+    pub fn sendUdpTracked(self: *ConnectUdpServerStream, payload: []const u8) session_mod.Error!u64 {
+        return try self.writer.datagramWithContextTracked(masque_mod.udp_context_id, payload);
+    }
+
+    pub fn sendUdpCapsule(self: *ConnectUdpServerStream, payload: []const u8) session_mod.Error!void {
+        try self.writer.datagramContextCapsule(masque_mod.udp_context_id, payload);
+    }
+
+    pub fn capsule(self: *ConnectUdpServerStream, capsule_type: u64, value: []const u8) session_mod.Error!void {
+        try self.writer.capsule(capsule_type, value);
+    }
+
+    pub fn finishSend(self: *ConnectUdpServerStream) session_mod.Error!void {
+        try self.writer.finish();
+    }
+
+    pub fn reset(self: *ConnectUdpServerStream, error_code: u64) session_mod.Error!void {
+        try self.writer.reset(error_code);
+    }
+
+    pub fn abort(self: *ConnectUdpServerStream) session_mod.Error!void {
+        try self.writer.abort();
+    }
+
+    pub fn responseWriter(self: *ConnectUdpServerStream) *ResponseWriter {
+        return &self.writer;
     }
 };
 
@@ -305,6 +352,22 @@ pub const RequestReader = struct {
 
     pub fn isWebSocket(self: RequestReader) bool {
         return self.request.isWebSocket();
+    }
+
+    pub fn isConnectUdp(self: RequestReader) bool {
+        return self.request.isConnectUdp();
+    }
+
+    pub fn capsuleProtocolEnabled(self: RequestReader) bool {
+        return self.request.capsuleProtocolEnabled();
+    }
+
+    pub fn connectUdpTarget(self: RequestReader, allocator: std.mem.Allocator) masque_mod.Error!masque_mod.OwnedConnectUdpTarget {
+        return try masque_mod.parseConnectUdpTarget(
+            allocator,
+            self.path() orelse return error.InvalidConnectUdpPath,
+            masque_mod.default_connect_udp_path_prefix,
+        );
     }
 
     pub fn complete(self: RequestReader) bool {
@@ -531,6 +594,28 @@ pub const Server = struct {
         };
     }
 
+    pub fn acceptConnectUdp(
+        self: *Server,
+        allocator: std.mem.Allocator,
+        request: RequestReader,
+        options: ConnectUdpAcceptOptions,
+    ) (session_mod.Error || masque_mod.Error)!ConnectUdpServerStream {
+        if (!request.isConnectUdp()) return error.NotConnectUdp;
+        if (!masque_mod.isAcceptedStatus(options.status)) return error.InvalidAcceptStatus;
+        const headers = try masque_mod.allocCapsuleProtocolHeaders(
+            allocator,
+            options.headers,
+            options.capsule_protocol,
+        );
+        defer allocator.free(headers);
+        return .{
+            .writer = try self.startResponse(allocator, request.streamId(), .{
+                .status = options.status,
+                .headers = headers,
+            }),
+        };
+    }
+
     pub fn acceptWebSocket(
         self: *Server,
         allocator: std.mem.Allocator,
@@ -610,6 +695,14 @@ pub const RequestState = struct {
 
     pub fn isWebSocket(self: *const RequestState) bool {
         return websocket_mod.isRequest(self.headerFields());
+    }
+
+    pub fn isConnectUdp(self: *const RequestState) bool {
+        return masque_mod.isConnectUdpRequest(self.headerFields());
+    }
+
+    pub fn capsuleProtocolEnabled(self: *const RequestState) bool {
+        return masque_mod.capsuleProtocolEnabled(self.headerFields());
     }
 
     fn setHeaders(

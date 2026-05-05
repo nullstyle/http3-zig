@@ -23,6 +23,7 @@ pub const Target = enum {
     qpack_decoder_instruction,
     websocket_frame,
     websocket_message,
+    masque,
 };
 
 pub const concrete_targets = [_]Target{
@@ -39,6 +40,7 @@ pub const concrete_targets = [_]Target{
     .qpack_decoder_instruction,
     .websocket_frame,
     .websocket_message,
+    .masque,
 };
 
 const smoke_inputs = [_][]const u8{
@@ -76,6 +78,7 @@ pub fn targetName(target: Target) []const u8 {
         .qpack_decoder_instruction => "qpack-decoder-instruction",
         .websocket_frame => "websocket-frame",
         .websocket_message => "websocket-message",
+        .masque => "masque",
     };
 }
 
@@ -94,6 +97,7 @@ pub fn targetFromName(name: []const u8) ?Target {
     if (std.mem.eql(u8, name, "qpack-decoder-instruction") or std.mem.eql(u8, name, "qpack_decoder_instruction")) return .qpack_decoder_instruction;
     if (std.mem.eql(u8, name, "websocket-frame") or std.mem.eql(u8, name, "websocket_frame")) return .websocket_frame;
     if (std.mem.eql(u8, name, "websocket-message") or std.mem.eql(u8, name, "websocket_message")) return .websocket_message;
+    if (std.mem.eql(u8, name, "masque")) return .masque;
     return null;
 }
 
@@ -117,6 +121,7 @@ pub fn runTarget(allocator: std.mem.Allocator, target: Target, input: []const u8
         .qpack_decoder_instruction => fuzzQpackDecoderInstruction(input),
         .websocket_frame => fuzzWebSocketFrame(allocator, input),
         .websocket_message => fuzzWebSocketMessage(allocator, input),
+        .masque => fuzzMasque(allocator, input),
     }
 }
 
@@ -233,4 +238,16 @@ fn fuzzWebSocketMessage(allocator: std.mem.Allocator, input: []const u8) void {
         const event = maybe orelse break;
         event.deinit(allocator);
     }
+}
+
+fn fuzzMasque(allocator: std.mem.Allocator, input: []const u8) void {
+    if (null3.masque.parseConnectUdpTarget(
+        allocator,
+        input,
+        null3.masque.default_connect_udp_path_prefix,
+    )) |target| {
+        target.deinit(allocator);
+    } else |_| {}
+
+    if (null3.masque.decodeUdpPayload(input)) |_| {} else |_| {}
 }

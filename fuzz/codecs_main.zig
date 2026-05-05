@@ -41,7 +41,7 @@ fn usage() void {
         \\targets: all frame settings capsule datagram qpack-integer qpack-huffman
         \\         qpack-field-static qpack-field-literal qpack-field-dynamic
         \\         qpack-encoder-instruction qpack-decoder-instruction
-        \\         websocket-frame websocket-message
+        \\         websocket-frame websocket-message masque
         \\
     , .{});
 }

@@ -5,6 +5,7 @@ const boringssl = @import("boringssl");
 const capsule_mod = @import("capsule.zig");
 const datagram_mod = @import("datagram.zig");
 const errors_mod = @import("errors.zig");
+const masque_mod = @import("masque.zig");
 const observability_mod = @import("observability.zig");
 const protocol = @import("protocol.zig");
 const qpack = @import("qpack/root.zig");
@@ -55,6 +56,10 @@ pub const Datagram = struct {
 
     pub fn context(self: Datagram) datagram_mod.Error!datagram_mod.ContextPayload {
         return datagram_mod.decodeContextPayload(self.payload);
+    }
+
+    pub fn udp(self: Datagram) masque_mod.Error![]const u8 {
+        return masque_mod.decodeUdpPayload(self.payload);
     }
 };
 
@@ -178,6 +183,48 @@ pub const RequestWriter = struct {
 
     pub fn cancel(self: *RequestWriter) session_mod.Error!void {
         try self.client.cancel(self.stream_id);
+    }
+};
+
+pub const ConnectUdpOptions = masque_mod.ConnectUdpOptions;
+
+pub const ConnectUdpClientStream = struct {
+    writer: RequestWriter,
+
+    pub fn streamId(self: *const ConnectUdpClientStream) u64 {
+        return self.writer.stream_id;
+    }
+
+    pub fn sendUdp(self: *ConnectUdpClientStream, payload: []const u8) session_mod.Error!void {
+        try self.writer.datagramWithContext(masque_mod.udp_context_id, payload);
+    }
+
+    pub fn sendUdpTracked(self: *ConnectUdpClientStream, payload: []const u8) session_mod.Error!u64 {
+        return try self.writer.datagramWithContextTracked(masque_mod.udp_context_id, payload);
+    }
+
+    pub fn sendUdpCapsule(self: *ConnectUdpClientStream, payload: []const u8) session_mod.Error!void {
+        try self.writer.datagramContextCapsule(masque_mod.udp_context_id, payload);
+    }
+
+    pub fn capsule(self: *ConnectUdpClientStream, capsule_type: u64, value: []const u8) session_mod.Error!void {
+        try self.writer.capsule(capsule_type, value);
+    }
+
+    pub fn finishSend(self: *ConnectUdpClientStream) session_mod.Error!void {
+        try self.writer.finish();
+    }
+
+    pub fn reset(self: *ConnectUdpClientStream, error_code: u64) session_mod.Error!void {
+        try self.writer.reset(error_code);
+    }
+
+    pub fn abort(self: *ConnectUdpClientStream) session_mod.Error!void {
+        try self.writer.abort();
+    }
+
+    pub fn requestWriter(self: *ConnectUdpClientStream) *RequestWriter {
+        return &self.writer;
     }
 };
 
@@ -312,6 +359,14 @@ pub const ResponseReader = struct {
         return self.response.webSocketAccepted();
     }
 
+    pub fn connectUdpAccepted(self: ResponseReader) bool {
+        return self.response.connectUdpAccepted();
+    }
+
+    pub fn capsuleProtocolEnabled(self: ResponseReader) bool {
+        return self.response.capsuleProtocolEnabled();
+    }
+
     pub fn complete(self: ResponseReader) bool {
         return self.response.complete;
     }
@@ -425,6 +480,14 @@ pub const ResponseState = struct {
 
     pub fn webSocketAccepted(self: *const ResponseState) bool {
         return websocket_mod.responseAccepted(self.headerFields());
+    }
+
+    pub fn connectUdpAccepted(self: *const ResponseState) bool {
+        return masque_mod.responseAccepted(self.headerFields());
+    }
+
+    pub fn capsuleProtocolEnabled(self: *const ResponseState) bool {
+        return masque_mod.capsuleProtocolEnabled(self.headerFields());
     }
 
     pub fn pushPromises(self: *const ResponseState) []const PushPromise {
@@ -723,6 +786,31 @@ pub const Client = struct {
         return .{
             .client = self,
             .stream_id = try self.open(fields),
+        };
+    }
+
+    pub fn startConnectUdp(
+        self: *Client,
+        allocator: std.mem.Allocator,
+        options: ConnectUdpOptions,
+    ) (session_mod.Error || masque_mod.Error)!ConnectUdpClientStream {
+        const path = try masque_mod.allocConnectUdpPath(allocator, options);
+        defer allocator.free(path);
+        const headers = try masque_mod.allocCapsuleProtocolHeaders(
+            allocator,
+            options.headers,
+            options.capsule_protocol,
+        );
+        defer allocator.free(headers);
+        return .{
+            .writer = try self.startRequest(allocator, .{
+                .method = "CONNECT",
+                .scheme = options.scheme,
+                .authority = options.authority,
+                .path = path,
+                .connect_protocol = masque_mod.connect_udp_protocol,
+                .headers = headers,
+            }),
         };
     }
 

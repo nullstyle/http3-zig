@@ -311,6 +311,16 @@ test "codec fuzz harness accepts representative valid encodings" {
     const datagram_n = try null3.datagram.encodeWithContext(&buf, 4, 7, "payload");
     try fuzz_codecs.runTarget(allocator, .datagram, buf[0..datagram_n]);
 
+    const masque_path = try null3.masque.allocConnectUdpPath(allocator, .{
+        .authority = "proxy.example",
+        .target_host = "example.com",
+        .target_port = 443,
+    });
+    defer allocator.free(masque_path);
+    try fuzz_codecs.runTarget(allocator, .masque, masque_path);
+    const masque_udp_n = try null3.masque.encodeUdpPayload(&buf, "udp");
+    try fuzz_codecs.runTarget(allocator, .masque, buf[0..masque_udp_n]);
+
     const integer_n = try null3.qpack.integer.encode(&buf, 5, 0, 1337);
     try fuzz_codecs.runTarget(allocator, .qpack_integer, buf[0..integer_n]);
 
@@ -1311,6 +1321,179 @@ test "WebSocket over HTTP/3 helper opens tunnel and streams bytes" {
                         }
                         try std.testing.expect((try decoder.next()) == null);
                         client_complete = true;
+                    }
+                },
+                else => {},
+            }
+        }
+        clearSessionEvents(allocator, &client_events);
+    }
+}
+
+test "CONNECT-UDP helper opens MASQUE tunnel and exchanges UDP payloads" {
+    const allocator = std.testing.allocator;
+    const h3_settings: null3.Settings = .{
+        .enable_connect_protocol = true,
+        .h3_datagram = true,
+    };
+
+    var pair: H3Pair = undefined;
+    try pair.initStarted(allocator, .{ .settings = h3_settings }, .{ .settings = h3_settings });
+    defer pair.deinit();
+
+    try exchangePairSettings(allocator, &pair);
+
+    var h3_client = null3.Client.init(&pair.client_h3);
+    var h3_server = null3.Server.init(&pair.server_h3);
+
+    var client_udp = try h3_client.startConnectUdp(allocator, .{
+        .authority = "proxy.example",
+        .target_host = "example.com",
+        .target_port = 443,
+    });
+    const stream_id = client_udp.streamId();
+
+    var client_runner = null3.ClientRunner.init(allocator);
+    defer client_runner.deinit();
+    var server_runner = null3.ServerRunner.init(allocator);
+    defer server_runner.deinit();
+
+    var client_events: std.ArrayList(null3.session.Event) = .empty;
+    defer {
+        clearSessionEvents(allocator, &client_events);
+        client_events.deinit(allocator);
+    }
+    var server_events: std.ArrayList(null3.session.Event) = .empty;
+    defer {
+        clearSessionEvents(allocator, &server_events);
+        server_events.deinit(allocator);
+    }
+
+    var server_udp: ?null3.ConnectUdpServerStream = null;
+    var accepted = false;
+    var client_saw_response = false;
+    var now_us: u64 = 1_000_000;
+    var iters: u32 = 0;
+    while (!accepted or !client_saw_response) : (iters += 1) {
+        try std.testing.expect(iters < 20_000);
+        try pumpH3(
+            &pair.client,
+            &pair.server,
+            &pair.client_h3,
+            &pair.server_h3,
+            &client_events,
+            &server_events,
+            &now_us,
+        );
+
+        for (server_events.items) |event| {
+            switch (try server_runner.observe(event)) {
+                .request_updated => |request_state| {
+                    const request = request_state.reader();
+                    if (!accepted and request.headers().len > 0) {
+                        try std.testing.expectEqual(stream_id, request.streamId());
+                        try std.testing.expect(request.isExtendedConnect());
+                        try std.testing.expect(request.isConnectUdp());
+                        try std.testing.expect(request.capsuleProtocolEnabled());
+                        try std.testing.expectEqualStrings("CONNECT", request.method().?);
+                        try std.testing.expectEqualStrings(null3.masque.connect_udp_protocol, request.protocol().?);
+
+                        const target = try request.connectUdpTarget(allocator);
+                        defer target.deinit(allocator);
+                        try std.testing.expectEqualStrings("example.com", target.host);
+                        try std.testing.expectEqual(@as(u16, 443), target.port);
+
+                        server_udp = try h3_server.acceptConnectUdp(allocator, request, .{});
+                        accepted = true;
+                    }
+                },
+                else => {},
+            }
+        }
+        clearSessionEvents(allocator, &server_events);
+
+        for (client_events.items) |event| {
+            switch (try client_runner.observe(event)) {
+                .response_updated => |response_state| {
+                    const response = response_state.reader();
+                    if (response.headers().len > 0) {
+                        try std.testing.expect(response.connectUdpAccepted());
+                        try std.testing.expect(response.capsuleProtocolEnabled());
+                        try std.testing.expectEqualStrings("200", response.status().?);
+                        client_saw_response = true;
+                    }
+                },
+                else => {},
+            }
+        }
+        clearSessionEvents(allocator, &client_events);
+    }
+
+    const tracked_client_datagram_id = try client_udp.sendUdpTracked("client-packet");
+    try client_udp.sendUdpCapsule("client-capsule");
+    if (server_udp) |*udp| {
+        try udp.sendUdp("server-packet");
+        try udp.sendUdpCapsule("server-capsule");
+    } else {
+        return error.MissingConnectUdpStream;
+    }
+
+    var server_saw_udp = false;
+    var client_saw_udp = false;
+    var server_saw_capsule = false;
+    var client_saw_capsule = false;
+    var client_saw_ack = false;
+    iters = 0;
+    while (!server_saw_udp or !client_saw_udp or !server_saw_capsule or !client_saw_capsule or !client_saw_ack) : (iters += 1) {
+        try std.testing.expect(iters < 20_000);
+        try pumpH3(
+            &pair.client,
+            &pair.server,
+            &pair.client_h3,
+            &pair.server_h3,
+            &client_events,
+            &server_events,
+            &now_us,
+        );
+
+        for (server_events.items) |event| {
+            switch (try server_runner.observe(event)) {
+                .datagram => |datagram| {
+                    server_saw_udp = true;
+                    try std.testing.expectEqual(stream_id, datagram.stream_id);
+                    try std.testing.expectEqualStrings("client-packet", try datagram.udp());
+                },
+                .request_updated => |request_state| {
+                    const request = request_state.reader();
+                    if (request.body().len > 0) {
+                        server_saw_capsule = true;
+                        const decoded_capsule = try null3.capsule.decode(request.body());
+                        try std.testing.expect(decoded_capsule.capsule.isDatagram());
+                        try std.testing.expectEqualStrings("client-capsule", try null3.masque.decodeUdpPayload(decoded_capsule.capsule.value));
+                    }
+                },
+                else => {},
+            }
+        }
+        clearSessionEvents(allocator, &server_events);
+
+        for (client_events.items) |event| {
+            switch (try client_runner.observe(event)) {
+                .datagram => |datagram| {
+                    client_saw_udp = true;
+                    try std.testing.expectEqual(stream_id, datagram.stream_id);
+                    try std.testing.expectEqualStrings("server-packet", try datagram.udp());
+                },
+                .datagram_acked => |acked| {
+                    if (acked.id == tracked_client_datagram_id) client_saw_ack = true;
+                },
+                .response_updated => |response_state| {
+                    const response = response_state.reader();
+                    if (response.body().len > 0) {
+                        client_saw_capsule = true;
+                        const decoded_capsule = try null3.capsule.decode(response.body());
+                        try std.testing.expect(decoded_capsule.capsule.isDatagram());
+                        try std.testing.expectEqualStrings("server-capsule", try null3.masque.decodeUdpPayload(decoded_capsule.capsule.value));
                     }
                 },
                 else => {},

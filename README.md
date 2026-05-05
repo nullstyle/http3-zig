@@ -70,6 +70,9 @@ just example-loopback-get
 - `datagram`: RFC 9297 HTTP/3 DATAGRAM quarter-stream-id payload codec plus
   reusable Context ID payload helpers for datagram-using extensions.
 - `capsule`: RFC 9297 Capsule Protocol TLV codec, including DATAGRAM capsules.
+- `masque`: CONNECT-UDP helper foundation over Extended CONNECT, Context ID 0
+  UDP payloads, DATAGRAM capsules, and `capsule-protocol: ?1` negotiation
+  headers.
 - `driver`: small `nullq`/`null3` transport-driving helpers for tests,
   examples, and interop peers. It keeps socket and clock ownership with the
   embedder while centralizing the handle/poll/tick/session-drain order.
@@ -117,6 +120,8 @@ just example-loopback-get
   while validating text/close UTF-8 and preserving ping/pong/close events.
   `WebSocketClientStream.writeMessage` and `WebSocketServerStream.writeMessage`
   provide typed message writes.
+  `Client.startConnectUdp` and `Server.acceptConnectUdp` provide typed
+  CONNECT-UDP tunnel helpers with UDP payload send/receive conveniences.
   Request/response writers can send context-aware unreliable datagrams and
   reliable DATAGRAM capsules.
 
@@ -146,7 +151,9 @@ just example-loopback-get
   configuration plus HTTP/3 trace callback and metrics accounting for emitted
   events. WebSocket-over-HTTP/3 coverage checks negotiated Extended CONNECT
   gating, tunnel request/accept helpers, RFC 6455 frame encoding/decoding, and
-  message byte flow in both directions.
+  message byte flow in both directions. CONNECT-UDP coverage checks MASQUE
+  tunnel setup, target parsing, Context ID 0 HTTP Datagrams, and reliable UDP
+  DATAGRAM capsules.
 - `just qpack-interop` runs the optional Go-side fixture harness against
   `github.com/quic-go/qpack`.
 - `just fuzz-smoke` runs the transport-free codec fuzz harness across HTTP/3

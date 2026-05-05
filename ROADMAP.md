@@ -146,8 +146,12 @@ Datagrams / capsules), and the QUIC RFCs already tracked by `nullq`.
   text/close UTF-8 validation, interleaved ping/pong/close handling,
   message-size caps, stream writer helpers, integration coverage, and fuzz
   smoke coverage.
-- Next: concrete MASQUE-style protocols layered on Extended CONNECT, capsules,
-  and context-aware datagrams.
+- Done: CONNECT-UDP helper foundation layered on Extended CONNECT, capsules,
+  and context-aware datagrams, including target path construction/parsing,
+  Context ID 0 UDP payload helpers, typed client/server tunnel wrappers,
+  integration coverage, and fuzz smoke coverage.
+- Next: deeper MASQUE protocol state, including capsule registration policy,
+  close/error semantics, and external proxy interop.
 
 ## Phase 5: Hardening
 
