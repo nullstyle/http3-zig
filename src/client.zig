@@ -418,6 +418,12 @@ pub const ResponseEvent = union(enum) {
     connection_ids_needed: ConnectionIdsNeeded,
     trailers: Headers,
     push_promise: session_mod.PushPromiseEvent,
+    push_stream: session_mod.PushStreamEvent,
+    push_headers: Headers,
+    push_data: Data,
+    push_trailers: Headers,
+    push_finished: StreamFinished,
+    push_reset: StreamReset,
     finished: StreamFinished,
     reset: StreamReset,
     goaway: u64,
@@ -429,9 +435,13 @@ pub const ResponseEvent = union(enum) {
             .peer_settings => |settings| .{ .settings = settings },
             .headers => |headers| if (headers.kind == .response) .{
                 .headers = .{ .stream_id = headers.stream_id, .fields = headers.fields },
+            } else if (headers.kind == .push) .{
+                .push_headers = .{ .stream_id = headers.stream_id, .fields = headers.fields },
             } else null,
             .data => |data| if (data.kind == .response) .{
                 .data = .{ .stream_id = data.stream_id, .bytes = data.data },
+            } else if (data.kind == .push) .{
+                .push_data = .{ .stream_id = data.stream_id, .bytes = data.data },
             } else null,
             .datagram => |datagram| .{ .datagram = .{
                 .stream_id = datagram.stream_id,
@@ -444,13 +454,24 @@ pub const ResponseEvent = union(enum) {
             .connection_ids_needed => |needed| .{ .connection_ids_needed = needed },
             .trailers => |trailers| if (trailers.kind == .response) .{
                 .trailers = .{ .stream_id = trailers.stream_id, .fields = trailers.fields },
+            } else if (trailers.kind == .push) .{
+                .push_trailers = .{ .stream_id = trailers.stream_id, .fields = trailers.fields },
             } else null,
             .push_promise => |promise| .{ .push_promise = promise },
+            .push_stream => |push| .{ .push_stream = push },
             .stream_finished => |finished| if (finished.kind != null and finished.kind.? == .response) .{
                 .finished = .{ .stream_id = finished.stream_id },
+            } else if (finished.kind != null and finished.kind.? == .push) .{
+                .push_finished = .{ .stream_id = finished.stream_id },
             } else null,
             .stream_reset => |reset| if (reset.kind != null and reset.kind.? == .response) .{
                 .reset = .{
+                    .stream_id = reset.stream_id,
+                    .error_code = reset.error_code,
+                    .final_size = reset.final_size,
+                },
+            } else if (reset.kind != null and reset.kind.? == .push) .{
+                .push_reset = .{
                     .stream_id = reset.stream_id,
                     .error_code = reset.error_code,
                     .final_size = reset.final_size,
@@ -647,6 +668,12 @@ pub const ResponseTracker = struct {
             .datagram_lost,
             .flow_blocked,
             .connection_ids_needed,
+            .push_stream,
+            .push_headers,
+            .push_data,
+            .push_trailers,
+            .push_finished,
+            .push_reset,
             .goaway,
             .connection_closed,
             .ignored_unknown_frame,

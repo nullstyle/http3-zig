@@ -42,7 +42,10 @@ pub const Error = nullq.conn.state.Error ||
         WrongMessageKind,
         ClosedCriticalStream,
         InvalidGoawayId,
+        InvalidPushId,
         RequestBlockedByGoaway,
+        PushNotEnabled,
+        PushLimitExceeded,
         DatagramNotEnabled,
         DatagramTooLarge,
         CapsuleTooLarge,
@@ -78,6 +81,8 @@ pub const Config = struct {
     /// Optional cap on outgoing Capsule Protocol value bytes before reliable
     /// DATA-frame capsule payloads are allocated.
     max_capsule_value_size: ?usize = null,
+    /// Client-only opt-in for server push. Null means do not send MAX_PUSH_ID.
+    max_push_id: ?u64 = null,
     /// Optional cap on per-stream bytes buffered in nullq but not yet
     /// acknowledged. Leave null to preserve unbounded legacy behavior.
     max_stream_send_buffered: ?usize = null,
@@ -111,6 +116,17 @@ pub const PushPromiseEvent = struct {
     stream_id: u64,
     push_id: u64,
     field_section: []u8,
+};
+
+pub const PushStreamEvent = struct {
+    stream_id: u64,
+    push_id: u64,
+};
+
+pub const LocalPush = struct {
+    request_stream_id: u64,
+    push_id: u64,
+    stream_id: u64,
 };
 
 pub const DatagramEvent = struct {
@@ -206,6 +222,7 @@ pub const Event = union(enum) {
     connection_ids_needed: ConnectionIdsNeededEvent,
     trailers: FieldEvent,
     push_promise: PushPromiseEvent,
+    push_stream: PushStreamEvent,
     goaway: u64,
     stream_finished: StreamFinishedEvent,
     stream_reset: StreamResetEvent,
@@ -284,6 +301,8 @@ pub const Session = struct {
     peer_qpack_decoder_stream_id: ?u64 = null,
     sent_goaway_id: ?u64 = null,
     peer_goaway_id: ?u64 = null,
+    peer_max_push_id: ?u64 = null,
+    next_push_id: u64 = 0,
     shutdown_state: ShutdownState = .active,
     last_close_error: ?errors_mod.ConnectionError = null,
     metrics_counters: observability_mod.Metrics = .{},
@@ -444,6 +463,46 @@ pub const Session = struct {
         if (self.role != .server) return Error.InvalidRole;
         const state = try self.ensureMessageState(stream_id, .request, .response);
         const encoder = try self.ensureEncoder(state, .response);
+        try self.writeTrailersWithEncoder(stream_id, encoder, fields);
+    }
+
+    pub fn startPush(
+        self: *Session,
+        request_stream_id: u64,
+        promise_fields: []const qpack.FieldLine,
+        response_fields: []const qpack.FieldLine,
+    ) Error!LocalPush {
+        if (self.role != .server) return Error.InvalidRole;
+        try self.start();
+        const push_id = try self.reservePushId();
+        try self.writePushPromise(request_stream_id, push_id, promise_fields);
+        const stream_id = try self.openPushStream(push_id, response_fields);
+        return .{
+            .request_stream_id = request_stream_id,
+            .push_id = push_id,
+            .stream_id = stream_id,
+        };
+    }
+
+    pub fn sendPushData(self: *Session, stream_id: u64, data: []const u8) Error!void {
+        if (self.role != .server) return Error.InvalidRole;
+        const state = try self.getState(stream_id);
+        switch (state.uni_kind orelse return Error.WrongMessageKind) {
+            .push => {},
+            else => return Error.WrongMessageKind,
+        }
+        const encoder = try self.ensureEncoder(state, .push);
+        try self.writeDataWithEncoder(stream_id, encoder, data);
+    }
+
+    pub fn sendPushTrailers(self: *Session, stream_id: u64, fields: []const qpack.FieldLine) Error!void {
+        if (self.role != .server) return Error.InvalidRole;
+        const state = try self.getState(stream_id);
+        switch (state.uni_kind orelse return Error.WrongMessageKind) {
+            .push => {},
+            else => return Error.WrongMessageKind,
+        }
+        const encoder = try self.ensureEncoder(state, .push);
         try self.writeTrailersWithEncoder(stream_id, encoder, fields);
     }
 
@@ -816,6 +875,11 @@ pub const Session = struct {
             .stream_id = id,
             .frame_type = protocol.FrameType.settings,
         });
+        if (self.role == .client) {
+            if (self.config.max_push_id) |max_push_id| {
+                try self.writeControlFrame(.{ .max_push_id = max_push_id });
+            }
+        }
     }
 
     fn openQpackStreams(self: *Session) Error!void {
@@ -920,6 +984,14 @@ pub const Session = struct {
                     try self.observeGoaway(id);
                     try self.appendReservedEvent(events, .{ .goaway = id });
                 },
+                .max_push_id => |id| {
+                    try budget.reserve(0);
+                    state.control_validator.?.observe(frame_type) catch |err| {
+                        self.closeForError(err);
+                        return err;
+                    };
+                    try self.observeMaxPushId(id);
+                },
                 .unknown => |unknown| {
                     try budget.reserve(0);
                     state.control_validator.?.observe(frame_type) catch |err| {
@@ -1015,8 +1087,20 @@ pub const Session = struct {
                 self.closeForError(err);
                 return err;
             };
+            try self.validateReceivedPushId(decoded.value);
+            if (self.pushIdInUse(decoded.value, state.id)) {
+                self.closeForError(Error.InvalidPushId);
+                return Error.InvalidPushId;
+            }
             state.push_id = decoded.value;
             try compactRx(state, decoded.bytes_read);
+            try budget.reserve(0);
+            try self.appendReservedEvent(events, .{
+                .push_stream = .{
+                    .stream_id = state.id,
+                    .push_id = decoded.value,
+                },
+            });
             if (state.message_decoder == null) {
                 state.message_decoder = message_mod.Decoder.init(.push, .{
                     .max_field_section_size = self.config.max_field_section_size,
@@ -1244,11 +1328,14 @@ pub const Session = struct {
                 .kind = kind,
                 .data = try self.allocator.dupe(u8, bytes),
             } },
-            .push_promise => |promise| .{ .push_promise = .{
-                .stream_id = stream_id,
-                .push_id = promise.push_id,
-                .field_section = try self.allocator.dupe(u8, promise.field_section),
-            } },
+            .push_promise => |promise| blk: {
+                try self.validateReceivedPushId(promise.push_id);
+                break :blk .{ .push_promise = .{
+                    .stream_id = stream_id,
+                    .push_id = promise.push_id,
+                    .field_section = try self.allocator.dupe(u8, promise.field_section),
+                } };
+            },
             .ignored_unknown => |frame_type| .{ .ignored_unknown_frame = .{
                 .stream_id = stream_id,
                 .frame_type = frame_type,
@@ -1450,6 +1537,27 @@ pub const Session = struct {
         }
     }
 
+    fn validateReceivedPushId(self: *Session, push_id: u64) Error!void {
+        const max_push_id = self.config.max_push_id orelse {
+            self.closeForError(Error.InvalidPushId);
+            return Error.InvalidPushId;
+        };
+        if (push_id > max_push_id) {
+            self.closeForError(Error.InvalidPushId);
+            return Error.InvalidPushId;
+        }
+    }
+
+    fn pushIdInUse(self: *const Session, push_id: u64, except_stream_id: u64) bool {
+        var it = self.streams.iterator();
+        while (it.next()) |entry| {
+            const state = entry.value_ptr.*;
+            if (state.id == except_stream_id) continue;
+            if (state.push_id != null and state.push_id.? == push_id) return true;
+        }
+        return false;
+    }
+
     fn incomingMessageKind(self: *const Session, stream_id: u64) Error!message_mod.Kind {
         const client_initiated = stream_mod.isClientInitiated(stream_id);
         return switch (self.role) {
@@ -1487,6 +1595,81 @@ pub const Session = struct {
         const buf = try self.allocator.alloc(u8, frame_mod.encodedLen(frame));
         defer self.allocator.free(buf);
         const n = try frame_mod.encode(buf, frame);
+        try self.writeAll(stream_id, buf[0..n]);
+    }
+
+    fn reservePushId(self: *Session) Error!u64 {
+        const max_push_id = self.peer_max_push_id orelse return Error.PushNotEnabled;
+        if (self.next_push_id > max_push_id) return Error.PushLimitExceeded;
+        const push_id = self.next_push_id;
+        self.next_push_id += 1;
+        return push_id;
+    }
+
+    fn writePushPromise(
+        self: *Session,
+        request_stream_id: u64,
+        push_id: u64,
+        fields: []const qpack.FieldLine,
+    ) Error!void {
+        if (stream_mod.isUnidirectional(request_stream_id) or !stream_mod.isClientInitiated(request_stream_id)) {
+            return Error.UnexpectedStream;
+        }
+        try headers_mod.validateRequest(fields);
+        const field_section_len = qpack.fieldSectionEncodedLen(fields);
+        if (self.config.max_field_section_size) |max| {
+            if (field_section_len > max) return Error.HeaderSectionTooLarge;
+        }
+        const field_section = try self.allocator.alloc(u8, field_section_len);
+        defer self.allocator.free(field_section);
+        const field_section_n = try qpack.encodeFieldSection(field_section, fields);
+        std.debug.assert(field_section_n == field_section.len);
+
+        const frame: frame_mod.Frame = .{ .push_promise = .{
+            .push_id = push_id,
+            .field_section = field_section,
+        } };
+        const buf = try self.allocator.alloc(u8, frame_mod.encodedLen(frame));
+        defer self.allocator.free(buf);
+        const n = try frame_mod.encode(buf, frame);
+        try self.writeAll(request_stream_id, buf[0..n]);
+        self.trace(.{
+            .name = .headers_sent,
+            .role = self.role,
+            .stream_id = request_stream_id,
+            .frame_type = protocol.FrameType.push_promise,
+            .bytes = field_section.len,
+            .value = push_id,
+        });
+    }
+
+    fn openPushStream(
+        self: *Session,
+        push_id: u64,
+        response_fields: []const qpack.FieldLine,
+    ) Error!u64 {
+        const stream_id = self.nextLocalUniId(0);
+        _ = try self.quic.openUni(stream_id);
+        errdefer self.quic.streamReset(stream_id, protocol.ErrorCode.internal_error) catch {};
+        const state = try self.createState(stream_id);
+        state.uni_kind = .push;
+        state.push_id = push_id;
+        errdefer {
+            _ = self.streams.remove(stream_id);
+            state.deinit(self.allocator);
+            self.allocator.destroy(state);
+        }
+
+        try self.writeStreamType(stream_id, protocol.StreamType.push);
+        try self.writePushId(stream_id, push_id);
+        const encoder = try self.ensureEncoder(state, .push);
+        try self.writeHeadersWithEncoder(stream_id, encoder, response_fields);
+        return stream_id;
+    }
+
+    fn writePushId(self: *Session, stream_id: u64, push_id: u64) Error!void {
+        var buf: [8]u8 = undefined;
+        const n = try varint.encode(&buf, push_id);
         try self.writeAll(stream_id, buf[0..n]);
     }
 
@@ -1812,6 +1995,20 @@ pub const Session = struct {
         self.enterDraining();
     }
 
+    fn observeMaxPushId(self: *Session, id: u64) Error!void {
+        if (self.role != .server) {
+            self.closeForError(Error.FrameUnexpected);
+            return Error.FrameUnexpected;
+        }
+        if (self.peer_max_push_id) |previous| {
+            if (id < previous) {
+                self.closeForError(Error.InvalidPushId);
+                return Error.InvalidPushId;
+            }
+        }
+        self.peer_max_push_id = id;
+    }
+
     fn enterDraining(self: *Session) void {
         if (self.shutdown_state == .active) self.shutdown_state = .draining;
     }
@@ -1911,6 +2108,13 @@ pub const Session = struct {
                 .frame_type = protocol.FrameType.push_promise,
                 .bytes = promise.field_section.len,
                 .value = promise.push_id,
+            }),
+            .push_stream => |push| self.trace(.{
+                .name = .push_stream_received,
+                .role = self.role,
+                .stream_id = push.stream_id,
+                .frame_type = protocol.StreamType.push,
+                .value = push.push_id,
             }),
             .goaway => |id| self.trace(.{
                 .name = .goaway_received,

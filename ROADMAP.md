@@ -130,7 +130,12 @@ Datagrams / capsules), and the QUIC RFCs already tracked by `nullq`.
 ## Phase 4: Production Extensions
 
 - RFC 9218 Priority header parsing and PRIORITY_UPDATE scheduling hooks.
-- Server push APIs with `MAX_PUSH_ID`, `PUSH_PROMISE`, cancellation, and disable knobs.
+- Done: first server push API slice with client `MAX_PUSH_ID` opt-in,
+  server-side `PUSH_PROMISE` emission, server-initiated push streams, typed
+  pushed response events, and in-process coverage.
+- Next: server push cancellation and completion polish, including
+  `CANCEL_PUSH`, duplicate-promise consistency checks, app-level disable knobs,
+  and cache/authority policy helpers.
 - Done: HTTP/3 DATAGRAM groundwork over `nullq` DATAGRAM frames, including
   RFC 9297 quarter-stream-id payload codec, SETTINGS/transport negotiation
   checks, typed session/client/server datagram events, tracked send outcome

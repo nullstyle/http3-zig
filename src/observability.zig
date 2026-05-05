@@ -21,6 +21,7 @@ pub const TraceEventName = enum {
     settings_sent,
     settings_received,
     request_opened,
+    push_stream_received,
     headers_sent,
     headers_received,
     trailers_sent,
@@ -78,6 +79,7 @@ pub const Metrics = struct {
     settings_sent: u64 = 0,
     settings_received: u64 = 0,
     requests_opened: u64 = 0,
+    push_streams_received: u64 = 0,
 
     frames_sent: u64 = 0,
     frames_received: u64 = 0,
@@ -131,6 +133,7 @@ pub const Metrics = struct {
                 increment(&self.frames_received);
             },
             .request_opened => increment(&self.requests_opened),
+            .push_stream_received => increment(&self.push_streams_received),
             .headers_sent => {
                 increment(&self.headers_sent);
                 increment(&self.frames_sent);

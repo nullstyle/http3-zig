@@ -156,7 +156,7 @@ pub const Decoder = struct {
             },
             .push_promise => |promise| {
                 try self.validator.observe(frame_mod.frameType(f));
-                if (self.kind != .request) return Error.UnexpectedPushPromise;
+                if (self.kind != .response) return Error.UnexpectedPushPromise;
                 return .{ .push_promise = promise };
             },
             .unknown => |u| {
@@ -184,7 +184,7 @@ pub const Decoder = struct {
                 if (self.seen_trailers) return Error.DataAfterTrailers;
             },
             .push_promise => {
-                if (self.kind != .request) return Error.UnexpectedPushPromise;
+                if (self.kind != .response) return Error.UnexpectedPushPromise;
             },
             else => {},
         }

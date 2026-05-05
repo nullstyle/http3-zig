@@ -21,9 +21,10 @@ CONNECT negotiation and request metadata, Capsule Protocol codecs,
 context-aware DATAGRAM helpers, WebSocket-over-HTTP/3 tunnel helpers, HTTP/3
 trace callbacks and metrics snapshots, TLS keylog / QUIC qlog passthrough
 hooks, CONNECT-UDP receiver helpers, context registry, receive dispositions,
-and UDP payload limits, opt-in send-buffer backpressure limits, and lightweight
-request-response facades with configurable tracker body and session event-queue
-budgets.
+and UDP payload limits, first server-push support with `MAX_PUSH_ID`,
+`PUSH_PROMISE`, and push streams, opt-in send-buffer backpressure limits, and
+lightweight request-response facades with configurable tracker body and session
+event-queue budgets.
 
 ```sh
 mise install
@@ -95,8 +96,9 @@ just external-h3-interop
   validation, optional dynamic QPACK encoder/decoder stream processing,
   GOAWAY policy enforcement, Extended CONNECT negotiation checks, HTTP/3
   DATAGRAM events over QUIC DATAGRAM frames, DATAGRAM capsule send helpers,
-  nullq flow-control blocked events, reset/close events, and deep-owned
-  application events. `Session.Config.max_stream_send_buffered` can cap
+  server push opt-in and push-stream decoding, nullq flow-control blocked
+  events, reset/close events, and deep-owned application events.
+  `Session.Config.max_stream_send_buffered` can cap
   per-stream bytes accepted by nullq but not yet acknowledged, and
   `StreamSendState` exposes written/acked/buffered byte counters. Session
   drain can also cap emitted event count and owned event payload bytes before
@@ -130,6 +132,9 @@ just external-h3-interop
   helpers that use `H3_CONNECT_ERROR`. `MasqueConnectUdpReceiver` gives
   embedders a reusable per-tunnel receive classifier for unreliable DATAGRAM
   payloads and reliable DATAGRAM capsules.
+  `Server.startPush` / `Server.push` provide the first server-push facade for
+  promised requests and pushed responses once the client advertises
+  `MAX_PUSH_ID`.
   Request/response writers can send context-aware unreliable datagrams and
   reliable DATAGRAM capsules.
 
@@ -164,7 +169,9 @@ just external-h3-interop
   DATAGRAM capsules, receiver classification, context registry policy, and
   oversized UDP payload stream-abort classification. DATAGRAM abuse coverage
   includes malformed HTTP/3 DATAGRAM connection closes with
-  `H3_DATAGRAM_ERROR`.
+  `H3_DATAGRAM_ERROR`. Server-push coverage checks client `MAX_PUSH_ID`
+  opt-in, server `PUSH_PROMISE` emission, push-stream response headers, pushed
+  DATA, and pushed stream completion.
 - `just qpack-interop` runs the optional Go-side fixture harness against
   `github.com/quic-go/qpack`.
 - `just fuzz-smoke` runs the transport-free codec fuzz harness across HTTP/3

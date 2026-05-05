@@ -119,6 +119,18 @@ pub const Response = struct {
     stream_id: u64,
 };
 
+pub const PushHeadOptions = struct {
+    promise_headers: []const qpack.FieldLine,
+    response: ResponseHeadOptions = .{},
+};
+
+pub const PushOptions = struct {
+    promise_headers: []const qpack.FieldLine,
+    response: ResponseOptions = .{},
+};
+
+pub const Push = session_mod.LocalPush;
+
 pub const ResponseWriter = struct {
     server: *Server,
     stream_id: u64,
@@ -188,6 +200,45 @@ pub const ResponseWriter = struct {
     }
 
     pub fn abort(self: *ResponseWriter) session_mod.Error!void {
+        try self.reset(protocol.ErrorCode.internal_error);
+    }
+};
+
+pub const PushWriter = struct {
+    server: *Server,
+    request_stream_id: u64,
+    push_id: u64,
+    stream_id: u64,
+
+    pub fn write(self: *PushWriter, data: []const u8) session_mod.Error!void {
+        if (data.len > 0) try self.server.sendPushData(self.stream_id, data);
+    }
+
+    pub fn sendState(self: *const PushWriter) session_mod.Error!StreamSendState {
+        return try self.server.streamSendState(self.stream_id);
+    }
+
+    pub fn canBuffer(self: *const PushWriter, additional_bytes: usize) session_mod.Error!bool {
+        return try self.server.canBufferStreamBytes(self.stream_id, additional_bytes);
+    }
+
+    pub fn canWrite(self: *const PushWriter, data_len: usize) session_mod.Error!bool {
+        return try self.server.canSendData(self.stream_id, data_len);
+    }
+
+    pub fn trailers(self: *PushWriter, fields: []const qpack.FieldLine) session_mod.Error!void {
+        try self.server.sendPushTrailers(self.stream_id, fields);
+    }
+
+    pub fn finish(self: *PushWriter) session_mod.Error!void {
+        try self.server.finish(self.stream_id);
+    }
+
+    pub fn reset(self: *PushWriter, error_code: u64) session_mod.Error!void {
+        try self.server.resetPush(self.stream_id, error_code);
+    }
+
+    pub fn abort(self: *PushWriter) session_mod.Error!void {
         try self.reset(protocol.ErrorCode.internal_error);
     }
 };
@@ -463,6 +514,7 @@ pub const RequestEvent = union(enum) {
             .connection_closed => |closed| .{ .connection_closed = closed },
             .ignored_unknown_frame => |unknown| .{ .ignored_unknown_frame = unknown },
             .push_promise => null,
+            .push_stream => null,
         };
     }
 };
@@ -562,6 +614,14 @@ pub const Server = struct {
         try self.session.sendResponseTrailers(stream_id, fields);
     }
 
+    pub fn sendPushData(self: *Server, stream_id: u64, data: []const u8) session_mod.Error!void {
+        try self.session.sendPushData(stream_id, data);
+    }
+
+    pub fn sendPushTrailers(self: *Server, stream_id: u64, fields: []const qpack.FieldLine) session_mod.Error!void {
+        try self.session.sendPushTrailers(stream_id, fields);
+    }
+
     pub fn finish(self: *Server, stream_id: u64) session_mod.Error!void {
         try self.session.finishStream(stream_id);
     }
@@ -572,6 +632,10 @@ pub const Server = struct {
 
     pub fn abort(self: *Server, stream_id: u64) session_mod.Error!void {
         try self.reset(stream_id, protocol.ErrorCode.internal_error);
+    }
+
+    pub fn resetPush(self: *Server, stream_id: u64, error_code: u64) session_mod.Error!void {
+        try self.session.resetStream(stream_id, error_code);
     }
 
     pub fn reject(self: *Server, stream_id: u64) session_mod.Error!void {
@@ -600,6 +664,54 @@ pub const Server = struct {
         if (options.end_stream) try writer.finish();
 
         return .{ .stream_id = stream_id };
+    }
+
+    pub fn push(
+        self: *Server,
+        allocator: std.mem.Allocator,
+        request_stream_id: u64,
+        options: PushOptions,
+    ) session_mod.Error!Push {
+        var writer = try self.startPush(allocator, request_stream_id, .{
+            .promise_headers = options.promise_headers,
+            .response = .{
+                .status = options.response.status,
+                .headers = options.response.headers,
+            },
+        });
+
+        if (options.response.body) |body| {
+            try writer.write(body);
+        }
+        if (options.response.trailers.len > 0) try writer.trailers(options.response.trailers);
+        if (options.response.end_stream) try writer.finish();
+
+        return .{
+            .request_stream_id = writer.request_stream_id,
+            .push_id = writer.push_id,
+            .stream_id = writer.stream_id,
+        };
+    }
+
+    pub fn startPush(
+        self: *Server,
+        allocator: std.mem.Allocator,
+        request_stream_id: u64,
+        options: PushHeadOptions,
+    ) session_mod.Error!PushWriter {
+        const response_fields = try buildResponseFields(allocator, options.response);
+        defer allocator.free(response_fields);
+        const push_info = try self.session.startPush(
+            request_stream_id,
+            options.promise_headers,
+            response_fields,
+        );
+        return .{
+            .server = self,
+            .request_stream_id = push_info.request_stream_id,
+            .push_id = push_info.push_id,
+            .stream_id = push_info.stream_id,
+        };
     }
 
     pub fn startResponse(

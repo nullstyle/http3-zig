@@ -125,6 +125,13 @@ pub const ClientRunner = struct {
                 const response = (try self.tracker.observe(event)) orelse return .ignored;
                 return .{ .response_complete = response };
             },
+            .push_stream,
+            .push_headers,
+            .push_data,
+            .push_trailers,
+            .push_finished,
+            .push_reset,
+            => return .ignored,
         }
     }
 

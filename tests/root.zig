@@ -174,6 +174,13 @@ fn expectLastCloseCode(session: *const null3.Session, code: u64) !void {
     try std.testing.expectEqual(code, close.application.code);
 }
 
+fn fieldValue(fields: []const null3.FieldLine, name: []const u8) ?[]const u8 {
+    for (fields) |field| {
+        if (std.mem.eql(u8, field.name, name)) return field.value;
+    }
+    return null;
+}
+
 const H3Pair = struct {
     client_tls: boringssl.tls.Context,
     server_tls: boringssl.tls.Context,
@@ -1515,6 +1522,155 @@ test "CONNECT-UDP helper opens MASQUE tunnel and exchanges UDP payloads" {
         }
         clearSessionEvents(allocator, &client_events);
     }
+}
+
+test "server push sends PUSH_PROMISE and push stream response" {
+    const allocator = std.testing.allocator;
+
+    var pair: H3Pair = undefined;
+    try pair.initStarted(allocator, .{ .max_push_id = 0 }, .{});
+    defer pair.deinit();
+
+    try exchangePairSettings(allocator, &pair);
+
+    var h3_client = null3.Client.init(&pair.client_h3);
+    var h3_server = null3.Server.init(&pair.server_h3);
+
+    var request = try h3_client.startRequest(allocator, .{
+        .authority = "example.com",
+        .path = "/",
+    });
+    const request_stream_id = request.stream_id;
+    try request.finish();
+
+    var server_runner = null3.ServerRunner.init(allocator);
+    defer server_runner.deinit();
+
+    var client_events: std.ArrayList(null3.session.Event) = .empty;
+    defer {
+        clearSessionEvents(allocator, &client_events);
+        client_events.deinit(allocator);
+    }
+    var server_events: std.ArrayList(null3.session.Event) = .empty;
+    defer {
+        clearSessionEvents(allocator, &server_events);
+        server_events.deinit(allocator);
+    }
+
+    const promised_headers = [_]null3.FieldLine{
+        .{ .name = ":method", .value = "GET" },
+        .{ .name = ":scheme", .value = "https" },
+        .{ .name = ":path", .value = "/style.css" },
+        .{ .name = ":authority", .value = "example.com" },
+    };
+
+    var push_started = false;
+    var push_stream_id: ?u64 = null;
+    var saw_push_promise = false;
+    var saw_push_stream = false;
+    var saw_push_headers = false;
+    var saw_push_data = false;
+    var saw_push_finished = false;
+    var now_us: u64 = 1_000_000;
+    var iters: u32 = 0;
+    while (!saw_push_promise or !saw_push_stream or !saw_push_headers or !saw_push_data or !saw_push_finished) : (iters += 1) {
+        try std.testing.expect(iters < 20_000);
+        try pumpH3(
+            &pair.client,
+            &pair.server,
+            &pair.client_h3,
+            &pair.server_h3,
+            &client_events,
+            &server_events,
+            &now_us,
+        );
+
+        for (server_events.items) |event| {
+            switch (try server_runner.observe(event)) {
+                .request_updated => |request_state| {
+                    const reader = request_state.reader();
+                    if (!push_started and reader.headers().len > 0) {
+                        try std.testing.expectEqual(request_stream_id, reader.streamId());
+                        var push = try h3_server.startPush(allocator, reader.streamId(), .{
+                            .promise_headers = &promised_headers,
+                            .response = .{
+                                .status = "200",
+                                .headers = &[_]null3.FieldLine{
+                                    .{ .name = "content-type", .value = "text/css" },
+                                },
+                            },
+                        });
+                        push_stream_id = push.stream_id;
+                        try push.write("body { color: #111; }");
+                        try push.finish();
+                        push_started = true;
+                    }
+                },
+                else => {},
+            }
+        }
+        clearSessionEvents(allocator, &server_events);
+
+        for (client_events.items) |event| {
+            const response_event = h3_client.classify(event) orelse continue;
+            switch (response_event) {
+                .push_promise => |promise| {
+                    saw_push_promise = true;
+                    try std.testing.expectEqual(request_stream_id, promise.stream_id);
+                    try std.testing.expectEqual(@as(u64, 0), promise.push_id);
+                    const fields = try null3.qpack.decodeFieldSection(allocator, promise.field_section);
+                    defer null3.qpack.freeFieldSection(allocator, fields);
+                    try std.testing.expectEqualStrings("/style.css", fieldValue(fields, ":path").?);
+                },
+                .push_stream => |push| {
+                    saw_push_stream = true;
+                    try std.testing.expectEqual(@as(u64, 0), push.push_id);
+                    if (push_stream_id) |expected| try std.testing.expectEqual(expected, push.stream_id);
+                },
+                .push_headers => |headers| {
+                    saw_push_headers = true;
+                    if (push_stream_id) |expected| try std.testing.expectEqual(expected, headers.stream_id);
+                    try std.testing.expectEqualStrings("200", fieldValue(headers.fields, ":status").?);
+                },
+                .push_data => |data| {
+                    saw_push_data = true;
+                    if (push_stream_id) |expected| try std.testing.expectEqual(expected, data.stream_id);
+                    try std.testing.expectEqualStrings("body { color: #111; }", data.bytes);
+                },
+                .push_finished => |finished| {
+                    saw_push_finished = true;
+                    if (push_stream_id) |expected| try std.testing.expectEqual(expected, finished.stream_id);
+                },
+                else => {},
+            }
+        }
+        clearSessionEvents(allocator, &client_events);
+    }
+}
+
+test "server push requires client MAX_PUSH_ID opt-in" {
+    const allocator = std.testing.allocator;
+
+    var pair: H3Pair = undefined;
+    try pair.initStarted(allocator, .{}, .{});
+    defer pair.deinit();
+
+    try exchangePairSettings(allocator, &pair);
+
+    var h3_server = null3.Server.init(&pair.server_h3);
+    const promised_headers = [_]null3.FieldLine{
+        .{ .name = ":method", .value = "GET" },
+        .{ .name = ":scheme", .value = "https" },
+        .{ .name = ":path", .value = "/style.css" },
+        .{ .name = ":authority", .value = "example.com" },
+    };
+    try std.testing.expectError(
+        error.PushNotEnabled,
+        h3_server.startPush(allocator, 0, .{
+            .promise_headers = &promised_headers,
+            .response = .{},
+        }),
+    );
 }
 
 test "session rejects duplicate peer SETTINGS" {
