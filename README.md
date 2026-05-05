@@ -30,6 +30,7 @@ just test
 just fuzz-smoke
 just example-loopback-get
 just external-h3-client
+just external-h3-interop
 ```
 
 ## Design Shape
@@ -173,6 +174,10 @@ just external-h3-client
   that targets an IP-literal UDP endpoint with caller-supplied SNI, authority,
   method, path, and optional body. Peer-specific scripts for quic-go, ngtcp2,
   lsquic, and aioquic can layer above this binary.
+- `just external-h3-interop` runs the optional external-peer matrix. It skips
+  peers whose server command environment variables are not configured, and can
+  drive quic-go, ngtcp2, lsquic, and aioquic style servers through the shared
+  null3-as-client harness.
 - `just example-loopback-get` runs a compact in-process client/server example
   over `TransportLoopback` with the public `Client`, `Server`,
   `ClientRunner`, and `ServerRunner` APIs.

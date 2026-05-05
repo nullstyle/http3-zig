@@ -120,8 +120,12 @@ Datagrams / capsules), and the QUIC RFCs already tracked by `nullq`.
 - Done: first external HTTP/3 client interop harness over ordinary
   `nullq.Connection` APIs, using the public `Client`, `ClientRunner`, and
   transport driver endpoint helpers against IP-literal UDP peers.
-- Next: peer-specific matrix scripts for quic-go, ngtcp2, lsquic, aioquic, and
-  curl, plus additional examples layered on the shared driver.
+- Done: optional external-peer matrix runner for quic-go, ngtcp2, lsquic, and
+  aioquic style servers, with skip-friendly peer wrappers and caller-provided
+  server commands.
+- Next: wire concrete peer command recipes into local/CI jobs as those
+  dependencies are installed, keep curl-as-client coverage current, and add
+  more examples layered on the shared driver.
 
 ## Phase 4: Production Extensions
 

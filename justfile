@@ -13,6 +13,10 @@ curl-h3-interop:
 external-h3-client:
     zig build external-h3-client
 
+external-h3-interop:
+    zig build external-h3-client
+    bash interop/external_h3/run_matrix.sh
+
 example-loopback-get:
     zig build run-example-loopback-get
 
