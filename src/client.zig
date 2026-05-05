@@ -218,12 +218,24 @@ pub const WebSocketClientStream = struct {
         });
     }
 
+    pub fn writeMessage(
+        self: *WebSocketClientStream,
+        kind: websocket_mod.message.Kind,
+        payload: []const u8,
+        masking_key: [4]u8,
+    ) (session_mod.Error || websocket_mod.frame.Error)!void {
+        try self.writeFrame(.{
+            .opcode = websocket_mod.message.opcodeForKind(kind),
+            .payload = payload,
+        }, masking_key);
+    }
+
     pub fn writeText(
         self: *WebSocketClientStream,
         payload: []const u8,
         masking_key: [4]u8,
     ) (session_mod.Error || websocket_mod.frame.Error)!void {
-        try self.writeFrame(.{ .opcode = .text, .payload = payload }, masking_key);
+        try self.writeMessage(.text, payload, masking_key);
     }
 
     pub fn writeBinary(
@@ -231,7 +243,7 @@ pub const WebSocketClientStream = struct {
         payload: []const u8,
         masking_key: [4]u8,
     ) (session_mod.Error || websocket_mod.frame.Error)!void {
-        try self.writeFrame(.{ .opcode = .binary, .payload = payload }, masking_key);
+        try self.writeMessage(.binary, payload, masking_key);
     }
 
     pub fn writeClose(

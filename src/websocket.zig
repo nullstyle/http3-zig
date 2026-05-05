@@ -1,14 +1,15 @@
 //! WebSocket-over-HTTP/3 helpers.
 //!
 //! This module covers the RFC 9220 Extended CONNECT handshake shape. The
-//! tunneled byte stream remains application-owned; a full RFC 6455 WebSocket
-//! frame codec can layer above these helpers.
+//! tunneled byte stream remains application-owned; RFC 6455 frame and message
+//! codecs can layer above these helpers.
 
 const std = @import("std");
 
 const qpack = @import("qpack/root.zig");
 
 pub const frame = @import("websocket_frame.zig");
+pub const message = @import("websocket_message.zig");
 
 pub const protocol_token = "websocket";
 

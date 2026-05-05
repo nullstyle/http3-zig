@@ -142,8 +142,12 @@ Datagrams / capsules), and the QUIC RFCs already tracked by `nullq`.
 - Done: RFC 6455 WebSocket frame codec with masking, close-code validation,
   control-frame abuse checks, incremental fragmentation tracking, stream
   writer helpers, and fuzz smoke coverage.
-- Next: higher-level WebSocket message assembly plus concrete MASQUE-style
-  protocols layered on Extended CONNECT, capsules, and context-aware datagrams.
+- Done: higher-level WebSocket message assembly with owned text/binary events,
+  text/close UTF-8 validation, interleaved ping/pong/close handling,
+  message-size caps, stream writer helpers, integration coverage, and fuzz
+  smoke coverage.
+- Next: concrete MASQUE-style protocols layered on Extended CONNECT, capsules,
+  and context-aware datagrams.
 
 ## Phase 5: Hardening
 

@@ -80,8 +80,9 @@ just example-loopback-get
   aliases, QUIC qlog callback aliases, typed HTTP/3 trace events, and metrics
   counters.
 - `websocket`: RFC 9220 handshake helpers for WebSocket-over-HTTP/3 Extended
-  CONNECT tunnels plus an RFC 6455 frame codec with masking, close-code checks,
-  and incremental fragmentation tracking.
+  CONNECT tunnels plus RFC 6455 frame and message codecs with masking,
+  close-code checks, incremental fragmentation tracking, assembled
+  text/binary messages, UTF-8 validation, and interleaved control-frame events.
 - `session`: HTTP/3 session state over `nullq.Connection`, including control
   streams, peer SETTINGS, request stream draining, response writes, FIN
   validation, optional dynamic QPACK encoder/decoder stream processing,
@@ -112,8 +113,10 @@ just example-loopback-get
   received protocol token. `Client.startWebSocket` and `Server.acceptWebSocket`
   provide typed Extended CONNECT tunnel helpers for the `websocket` protocol
   token. `null3.websocket.frame` provides the transport-free WebSocket frame
-  codec used by `WebSocketClientStream.writeText` and
-  `WebSocketServerStream.writeText`.
+  codec, and `null3.websocket.message` assembles owned text/binary messages
+  while validating text/close UTF-8 and preserving ping/pong/close events.
+  `WebSocketClientStream.writeMessage` and `WebSocketServerStream.writeMessage`
+  provide typed message writes.
   Request/response writers can send context-aware unreliable datagrams and
   reliable DATAGRAM capsules.
 

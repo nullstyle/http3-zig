@@ -208,18 +208,29 @@ pub const WebSocketServerStream = struct {
         try self.writeFrameWithOptions(frame, .{});
     }
 
+    pub fn writeMessage(
+        self: *WebSocketServerStream,
+        kind: websocket_mod.message.Kind,
+        payload: []const u8,
+    ) (session_mod.Error || websocket_mod.frame.Error)!void {
+        try self.writeFrame(.{
+            .opcode = websocket_mod.message.opcodeForKind(kind),
+            .payload = payload,
+        });
+    }
+
     pub fn writeText(
         self: *WebSocketServerStream,
         payload: []const u8,
     ) (session_mod.Error || websocket_mod.frame.Error)!void {
-        try self.writeFrame(.{ .opcode = .text, .payload = payload });
+        try self.writeMessage(.text, payload);
     }
 
     pub fn writeBinary(
         self: *WebSocketServerStream,
         payload: []const u8,
     ) (session_mod.Error || websocket_mod.frame.Error)!void {
-        try self.writeFrame(.{ .opcode = .binary, .payload = payload });
+        try self.writeMessage(.binary, payload);
     }
 
     pub fn writeClose(

@@ -22,6 +22,7 @@ pub const Target = enum {
     qpack_encoder_instruction,
     qpack_decoder_instruction,
     websocket_frame,
+    websocket_message,
 };
 
 pub const concrete_targets = [_]Target{
@@ -37,6 +38,7 @@ pub const concrete_targets = [_]Target{
     .qpack_encoder_instruction,
     .qpack_decoder_instruction,
     .websocket_frame,
+    .websocket_message,
 };
 
 const smoke_inputs = [_][]const u8{
@@ -73,6 +75,7 @@ pub fn targetName(target: Target) []const u8 {
         .qpack_encoder_instruction => "qpack-encoder-instruction",
         .qpack_decoder_instruction => "qpack-decoder-instruction",
         .websocket_frame => "websocket-frame",
+        .websocket_message => "websocket-message",
     };
 }
 
@@ -90,6 +93,7 @@ pub fn targetFromName(name: []const u8) ?Target {
     if (std.mem.eql(u8, name, "qpack-encoder-instruction") or std.mem.eql(u8, name, "qpack_encoder_instruction")) return .qpack_encoder_instruction;
     if (std.mem.eql(u8, name, "qpack-decoder-instruction") or std.mem.eql(u8, name, "qpack_decoder_instruction")) return .qpack_decoder_instruction;
     if (std.mem.eql(u8, name, "websocket-frame") or std.mem.eql(u8, name, "websocket_frame")) return .websocket_frame;
+    if (std.mem.eql(u8, name, "websocket-message") or std.mem.eql(u8, name, "websocket_message")) return .websocket_message;
     return null;
 }
 
@@ -112,6 +116,7 @@ pub fn runTarget(allocator: std.mem.Allocator, target: Target, input: []const u8
         .qpack_encoder_instruction => fuzzQpackEncoderInstruction(allocator, input),
         .qpack_decoder_instruction => fuzzQpackDecoderInstruction(input),
         .websocket_frame => fuzzWebSocketFrame(allocator, input),
+        .websocket_message => fuzzWebSocketMessage(allocator, input),
     }
 }
 
@@ -210,5 +215,22 @@ fn fuzzWebSocketFrame(allocator: std.mem.Allocator, input: []const u8) void {
         const maybe = decoder.next() catch break;
         const frame = maybe orelse break;
         frame.deinit(allocator);
+    }
+}
+
+fn fuzzWebSocketMessage(allocator: std.mem.Allocator, input: []const u8) void {
+    var decoder = null3.websocket.message.Decoder.init(allocator, .{
+        .frame = .{
+            .max_payload_len = 16 * 1024,
+        },
+        .max_message_len = 16 * 1024,
+    });
+    defer decoder.deinit();
+    decoder.push(input) catch return;
+    var count: usize = 0;
+    while (count < max_iterator_items) : (count += 1) {
+        const maybe = decoder.next() catch break;
+        const event = maybe orelse break;
+        event.deinit(allocator);
     }
 }
