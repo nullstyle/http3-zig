@@ -252,8 +252,14 @@ fn fuzzMasque(allocator: std.mem.Allocator, input: []const u8) void {
     if (null3.masque.decodeUdpPayload(input)) |_| {} else |_| {}
 
     var registry = null3.masque.ContextRegistry.init();
+    var pending = null3.masque.PendingDatagramBuffer.initWithConfig(allocator, .{
+        .max_datagrams = 2,
+        .max_payload_bytes = 64,
+    });
+    defer pending.deinit();
     if (registry.decodeContextPayload(input)) |_| {} else |_| {}
     _ = registry.classifyDatagramPayload(input);
+    _ = pending.classifyOrBuffer(&registry, input) catch {};
     registry.registerExtension(7) catch {};
     if (registry.decodeContextPayload(input)) |_| {} else |_| {}
     if (registry.decodeUdpPayload(input)) |_| {} else |_| {}

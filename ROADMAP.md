@@ -178,8 +178,11 @@ Datagrams / capsules), and the QUIC RFCs already tracked by `nullq`.
   for DATAGRAM frames and DATAGRAM capsules, drop/buffer/abort receive
   disposition, UDP payload length guards, integration coverage, and fuzz smoke
   coverage.
-- Next: deeper MASQUE protocol state, including extension-specific capsule
-  registration semantics and external proxy interop.
+- Done: deeper MASQUE receive state, including endpoint Context ID allocation
+  checks, bounded unknown-context datagram buffering, and explicit
+  drain/drop helpers for extension registration policy.
+- Next: extension-specific capsule registration semantics and external proxy
+  interop.
 
 ## Phase 5: Hardening
 
@@ -192,8 +195,9 @@ Datagrams / capsules), and the QUIC RFCs already tracked by `nullq`.
   malformed peer GOAWAY sequencing, DATAGRAM negotiation and size failures,
   malformed pseudo-headers, truncated capsules, DATA-after-trailers, oversized
   decoded field sections, QPACK decoder feedback errors, and peer QPACK dynamic
-  table capacity/entry overflow, plus CONNECT-UDP context registry failures and
-  oversized UDP payload stream-abort classification.
+  table capacity/entry overflow, plus CONNECT-UDP context registry failures,
+  bounded unknown-context buffering limits, and oversized UDP payload
+  stream-abort classification.
 - Partial: send-side stream buffering, outgoing capsule values, session event
   queues, tracker body accumulation, and decoded QPACK field sections now have
   opt-in caps; broader sustained resource-pressure coverage is still needed,

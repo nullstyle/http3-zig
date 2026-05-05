@@ -21,6 +21,7 @@ CONNECT negotiation and request metadata, Capsule Protocol codecs,
 context-aware DATAGRAM helpers, WebSocket-over-HTTP/3 tunnel helpers, HTTP/3
 trace callbacks and metrics snapshots, TLS keylog / QUIC qlog passthrough
 hooks, CONNECT-UDP receiver helpers, context registry, receive dispositions,
+bounded unknown-context datagram buffering, Context ID allocation checks,
 and UDP payload limits, first server-push support with `MAX_PUSH_ID`,
 `PUSH_PROMISE`, push streams, `CANCEL_PUSH`, duplicate-promise validation, and
 client push policy, opt-in send-buffer backpressure limits, and lightweight
@@ -77,7 +78,8 @@ just external-h3-interop
   reusable Context ID payload helpers for datagram-using extensions.
 - `capsule`: RFC 9297 Capsule Protocol TLV codec, including DATAGRAM capsules.
 - `masque`: CONNECT-UDP helper foundation over Extended CONNECT, Context ID 0
-  UDP payloads, checked context registry and receiver helpers,
+  UDP payloads, checked context registry and receiver helpers, Context ID
+  allocation validation, bounded unknown-context datagram buffering,
   drop/buffer/abort receive dispositions for DATAGRAM frames and DATAGRAM
   capsules, and `capsule-protocol: ?1` negotiation headers.
 - `driver`: small `nullq`/`null3` transport-driving helpers for tests,
@@ -136,7 +138,9 @@ just external-h3-interop
   Context ID 0 validation, UDP payload length guards, and stream-failure
   helpers that use `H3_CONNECT_ERROR`. `MasqueConnectUdpReceiver` gives
   embedders a reusable per-tunnel receive classifier for unreliable DATAGRAM
-  payloads and reliable DATAGRAM capsules.
+  payloads and reliable DATAGRAM capsules, while
+  `MasquePendingDatagramBuffer` provides bounded temporary storage for
+  unknown Context IDs until extension registration state arrives.
   `Server.startPush` / `Server.push` provide the first server-push facade for
   promised requests and pushed responses once the client advertises
   `MAX_PUSH_ID`, and `Client.cancelPush` / `Server.cancelPush` exchange
@@ -183,13 +187,15 @@ just external-h3-interop
   message byte flow in both directions. CONNECT-UDP coverage checks MASQUE
   tunnel setup, target parsing, Context ID 0 HTTP Datagrams, reliable UDP
   DATAGRAM capsules, receiver classification, context registry policy, and
-  oversized UDP payload stream-abort classification. DATAGRAM abuse coverage
-  includes malformed HTTP/3 DATAGRAM connection closes with
-  `H3_DATAGRAM_ERROR`. Server-push coverage checks client `MAX_PUSH_ID`
-  opt-in, server `PUSH_PROMISE` emission, push-stream response headers, pushed
-  DATA, pushed stream completion, `CANCEL_PUSH` in both directions, invalid
-  cancellation placement, push-ID limit enforcement, and duplicate push stream
-  ID rejection. It also covers duplicate `PUSH_PROMISE` consistency and
+  bounded unknown-context datagram buffering/release/drop behavior, endpoint
+  Context ID allocation parity, and oversized UDP payload stream-abort
+  classification. DATAGRAM abuse coverage includes malformed HTTP/3 DATAGRAM
+  connection closes with `H3_DATAGRAM_ERROR`. Server-push coverage checks
+  client `MAX_PUSH_ID` opt-in, server `PUSH_PROMISE` emission, push-stream
+  response headers, pushed DATA, pushed stream completion, `CANCEL_PUSH` in
+  both directions, invalid cancellation placement, push-ID limit enforcement,
+  and duplicate push stream ID rejection. It also covers duplicate
+  `PUSH_PROMISE` consistency and
   policy-driven auto-cancellation, same-origin/cacheable push promise helper
   validation, and higher-level pushed-response tracking through `ClientRunner`.
   Priority coverage checks typed Priority field extraction, request and push

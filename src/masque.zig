@@ -24,6 +24,7 @@ pub const connect_udp_abort_code = protocol.ErrorCode.connect_error;
 pub const Error = datagram_mod.Error || std.mem.Allocator.Error || error{
     BufferTooSmall,
     CannotUnregisterDefaultContext,
+    ContextBufferFull,
     ContextAlreadyRegistered,
     ContextLimitExceeded,
     InvalidContextRegistration,
@@ -76,6 +77,11 @@ pub const AcceptOptions = struct {
 pub const ContextKind = enum {
     connect_udp,
     extension,
+};
+
+pub const ContextIdAllocator = enum {
+    client,
+    proxy,
 };
 
 pub const RegisteredContext = struct {
@@ -174,6 +180,149 @@ pub const ConnectUdpReceiver = struct {
     }
 };
 
+pub const PendingDatagramBufferConfig = struct {
+    max_datagrams: usize = 16,
+    max_payload_bytes: usize = 64 * 1024,
+};
+
+pub const BufferedDatagram = struct {
+    context_id: u64,
+    payload: []u8,
+
+    pub fn deinit(self: BufferedDatagram, allocator: std.mem.Allocator) void {
+        allocator.free(self.payload);
+    }
+
+    pub fn context(self: BufferedDatagram, kind: ContextKind) ContextPayload {
+        return .{
+            .context_id = self.context_id,
+            .kind = kind,
+            .payload = self.payload,
+        };
+    }
+
+    pub fn raw(self: BufferedDatagram) datagram_mod.ContextPayload {
+        return .{
+            .context_id = self.context_id,
+            .payload = self.payload,
+        };
+    }
+};
+
+pub fn freeBufferedDatagrams(allocator: std.mem.Allocator, datagrams: []BufferedDatagram) void {
+    for (datagrams) |datagram| datagram.deinit(allocator);
+}
+
+pub const PendingDatagramBuffer = struct {
+    allocator: std.mem.Allocator,
+    config: PendingDatagramBufferConfig = .{},
+    datagrams: std.ArrayList(BufferedDatagram) = .empty,
+    payload_bytes: usize = 0,
+
+    pub fn init(allocator: std.mem.Allocator) PendingDatagramBuffer {
+        return .{ .allocator = allocator };
+    }
+
+    pub fn initWithConfig(
+        allocator: std.mem.Allocator,
+        config: PendingDatagramBufferConfig,
+    ) PendingDatagramBuffer {
+        return .{
+            .allocator = allocator,
+            .config = config,
+        };
+    }
+
+    pub fn deinit(self: *PendingDatagramBuffer) void {
+        freeBufferedDatagrams(self.allocator, self.datagrams.items);
+        self.datagrams.deinit(self.allocator);
+        self.* = undefined;
+    }
+
+    pub fn len(self: *const PendingDatagramBuffer) usize {
+        return self.datagrams.items.len;
+    }
+
+    pub fn bufferedPayloadBytes(self: *const PendingDatagramBuffer) usize {
+        return self.payload_bytes;
+    }
+
+    pub fn bufferUnknown(self: *PendingDatagramBuffer, context: datagram_mod.ContextPayload) Error!void {
+        if (context.context_id == udp_context_id) return Error.UnexpectedContext;
+        try self.reserve(context.payload.len);
+        const payload = try self.allocator.dupe(u8, context.payload);
+        errdefer self.allocator.free(payload);
+        try self.datagrams.append(self.allocator, .{
+            .context_id = context.context_id,
+            .payload = payload,
+        });
+        self.payload_bytes += payload.len;
+    }
+
+    pub fn classifyOrBuffer(
+        self: *PendingDatagramBuffer,
+        registry: *const ContextRegistry,
+        src: []const u8,
+    ) Error!DatagramDisposition {
+        const disposition = registry.classifyDatagramPayload(src);
+        switch (disposition) {
+            .unknown_context => |context| try self.bufferUnknown(context),
+            else => {},
+        }
+        return disposition;
+    }
+
+    pub fn drainContext(
+        self: *PendingDatagramBuffer,
+        out_allocator: std.mem.Allocator,
+        context_id: u64,
+        out: *std.ArrayList(BufferedDatagram),
+    ) std.mem.Allocator.Error!usize {
+        var drained: usize = 0;
+        var index: usize = 0;
+        while (index < self.datagrams.items.len) {
+            const datagram = self.datagrams.items[index];
+            if (datagram.context_id != context_id) {
+                index += 1;
+                continue;
+            }
+
+            try out.append(out_allocator, datagram);
+            _ = self.datagrams.swapRemove(index);
+            self.payload_bytes -= datagram.payload.len;
+            drained += 1;
+        }
+        return drained;
+    }
+
+    pub fn dropContext(self: *PendingDatagramBuffer, context_id: u64) usize {
+        var dropped: usize = 0;
+        var index: usize = 0;
+        while (index < self.datagrams.items.len) {
+            const datagram = self.datagrams.items[index];
+            if (datagram.context_id != context_id) {
+                index += 1;
+                continue;
+            }
+
+            datagram.deinit(self.allocator);
+            _ = self.datagrams.swapRemove(index);
+            self.payload_bytes -= datagram.payload.len;
+            dropped += 1;
+        }
+        return dropped;
+    }
+
+    fn reserve(self: *const PendingDatagramBuffer, payload_len: usize) Error!void {
+        if (self.datagrams.items.len >= self.config.max_datagrams) return Error.ContextBufferFull;
+        if (payload_len > self.config.max_payload_bytes or
+            self.payload_bytes > self.config.max_payload_bytes - payload_len)
+        {
+            return Error.ContextBufferFull;
+        }
+    }
+};
+
 pub const ContextRegistry = struct {
     entries: [max_registered_contexts]RegisteredContext = [_]RegisteredContext{
         .{ .context_id = udp_context_id, .kind = .connect_udp },
@@ -208,6 +357,15 @@ pub const ContextRegistry = struct {
 
     pub fn registerExtension(self: *ContextRegistry, context_id: u64) Error!void {
         try self.register(context_id, .extension);
+    }
+
+    pub fn registerAllocatedExtension(
+        self: *ContextRegistry,
+        allocator_role: ContextIdAllocator,
+        context_id: u64,
+    ) Error!void {
+        try validateAllocatedContextId(allocator_role, context_id);
+        try self.registerExtension(context_id);
     }
 
     pub fn unregister(self: *ContextRegistry, context_id: u64) Error!void {
@@ -265,6 +423,16 @@ pub const ContextRegistry = struct {
         return null;
     }
 };
+
+pub fn contextIdAllocator(context_id: u64) Error!ContextIdAllocator {
+    if (context_id == udp_context_id) return Error.InvalidContextRegistration;
+    return if (context_id & 1 == 0) .client else .proxy;
+}
+
+pub fn validateAllocatedContextId(allocator_role: ContextIdAllocator, context_id: u64) Error!void {
+    const owner = try contextIdAllocator(context_id);
+    if (owner != allocator_role) return Error.InvalidContextRegistration;
+}
 
 fn receiveDispositionFromDatagram(disposition: DatagramDisposition) ReceiveDisposition {
     return switch (disposition) {
@@ -610,6 +778,98 @@ test "CONNECT-UDP context registry classifies known contexts" {
     try registry.unregister(7);
     try std.testing.expect(!registry.isKnown(7));
     try std.testing.expectError(Error.UnknownContext, registry.unregister(7));
+}
+
+test "CONNECT-UDP context IDs enforce endpoint allocation parity" {
+    try std.testing.expectEqual(ContextIdAllocator.client, try contextIdAllocator(2));
+    try std.testing.expectEqual(ContextIdAllocator.proxy, try contextIdAllocator(3));
+    try std.testing.expectError(Error.InvalidContextRegistration, contextIdAllocator(udp_context_id));
+    try validateAllocatedContextId(.client, 2);
+    try validateAllocatedContextId(.proxy, 3);
+    try std.testing.expectError(Error.InvalidContextRegistration, validateAllocatedContextId(.client, 3));
+    try std.testing.expectError(Error.InvalidContextRegistration, validateAllocatedContextId(.proxy, 2));
+
+    var registry = ContextRegistry.init();
+    try registry.registerAllocatedExtension(.client, 8);
+    try std.testing.expect(registry.isKnown(8));
+    try std.testing.expectError(Error.InvalidContextRegistration, registry.registerAllocatedExtension(.client, 9));
+}
+
+test "CONNECT-UDP pending datagram buffer drains after context registration" {
+    const allocator = std.testing.allocator;
+    var buf: [128]u8 = undefined;
+    var registry = ContextRegistry.init();
+    var pending = PendingDatagramBuffer.initWithConfig(allocator, .{
+        .max_datagrams = 4,
+        .max_payload_bytes = 64,
+    });
+    defer pending.deinit();
+
+    const first_n = try datagram_mod.encodeContextPayload(&buf, 8, "first");
+    switch (try pending.classifyOrBuffer(&registry, buf[0..first_n])) {
+        .unknown_context => |context| {
+            try std.testing.expectEqual(@as(u64, 8), context.context_id);
+            try std.testing.expectEqualStrings("first", context.payload);
+        },
+        else => return error.UnexpectedDisposition,
+    }
+    const second_n = try datagram_mod.encodeContextPayload(&buf, 8, "second");
+    _ = try pending.classifyOrBuffer(&registry, buf[0..second_n]);
+    try std.testing.expectEqual(@as(usize, 2), pending.len());
+    try std.testing.expectEqual(@as(usize, "first".len + "second".len), pending.bufferedPayloadBytes());
+
+    try registry.registerAllocatedExtension(.client, 8);
+    var drained: std.ArrayList(BufferedDatagram) = .empty;
+    defer {
+        freeBufferedDatagrams(allocator, drained.items);
+        drained.deinit(allocator);
+    }
+    try std.testing.expectEqual(@as(usize, 2), try pending.drainContext(allocator, 8, &drained));
+    try std.testing.expectEqual(@as(usize, 0), pending.len());
+    try std.testing.expectEqual(@as(usize, 0), pending.bufferedPayloadBytes());
+
+    const first = drained.items[0].context(.extension);
+    const second = drained.items[1].context(.extension);
+    try std.testing.expectEqual(@as(u64, 8), first.context_id);
+    try std.testing.expectEqual(ContextKind.extension, first.kind);
+    try std.testing.expectEqualStrings("first", first.payload);
+    try std.testing.expectEqualStrings("second", second.payload);
+    try std.testing.expectEqual(@as(u64, 8), drained.items[0].raw().context_id);
+
+    const known_n = try datagram_mod.encodeContextPayload(&buf, 8, "known");
+    switch (try pending.classifyOrBuffer(&registry, buf[0..known_n])) {
+        .extension_payload => |context| try std.testing.expectEqualStrings("known", context.payload),
+        else => return error.UnexpectedDisposition,
+    }
+    try std.testing.expectEqual(@as(usize, 0), pending.len());
+}
+
+test "CONNECT-UDP pending datagram buffer enforces limits and drops contexts" {
+    const allocator = std.testing.allocator;
+    var buf: [128]u8 = undefined;
+    var registry = ContextRegistry.init();
+    var pending = PendingDatagramBuffer.initWithConfig(allocator, .{
+        .max_datagrams = 1,
+        .max_payload_bytes = 5,
+    });
+    defer pending.deinit();
+
+    try std.testing.expectError(
+        Error.UnexpectedContext,
+        pending.bufferUnknown(.{ .context_id = udp_context_id, .payload = "udp" }),
+    );
+
+    const first_n = try datagram_mod.encodeContextPayload(&buf, 6, "abc");
+    _ = try pending.classifyOrBuffer(&registry, buf[0..first_n]);
+    try std.testing.expectEqual(@as(usize, 1), pending.len());
+
+    const second_n = try datagram_mod.encodeContextPayload(&buf, 6, "de");
+    try std.testing.expectError(Error.ContextBufferFull, pending.classifyOrBuffer(&registry, buf[0..second_n]));
+    try std.testing.expectEqual(@as(usize, 1), pending.dropContext(6));
+    try std.testing.expectEqual(@as(usize, 0), pending.len());
+
+    const large_n = try datagram_mod.encodeContextPayload(&buf, 6, "abcdef");
+    try std.testing.expectError(Error.ContextBufferFull, pending.classifyOrBuffer(&registry, buf[0..large_n]));
 }
 
 test "CONNECT-UDP datagram disposition separates unknown context from stream aborts" {

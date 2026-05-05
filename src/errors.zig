@@ -217,6 +217,7 @@ pub fn codeForError(err: anyerror) u64 {
         error.UnknownContext,
         error.UdpPayloadTooLarge,
         error.CannotUnregisterDefaultContext,
+        error.ContextBufferFull,
         error.ContextAlreadyRegistered,
         error.ContextLimitExceeded,
         error.InvalidContextRegistration,
@@ -299,6 +300,7 @@ fn scopeForError(err: anyerror, app: ApplicationError) Scope {
         error.UnknownContext,
         error.UdpPayloadTooLarge,
         error.CannotUnregisterDefaultContext,
+        error.ContextBufferFull,
         error.ContextAlreadyRegistered,
         error.ContextLimitExceeded,
         error.InvalidContextRegistration,
@@ -317,6 +319,7 @@ fn categoryForError(err: anyerror, app: ApplicationError) Category {
         error.EventQueueFull,
         error.DecodedFieldSectionTooLarge,
         error.TooManyFieldLines,
+        error.ContextBufferFull,
         => .resource,
         error.HandshakeFailed,
         error.PeerAlerted,
@@ -380,4 +383,9 @@ test "local causes map to close codes and cause categories" {
     try std.testing.expectEqual(protocol.ErrorCode.connect_error, udp_payload.application.code);
     try std.testing.expectEqual(Scope.stream, udp_payload.scope);
     try std.testing.expectEqual(Category.connect, udp_payload.category);
+
+    const context_buffer = classify(error.ContextBufferFull);
+    try std.testing.expectEqual(protocol.ErrorCode.connect_error, context_buffer.application.code);
+    try std.testing.expectEqual(Scope.stream, context_buffer.scope);
+    try std.testing.expectEqual(Category.resource, context_buffer.category);
 }
