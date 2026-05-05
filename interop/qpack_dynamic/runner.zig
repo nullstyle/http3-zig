@@ -88,10 +88,55 @@ test "dynamic QPACK field-section fixtures decode and emit decoder feedback" {
     }
 }
 
+test "dynamic QPACK negative encoder-stream fixtures reject bad inputs without mutation" {
+    for (fixtures.negative_encoder_stream_vectors) |vector| {
+        var table = qpack.DynamicTable.init(std.testing.allocator, vector.max_table_capacity);
+        defer table.deinit();
+        var decoder_state = qpack.QpackDecoderState.init(std.testing.allocator, 8);
+        defer decoder_state.deinit();
+
+        try applyEncoderStream(&table, &decoder_state, vector.setup_encoder_stream);
+        try std.testing.expectError(
+            vector.expected_error,
+            applyEncoderStream(&table, &decoder_state, vector.encoder_stream),
+        );
+        try expectTableSnapshot(&table, vector.table_after_error);
+    }
+}
+
+test "dynamic QPACK negative field-section fixtures reject invalid references" {
+    for (fixtures.negative_field_section_vectors) |vector| {
+        var table = qpack.DynamicTable.init(std.testing.allocator, @intCast(vector.max_table_capacity));
+        defer table.deinit();
+        var decoder_state = qpack.QpackDecoderState.init(std.testing.allocator, 8);
+        defer decoder_state.deinit();
+
+        try applyEncoderStream(&table, &decoder_state, vector.setup_encoder_stream);
+        try std.testing.expectError(
+            vector.expected_error,
+            qpack.decodeDynamicFieldSection(
+                std.testing.allocator,
+                &table,
+                vector.max_table_capacity,
+                vector.field_section,
+            ),
+        );
+    }
+}
+
+test "dynamic QPACK negative decoder feedback fixtures reject malformed bytes" {
+    for (fixtures.negative_decoder_feedback_vectors) |vector| {
+        try std.testing.expectError(
+            vector.expected_error,
+            qpack.instructions.decodeDecoderInstruction(vector.encoded),
+        );
+    }
+}
+
 fn encodeEncoderInstructions(
     dst: []u8,
     instructions: []const qpack.EncoderInstruction,
-) qpack.Error!usize {
+) !usize {
     var pos: usize = 0;
     for (instructions) |instruction| {
         pos += try qpack.instructions.encodeEncoderInstruction(dst[pos..], instruction);
@@ -103,11 +148,12 @@ fn applyEncoderStream(
     table: *qpack.DynamicTable,
     decoder_state: *qpack.QpackDecoderState,
     src: []const u8,
-) qpack.Error!void {
+) !void {
     var pos: usize = 0;
     while (pos < src.len) {
         const decoded = try qpack.instructions.decodeEncoderInstruction(std.testing.allocator, src[pos..]);
         errdefer qpack.instructions.freeDecodedEncoderInstruction(std.testing.allocator, decoded);
+        try std.testing.expect(decoded.bytes_read > 0);
         _ = try decoder_state.applyEncoderInstruction(table, decoded.instruction);
         qpack.instructions.freeDecodedEncoderInstruction(std.testing.allocator, decoded);
         pos += decoded.bytes_read;
@@ -154,8 +200,8 @@ fn expectDecoderFeedback(
     const n = try qpack.instructions.encodeDecoderInstruction(&buf, instruction);
     try std.testing.expectEqualSlices(u8, expected, buf[0..n]);
 
-    const decoded = try qpack.instructions.decodeDecoderInstruction(buf[0..n]);
-    try std.testing.expectEqual(n, decoded.bytes_read);
+    const decoded = try qpack.instructions.decodeDecoderInstruction(expected);
+    try std.testing.expectEqual(expected.len, decoded.bytes_read);
     try expectDecoderInstructionEqual(instruction, decoded.instruction);
 }
 

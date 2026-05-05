@@ -184,7 +184,7 @@ just external-h3-interop
   `github.com/quic-go/qpack`.
 - `just qpack-dynamic-interop` runs the transport-free dynamic-table fixture
   corpus for RFC 9204 Appendix B encoder streams, field sections, table
-  snapshots, and decoder feedback bytes.
+  snapshots, decoder feedback bytes, and malformed dynamic-input rejection.
 - `just fuzz-smoke` runs the transport-free codec fuzz harness across HTTP/3
   frames, SETTINGS, capsules, HTTP/3 DATAGRAM payloads, QPACK integers,
   Huffman strings, field sections, encoder/decoder stream instructions, and

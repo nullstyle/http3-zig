@@ -59,6 +59,29 @@ pub const FieldSectionVector = struct {
     stream_cancel: ?DecoderFeedbackVector = null,
 };
 
+pub const NegativeEncoderStreamVector = struct {
+    name: []const u8,
+    max_table_capacity: usize,
+    setup_encoder_stream: []const u8 = "",
+    encoder_stream: []const u8,
+    expected_error: anyerror,
+    table_after_error: TableSnapshot,
+};
+
+pub const NegativeFieldSectionVector = struct {
+    name: []const u8,
+    max_table_capacity: u64,
+    setup_encoder_stream: []const u8 = "",
+    field_section: []const u8,
+    expected_error: anyerror,
+};
+
+pub const NegativeDecoderFeedbackVector = struct {
+    name: []const u8,
+    encoded: []const u8,
+    expected_error: anyerror,
+};
+
 pub const b2_encoder_stream = "\x3f\xbd\x01\xc0\x0fwww.example.com\xc1\x0c/sample/path";
 pub const b3_encoder_stream = "\x4acustom-key\x0ccustom-value";
 pub const b4_duplicate_stream = "\x02";
@@ -69,6 +92,7 @@ pub const setup_b4 = b2_encoder_stream ++ b3_encoder_stream;
 pub const setup_b5 = b2_encoder_stream ++ b3_encoder_stream ++ b4_duplicate_stream;
 
 const empty_absent_indices = [_]u64{};
+const empty_entries = [_]TableEntry{};
 
 const b2_instructions = [_]qpack.EncoderInstruction{
     .{ .set_capacity = 220 },
@@ -238,5 +262,93 @@ pub const field_section_vectors = [_]FieldSectionVector{
             .instruction = .{ .stream_cancel = 8 },
             .encoded = "\x48",
         },
+    },
+};
+
+pub const negative_encoder_stream_vectors = [_]NegativeEncoderStreamVector{
+    .{
+        .name = "truncated_static_name_ref_insert_value",
+        .max_table_capacity = 220,
+        .encoder_stream = "\xc0\x0fwww.example.co",
+        .expected_error = error.InsufficientBytes,
+        .table_after_error = .{
+            .capacity = 0,
+            .len = 0,
+            .size = 0,
+            .insert_count = 0,
+            .dropped_count = 0,
+            .entries = &empty_entries,
+        },
+    },
+    .{
+        .name = "set_capacity_above_local_maximum",
+        .max_table_capacity = 64,
+        .encoder_stream = "\x3f\xbd\x01",
+        .expected_error = error.CapacityTooLarge,
+        .table_after_error = .{
+            .capacity = 0,
+            .len = 0,
+            .size = 0,
+            .insert_count = 0,
+            .dropped_count = 0,
+            .entries = &empty_entries,
+        },
+    },
+    .{
+        .name = "dynamic_name_ref_before_entry_exists",
+        .max_table_capacity = 220,
+        .setup_encoder_stream = "\x3f\xbd\x01",
+        .encoder_stream = "\x80\x01x",
+        .expected_error = error.InvalidDynamicIndex,
+        .table_after_error = .{
+            .capacity = 220,
+            .len = 0,
+            .size = 0,
+            .insert_count = 0,
+            .dropped_count = 0,
+            .entries = &empty_entries,
+        },
+    },
+};
+
+pub const negative_field_section_vectors = [_]NegativeFieldSectionVector{
+    .{
+        .name = "required_insert_count_not_ready",
+        .max_table_capacity = 220,
+        .field_section = "\x03\x81\x10\x11",
+        .expected_error = error.RequiredInsertCountNotReady,
+    },
+    .{
+        .name = "relative_dynamic_index_out_of_range",
+        .max_table_capacity = 220,
+        .setup_encoder_stream = b2_encoder_stream,
+        .field_section = "\x03\x00\x82",
+        .expected_error = error.InvalidDynamicIndex,
+    },
+    .{
+        .name = "post_base_dynamic_index_out_of_range",
+        .max_table_capacity = 220,
+        .setup_encoder_stream = b2_encoder_stream,
+        .field_section = "\x03\x00\x10",
+        .expected_error = error.InvalidDynamicIndex,
+    },
+    .{
+        .name = "truncated_literal_value",
+        .max_table_capacity = 220,
+        .field_section = "\x00\x00\x21a\x02b",
+        .expected_error = error.MalformedFieldSection,
+    },
+};
+
+pub const negative_decoder_feedback_vectors = [_]NegativeDecoderFeedbackVector{
+    .{
+        .name = "zero_insert_count_increment",
+        .encoded = "\x00",
+        .expected_error = error.InsertCountIncrementZero,
+    },
+    .{
+        .name = "truncated_section_ack_integer",
+        .encoded = "\xff",
+        .expected_error = error.InsufficientBytes,
     },
 };

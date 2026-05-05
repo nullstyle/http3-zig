@@ -21,3 +21,6 @@ zig build qpack-dynamic-interop
 - dynamic field-section bytes and decoded fields;
 - decoder stream feedback bytes for section acknowledgments, insert count
   increments, and stream cancellations.
+- negative vectors for truncated encoder streams, over-capacity instructions,
+  invalid dynamic references, not-ready Required Insert Count values, and
+  malformed decoder feedback.

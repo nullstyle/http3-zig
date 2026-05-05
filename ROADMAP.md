@@ -76,7 +76,7 @@ Datagrams / capsules), and the QUIC RFCs already tracked by `nullq`.
   static/literal/Huffman profile.
 - Done: dynamic-table QPACK interop fixture corpus and Zig runner for exact
   RFC 9204 Appendix B encoder stream, field-section, table-snapshot, and
-  decoder-feedback bytes.
+  decoder-feedback bytes, plus negative vectors for malformed dynamic inputs.
 - Parked: binding that dynamic-table corpus to a second implementation,
   pending quic-go/qpack dynamic-table support or an agreed alternate peer.
 
