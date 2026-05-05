@@ -158,9 +158,10 @@ just external-h3-interop
   send-budget enforcement, session event-budget and QPACK decoded-field budget
   enforcement, RFC 9204 Appendix B exact-byte
   QPACK examples for dynamic table insertion, field-section references,
-  acknowledgments, cancellations, and eviction, an opt-in dynamic QPACK
-  response header over the in-process `nullq` exchange, plus exact-byte
-  quic-go/qpack interop vectors for the shared static/literal/Huffman profile.
+  acknowledgments, cancellations, and eviction, a dedicated dynamic-table
+  QPACK fixture runner for those exact bytes, an opt-in dynamic QPACK response
+  header over the in-process `nullq` exchange, plus exact-byte quic-go/qpack
+  interop vectors for the shared static/literal/Huffman profile.
   Extended CONNECT coverage checks SETTINGS negotiation, client-side gating,
   and server-side `:protocol` request metadata. Capsule coverage includes
   DATAGRAM capsules and context-aware payloads over both QUIC DATAGRAM frames
@@ -181,6 +182,9 @@ just external-h3-interop
   policy-driven auto-cancellation.
 - `just qpack-interop` runs the optional Go-side fixture harness against
   `github.com/quic-go/qpack`.
+- `just qpack-dynamic-interop` runs the transport-free dynamic-table fixture
+  corpus for RFC 9204 Appendix B encoder streams, field sections, table
+  snapshots, and decoder feedback bytes.
 - `just fuzz-smoke` runs the transport-free codec fuzz harness across HTTP/3
   frames, SETTINGS, capsules, HTTP/3 DATAGRAM payloads, QPACK integers,
   Huffman strings, field sections, encoder/decoder stream instructions, and

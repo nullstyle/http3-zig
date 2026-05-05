@@ -50,6 +50,21 @@ pub fn build(b: *std.Build) void {
     const run_integration_tests = b.addRunArtifact(integration_tests);
     test_step.dependOn(&run_integration_tests.step);
 
+    const qpack_dynamic_interop_mod = b.createModule(.{
+        .root_source_file = b.path("interop/qpack_dynamic/runner.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    qpack_dynamic_interop_mod.addImport("null3", null3_mod);
+    const qpack_dynamic_interop_tests = b.addTest(.{ .root_module = qpack_dynamic_interop_mod });
+    const run_qpack_dynamic_interop_tests = b.addRunArtifact(qpack_dynamic_interop_tests);
+    test_step.dependOn(&run_qpack_dynamic_interop_tests.step);
+    const qpack_dynamic_interop_step = b.step(
+        "qpack-dynamic-interop",
+        "Run the dynamic-table QPACK fixture runner",
+    );
+    qpack_dynamic_interop_step.dependOn(&run_qpack_dynamic_interop_tests.step);
+
     const fuzz_codecs_mod = b.createModule(.{
         .root_source_file = b.path("fuzz/codecs_main.zig"),
         .target = target,

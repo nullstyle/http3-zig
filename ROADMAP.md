@@ -74,8 +74,11 @@ Datagrams / capsules), and the QUIC RFCs already tracked by `nullq`.
   cancellations, and eviction.
 - Done: quic-go/qpack cross-implementation fixture coverage for the shared
   static/literal/Huffman profile.
-- Parked: cross-implementation dynamic-table QPACK fixture tests, pending
-  quic-go/qpack dynamic-table support or an agreed alternate peer.
+- Done: dynamic-table QPACK interop fixture corpus and Zig runner for exact
+  RFC 9204 Appendix B encoder stream, field-section, table-snapshot, and
+  decoder-feedback bytes.
+- Parked: binding that dynamic-table corpus to a second implementation,
+  pending quic-go/qpack dynamic-table support or an agreed alternate peer.
 
 ## Phase 3: Client and Server APIs
 
