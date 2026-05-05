@@ -57,4 +57,23 @@ pub fn build(b: *std.Build) void {
     const install_curl_h3_server = b.addInstallArtifact(curl_h3_server, .{});
     const curl_h3_server_step = b.step("curl-h3-server", "Build the curl HTTP/3 interop server");
     curl_h3_server_step.dependOn(&install_curl_h3_server.step);
+
+    const loopback_get_mod = b.createModule(.{
+        .root_source_file = b.path("examples/loopback_get.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    loopback_get_mod.addImport("null3", null3_mod);
+    loopback_get_mod.addImport("nullq", nullq_mod);
+    const loopback_get = b.addExecutable(.{
+        .name = "null3-loopback-get",
+        .root_module = loopback_get_mod,
+    });
+    const install_loopback_get = b.addInstallArtifact(loopback_get, .{});
+    const loopback_get_step = b.step("example-loopback-get", "Build the in-process HTTP/3 loopback example");
+    loopback_get_step.dependOn(&install_loopback_get.step);
+
+    const run_loopback_get = b.addRunArtifact(loopback_get);
+    const run_loopback_get_step = b.step("run-example-loopback-get", "Run the in-process HTTP/3 loopback example");
+    run_loopback_get_step.dependOn(&run_loopback_get.step);
 }

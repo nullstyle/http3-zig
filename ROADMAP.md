@@ -98,12 +98,14 @@ Datagrams / capsules), and the QUIC RFCs already tracked by `nullq`.
   classification, owned lifecycle tracking, and batch completion summaries for
   applications and interop harnesses.
 - Done: optional curl HTTP/3 interop harness with localhost UDP server
-  coverage for GET, request metadata, POST echo, large upload echo,
-  multi-request connection reuse, large response, client-side cancellation,
-  response reset, connection-close-after-response, and GOAWAY.
+  coverage for GET, request metadata, status/header checks, POST echo, large
+  upload echo, multi-request connection reuse, large response, client-side
+  cancellation, response reset, connection-close-after-response, and GOAWAY.
 - Done: reusable transport driver helpers shared by the in-process tests and
   curl interop server, while keeping socket and clock ownership outside the
   library.
+- Done: compact in-process loopback example layered on the public
+  client/server, runner, and transport driver APIs.
 - Done: opt-in per-stream send-buffer backpressure caps plus send-state
   introspection for written, acknowledged, buffered, pending, and flow-blocked
   state.

@@ -10,7 +10,10 @@ curl-h3-interop:
     zig build curl-h3-server
     bash interop/curl_h3/run.sh
 
+example-loopback-get:
+    zig build run-example-loopback-get
+
 fmt:
-    zig fmt build.zig src tests interop/curl_h3
+    zig fmt build.zig src tests interop/curl_h3 examples
 
 check: fmt test

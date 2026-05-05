@@ -150,6 +150,56 @@ stop_server
 echo "PASS inspect"
 
 start_server 1
+headers_body="$WORK_DIR/headers.body"
+headers_out="$WORK_DIR/headers.out"
+if ! headers_code="$(curl_common --dump-header "$headers_out" --output "$headers_body" \
+    --write-out "%{http_code}" \
+    "https://localhost:${SERVER_PORT}/hello")"; then
+    echo "FAIL headers/status: curl request failed" >&2
+    show_server_log
+    exit 1
+fi
+if [[ "$headers_code" != "200" ]]; then
+    echo "FAIL headers/status: got status ${headers_code}" >&2
+    show_server_log
+    exit 1
+fi
+if [[ "$(cat "$headers_body")" != "hello" ]]; then
+    echo "FAIL headers/status: unexpected hello body" >&2
+    show_server_log
+    exit 1
+fi
+if ! tr -d '\r' <"$headers_out" | grep -Eiq '^x-null3-interop:[[:space:]]*curl-h3$'; then
+    echo "FAIL headers/status: missing x-null3-interop header" >&2
+    cat "$headers_out" >&2 || true
+    show_server_log
+    exit 1
+fi
+stop_server
+
+start_server 1
+not_found_body="$WORK_DIR/not-found.body"
+if ! not_found_code="$(curl_common --output "$not_found_body" \
+    --write-out "%{http_code}" \
+    "https://localhost:${SERVER_PORT}/not-found")"; then
+    echo "FAIL 404 status: curl request failed" >&2
+    show_server_log
+    exit 1
+fi
+if [[ "$not_found_code" != "404" ]]; then
+    echo "FAIL 404 status: got status ${not_found_code}" >&2
+    show_server_log
+    exit 1
+fi
+if [[ "$(cat "$not_found_body")" != "not found" ]]; then
+    echo "FAIL 404 status: unexpected body" >&2
+    show_server_log
+    exit 1
+fi
+stop_server
+echo "PASS headers/status"
+
+start_server 1
 echo_body="$(printf 'curl-post-body' | curl_common --request POST --data-binary @- "https://localhost:${SERVER_PORT}/echo")"
 if [[ "$echo_body" != "curl-post-body" ]]; then
     echo "FAIL post echo: unexpected body" >&2

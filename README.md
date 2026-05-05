@@ -25,6 +25,7 @@ event-queue budgets.
 ```sh
 mise install
 just test
+just example-loopback-get
 ```
 
 ## Design Shape
@@ -130,11 +131,14 @@ just test
   `github.com/quic-go/qpack`.
 - `just curl-h3-interop` builds a small localhost `null3` HTTP/3 server and
   drives `/opt/homebrew/opt/curl/bin/curl --http3-only` through handshake,
-  request metadata, POST echo, large upload echo, multi-request connection
-  reuse, large response, client-side cancellation, response reset,
-  connection-close-after-response, and GOAWAY scenarios.
+  request metadata, status/header checks, POST echo, large upload echo,
+  multi-request connection reuse, large response, client-side cancellation,
+  response reset, connection-close-after-response, and GOAWAY scenarios.
   The server and in-process integration tests share the reusable transport
   driver helper instead of open-coding the packet pump, and the server uses
   `ServerRunner` for request lifecycle assembly.
+- `just example-loopback-get` runs a compact in-process client/server example
+  over `TransportLoopback` with the public `Client`, `Server`,
+  `ClientRunner`, and `ServerRunner` APIs.
 
 See [ROADMAP.md](ROADMAP.md) for the production plan.
