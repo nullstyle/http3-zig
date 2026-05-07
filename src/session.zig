@@ -48,6 +48,7 @@ pub const Error = nullq.conn.state.Error ||
         InvalidPriorityTarget,
         InconsistentPushPromise,
         RequestBlockedByGoaway,
+        PushBlockedByGoaway,
         PushNotEnabled,
         PushLimitExceeded,
         DatagramNotEnabled,
@@ -567,6 +568,7 @@ pub const Session = struct {
     ) Error!LocalPush {
         if (self.role != .server) return Error.InvalidRole;
         try self.start();
+        if (!self.peerAllowsPush(self.next_push_id)) return Error.PushBlockedByGoaway;
         const push_id = try self.reservePushId();
         try self.writePushPromise(request_stream_id, push_id, promise_fields);
         const stream_id = try self.openPushStream(push_id, response_fields);
@@ -1876,6 +1878,17 @@ pub const Session = struct {
     fn peerAllowsRequest(self: *const Session, stream_id: u64) bool {
         const limit = self.peer_goaway_id orelse return true;
         return stream_id < limit;
+    }
+
+    fn peerAllowsPush(self: *const Session, push_id: u64) bool {
+        // RFC 9114 §5.2 ¶3: "Endpoints MUST NOT initiate new requests or
+        // promise new pushes on the connection after receipt of a GOAWAY
+        // frame from the peer." A client GOAWAY carries a push id (§7.2.6
+        // ¶1); pushes with id ≥ the limit are rejected by the sender of
+        // the GOAWAY (§5.2 ¶7), so the server MUST refuse new promises at
+        // or above the threshold.
+        const limit = self.peer_goaway_id orelse return true;
+        return push_id < limit;
     }
 
     fn isLocalInitiated(self: *const Session, stream_id: u64) bool {

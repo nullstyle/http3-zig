@@ -262,7 +262,12 @@ test "PRIORITY_UPDATE rejects server senders" {
     try expectLastCloseCode(&pair.client_h3, null3.protocol.ErrorCode.frame_unexpected);
 }
 
-test "PRIORITY_UPDATE rejects invalid Priority field values" {
+test "PRIORITY_UPDATE rejects structurally malformed Priority field values" {
+    // RFC 9218 §4 ¶7 says out-of-range / wrong-type parameter values
+    // MUST be silently ignored, so "u=9" no longer triggers a close.
+    // A truly malformed Structured Fields dictionary (RFC 8941 §4.2.1
+    // forbids empty member keys) still surfaces as a parse error and
+    // maps to H3_GENERAL_PROTOCOL_ERROR.
     const allocator = std.testing.allocator;
 
     var pair: H3Pair = undefined;
@@ -273,10 +278,10 @@ test "PRIORITY_UPDATE rejects invalid Priority field values" {
     try writeFrame(&pair.client, pair.client_h3.control_stream_id.?, .{
         .priority_update_request = .{
             .prioritized_element_id = 0,
-            .priority_field_value = "u=9",
+            .priority_field_value = "=42",
         },
     });
 
-    try expectPairH3Error(allocator, &pair, error.InvalidUrgency);
+    try expectPairH3Error(allocator, &pair, error.InvalidParameter);
     try expectLastCloseCode(&pair.server_h3, null3.protocol.ErrorCode.general_protocol_error);
 }

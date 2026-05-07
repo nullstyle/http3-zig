@@ -34,11 +34,11 @@
 //!   RFC9218 §4.2 ¶1      MUST     incremental is a Structured Fields boolean
 //!   RFC9218 §4   ¶?      MUST     parse a Priority field with no parameters as the defaults
 //!   RFC9218 §4   ¶?      MUST     parse "u=N" with N in 0..7
-//!   RFC9218 §4   ¶?      MUST NOT accept urgency outside 0..7
-//!   RFC9218 §4   ¶?      MUST NOT accept urgency that is not a single decimal digit
+//!   RFC9218 §4   ¶7      MUST     silently ignore an out-of-range urgency value (urgency falls back to default)
+//!   RFC9218 §4   ¶7      MUST     silently ignore a wrong-type urgency value (urgency falls back to default)
+//!   RFC9218 §4   ¶7      MUST     silently ignore a wrong-type incremental value (incremental falls back to default)
 //!   RFC9218 §4   ¶?      MUST     accept "i" as bare-true SF boolean
 //!   RFC9218 §4   ¶?      MUST     accept "i=?1" / "i=?0" as SF boolean
-//!   RFC9218 §4   ¶?      MUST NOT accept invalid SF boolean syntax for "i"
 //!   RFC9218 §8   ¶?      MUST     ignore unknown parameters in the Priority dictionary
 //!   RFC9218 §4   ¶?      MUST     parse parameters in any order
 //!   RFC9218 §4   ¶?      MUST     tolerate optional whitespace between members
@@ -60,23 +60,14 @@
 //!   RFC9218 §7.1 ¶?      MUST NOT a server send PRIORITY_UPDATE
 //!   RFC9218 §8   ¶target server MUST close with H3_ID_ERROR on PRIORITY_UPDATE for an invalid request stream id
 //!   RFC9218 §8   ¶?      server MUST close with H3_ID_ERROR on PRIORITY_UPDATE-Push when push is not enabled
-//!   RFC9218 §8   ¶?      server MUST close with H3_GENERAL_PROTOCOL_ERROR on a malformed Priority value
+//!   RFC9218 §8   ¶?      server MUST close with H3_GENERAL_PROTOCOL_ERROR on a structurally malformed Priority value
+//!   RFC9218 §4   ¶7      MUST     silently ignore an out-of-range urgency in a PRIORITY_UPDATE Priority Field Value
 //!   RFC9218 §8   ¶?      client MUST close with H3_FRAME_UNEXPECTED on receiving PRIORITY_UPDATE
 //!   RFC9218 §7   ¶?      MUST     received PRIORITY_UPDATE is reflected in priorityForRequest
 //!   RFC9218 §5   ¶?      NORMATIVE PRIORITY_UPDATE value overrides the request-header value
 //!   RFC9218 §4   ¶5      NORMATIVE priorityForRequest returns null when no Priority signal has been seen
 //!   RFC9218 §7   ¶4      NORMATIVE PRIORITY_UPDATE received before the stream opens is buffered
 //!   RFC9218 §7   ¶3      NORMATIVE empty PRIORITY_UPDATE Priority Field Value applies parameter defaults
-//!
-//! Visible debt:
-//!   RFC9218 §4   ¶7      "Unknown priority parameters, priority parameters
-//!                with out-of-range values, or values of unexpected types
-//!                MUST be ignored." null3's parser treats out-of-range
-//!                urgency (e.g. "u=8") as a hard error rather than
-//!                silently falling back to the default. §7 ¶3 makes
-//!                strict parse-failure handling a MAY at the frame
-//!                level, but the conformance gap remains for the
-//!                Priority header parser. Tracked in src/priority.zig.
 //!
 //! Out of scope here (covered elsewhere or by design):
 //!   RFC9218 §7.2 wire layout (frame-type ID, Prioritized Element ID
@@ -156,32 +147,38 @@ test "MUST accept every urgency in the 0..7 range [RFC9218 §4.1 ¶1]" {
     }
 }
 
-test "MUST NOT accept urgency outside 0..7 (digit 8) [RFC9218 §4.1 ¶1]" {
-    // §4.1 ¶1 fixes the range; the parser must reject out-of-range
-    // values. null3 surfaces this as `Error.InvalidUrgency`.
-    try std.testing.expectError(priority.Error.InvalidUrgency, Priority.parse("u=8"));
+test "MUST silently ignore an out-of-range urgency value [RFC9218 §4 ¶7]" {
+    // §4 ¶7: "Unknown priority parameters, priority parameters with
+    // out-of-range values, or values of unexpected types MUST be
+    // ignored." The receiver therefore treats `u=8`, `u=9`, etc. as if
+    // the parameter were not present and falls back to the default
+    // urgency (3) per §4.1 ¶1. The parse call itself MUST succeed.
+    const out_of_range = [_][]const u8{ "u=8", "u=9", "u=99" };
+    for (out_of_range) |raw| {
+        const p = try Priority.parse(raw);
+        try std.testing.expectEqual(@as(u3, 3), p.urgency);
+    }
 }
 
-test "MUST NOT accept urgency outside 0..7 (digit 9) [RFC9218 §4.1 ¶1]" {
-    try std.testing.expectError(priority.Error.InvalidUrgency, Priority.parse("u=9"));
+test "MUST silently ignore a wrong-type urgency value [RFC9218 §4 ¶7]" {
+    // §4 ¶7 also covers "values of unexpected types" — anything that is
+    // not a Structured Fields integer in 0..7 (a leading zero like "07"
+    // is multi-digit; "abc" / "-1" / "" are not single-digit integers).
+    // null3 silently drops the bad value and applies the default.
+    const wrong_type = [_][]const u8{ "u=07", "u=abc", "u=-1", "u=" };
+    for (wrong_type) |raw| {
+        const p = try Priority.parse(raw);
+        try std.testing.expectEqual(@as(u3, 3), p.urgency);
+    }
 }
 
-test "MUST NOT accept urgency with a leading zero (e.g. \"07\") [RFC9218 §4.1 ¶1]" {
-    // Structured Fields integers are written without leading zeros and
-    // urgency is constrained to a single 0..7 digit. "07" violates that
-    // shape — the parser must reject it.
-    try std.testing.expectError(priority.Error.InvalidUrgency, Priority.parse("u=07"));
-}
-
-test "MUST NOT accept an empty urgency value [RFC9218 §4.1 ¶1]" {
-    // "u=" with no digit cannot be in 0..7; parser rejects it.
-    try std.testing.expectError(priority.Error.InvalidUrgency, Priority.parse("u="));
-}
-
-test "MUST NOT accept a non-digit urgency value [RFC9218 §4.1 ¶1]" {
-    // Non-digit characters cannot encode an integer; the parser must
-    // reject "u=a" outright.
-    try std.testing.expectError(priority.Error.InvalidUrgency, Priority.parse("u=a"));
+test "MUST keep a previously-accepted urgency when a later out-of-range urgency is ignored [RFC9218 §4 ¶7]" {
+    // §4 ¶7 ignore rules behave "as if the parameter were not
+    // present", so a bad later value must not clobber an earlier valid
+    // one within the same dictionary. ("Last valid wins" follows from
+    // dictionary semantics; the bad value is invisible.)
+    const p = try Priority.parse("u=5, u=8");
+    try std.testing.expectEqual(@as(u3, 5), p.urgency);
 }
 
 // ---------------------------------------------------------------- §4.2 — incremental `i`
@@ -204,16 +201,24 @@ test "MUST accept \"i=?0\" as incremental=false [RFC9218 §4.2 ¶1]" {
     try std.testing.expect(!p.incremental);
 }
 
-test "MUST NOT accept a non-SF-boolean value for \"i\" [RFC9218 §4.2 ¶1]" {
-    // "i=true" is not a valid Structured Fields boolean encoding (only
-    // `?1` and `?0` are). The parser surfaces this as InvalidBoolean.
-    try std.testing.expectError(priority.Error.InvalidBoolean, Priority.parse("i=true"));
+test "MUST silently ignore a wrong-type incremental value [RFC9218 §4 ¶7]" {
+    // §4 ¶7: a value of unexpected type for `i` MUST be ignored.
+    // "i=true" and "i=1" are not Structured Fields booleans (only `?1`
+    // / `?0` / bare `i` are), so the parser drops them and the field
+    // falls back to the default incremental=false per §4.2 ¶1.
+    const wrong_type = [_][]const u8{ "i=true", "i=1", "i=?2", "i=yes" };
+    for (wrong_type) |raw| {
+        const p = try Priority.parse(raw);
+        try std.testing.expect(!p.incremental);
+    }
 }
 
-test "MUST NOT accept a numeric value for \"i\" [RFC9218 §4.2 ¶1]" {
-    // "i=1" is a Structured Fields integer, not a boolean. SF is
-    // strictly typed — the parser must reject it.
-    try std.testing.expectError(priority.Error.InvalidBoolean, Priority.parse("i=1"));
+test "MUST keep a previously-accepted incremental when a later wrong-type incremental is ignored [RFC9218 §4 ¶7]" {
+    // Twin of the urgency ignore-then-keep test: `i=?1` sets the
+    // incremental flag, the second member `i=true` is wrong-type and
+    // MUST be silently dropped, leaving incremental=true.
+    const p = try Priority.parse("i=?1, i=true");
+    try std.testing.expect(p.incremental);
 }
 
 // ---------------------------------------------------------------- §4 — dictionary parsing & ignore-unknown
@@ -613,12 +618,14 @@ test "MUST close with H3_ID_ERROR on PRIORITY_UPDATE for a server-initiated stre
     try fixture.expectLastCloseCode(&pair.server_h3, ErrorCode.id_error);
 }
 
-test "MUST close with H3_GENERAL_PROTOCOL_ERROR on PRIORITY_UPDATE with malformed Priority value [RFC9218 §8 ¶?]" {
-    // §8 ¶? Malformed Priority field values cannot be parsed by the
-    // recipient; null3 surfaces the parse error and closes the
-    // connection. The error code follows from §8 ¶? "MAY treat it as
-    // a connection error" plus null3's mapping of InvalidUrgency to
-    // H3_GENERAL_PROTOCOL_ERROR (errors_mod.codeForError fallthrough).
+test "MUST close with H3_GENERAL_PROTOCOL_ERROR on PRIORITY_UPDATE with structurally malformed Priority value [RFC9218 §8 ¶?]" {
+    // §8 ¶? A Priority field value that fails to parse as a Structured
+    // Fields dictionary cannot be applied; null3 surfaces the parse
+    // error and closes the connection. ("=42" has an empty member key,
+    // which RFC 8941 §4.2.1 forbids — distinct from §4 ¶7's "ignore
+    // out-of-range" rule, which only covers individual parameter
+    // values.) null3 maps `Error.InvalidParameter` to
+    // H3_GENERAL_PROTOCOL_ERROR via `errors_mod.codeForError`.
     const allocator = std.testing.allocator;
 
     var pair: fixture.H3Pair = undefined;
@@ -629,12 +636,40 @@ test "MUST close with H3_GENERAL_PROTOCOL_ERROR on PRIORITY_UPDATE with malforme
     try fixture.writeFrame(&pair.client, pair.client_h3.control_stream_id.?, .{
         .priority_update_request = .{
             .prioritized_element_id = 0,
-            .priority_field_value = "u=9",
+            .priority_field_value = "=42",
         },
     });
 
-    try fixture.expectPairH3Error(allocator, &pair, error.InvalidUrgency);
+    try fixture.expectPairH3Error(allocator, &pair, error.InvalidParameter);
     try fixture.expectLastCloseCode(&pair.server_h3, ErrorCode.general_protocol_error);
+}
+
+test "MUST silently ignore an out-of-range urgency in a PRIORITY_UPDATE Priority Field Value [RFC9218 §4 ¶7]" {
+    // §4 ¶7 "MUST be ignored" applies on the wire as well as in
+    // Priority headers. A peer sending PRIORITY_UPDATE with `u=9`
+    // (out-of-range urgency) must not cause a connection close —
+    // instead the urgency falls back to its default of 3 and the
+    // priority is stored. Verify this through the public observable:
+    // `priorityForRequest` reflects urgency=3 after the frame.
+    const allocator = std.testing.allocator;
+
+    var pair: fixture.H3Pair = undefined;
+    try pair.initStarted(allocator, .{}, .{});
+    defer pair.deinit();
+    try fixture.exchangePairSettings(allocator, &pair);
+
+    const request_stream_id: u64 = 0;
+    try fixture.writeFrame(&pair.client, pair.client_h3.control_stream_id.?, .{
+        .priority_update_request = .{
+            .prioritized_element_id = request_stream_id,
+            .priority_field_value = "u=9",
+        },
+    });
+    try fixture.pumpQuiet(allocator, &pair, 64);
+
+    const stored = pair.server_h3.priorityForRequest(request_stream_id) orelse return error.MissingPriority;
+    try std.testing.expectEqual(@as(u3, 3), stored.urgency);
+    try std.testing.expect(!stored.incremental);
 }
 
 test "MUST close with H3_FRAME_UNEXPECTED when a client receives PRIORITY_UPDATE [RFC9218 §7.1 ¶?]" {

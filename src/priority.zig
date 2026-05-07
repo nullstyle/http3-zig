@@ -3,6 +3,13 @@
 //! This is intentionally small: it extracts the standard `u` urgency and
 //! `i` incremental parameters from the Structured Fields dictionary form and
 //! ignores extension parameters for now.
+//!
+//! Per RFC 9218 §4 ¶7, "Unknown priority parameters, priority parameters with
+//! out-of-range values, or values of unexpected types MUST be ignored." The
+//! parser therefore silently substitutes the parameter default (urgency=3,
+//! incremental=false) when it encounters an out-of-range or wrong-typed value
+//! for `u` or `i`. Structurally malformed Structured Fields dictionaries
+//! (e.g. an empty member key) are a different layer and still error.
 
 const std = @import("std");
 
@@ -10,8 +17,6 @@ const qpack = @import("qpack/root.zig");
 
 pub const Error = error{
     InvalidParameter,
-    InvalidUrgency,
-    InvalidBoolean,
     BufferTooSmall,
 };
 
@@ -64,10 +69,18 @@ fn parseInto(out: *Priority, src: []const u8) Error!void {
         if (key.len == 0) return Error.InvalidParameter;
 
         if (std.mem.eql(u8, key, "u")) {
-            if (value.len != 1 or value[0] < '0' or value[0] > '7') return Error.InvalidUrgency;
-            out.urgency = @intCast(value[0] - '0');
+            // RFC 9218 §4 ¶7: out-of-range or wrong-type urgency values MUST
+            // be ignored — fall through to the default (urgency=3) by leaving
+            // `out.urgency` at whatever it already was (the field default
+            // when this parameter has not yet been seen, or the previously
+            // accepted in-range value otherwise — both behaviours match
+            // "as if the parameter were not present").
+            if (parseUrgency(value)) |u| out.urgency = u;
         } else if (std.mem.eql(u8, key, "i")) {
-            out.incremental = try parseSfBoolean(value);
+            // RFC 9218 §4 ¶7: a wrong-type incremental value MUST be ignored.
+            // The Structured Fields boolean type only admits the bare `i` /
+            // `i=?1` / `i=?0` shapes; anything else is silently dropped.
+            if (parseSfBoolean(value)) |b| out.incremental = b;
         } else {
             // Extension parameters are intentionally ignored by the core
             // scheduler scaffold; later phases can expose them losslessly.
@@ -75,11 +88,20 @@ fn parseInto(out: *Priority, src: []const u8) Error!void {
     }
 }
 
-fn parseSfBoolean(value: []const u8) Error!bool {
+fn parseUrgency(value: []const u8) ?u3 {
+    // §4.1 ¶1: urgency is an integer in 0..7. Anything else (multi-digit,
+    // leading zero, non-digit, empty) is "out of range" or "unexpected type"
+    // and §4 ¶7 says we MUST ignore it.
+    if (value.len != 1) return null;
+    if (value[0] < '0' or value[0] > '7') return null;
+    return @intCast(value[0] - '0');
+}
+
+fn parseSfBoolean(value: []const u8) ?bool {
     if (value.len == 0) return true;
     if (std.mem.eql(u8, value, "?1")) return true;
     if (std.mem.eql(u8, value, "?0")) return false;
-    return Error.InvalidBoolean;
+    return null;
 }
 
 test "priority parse defaults and parameters" {
@@ -99,7 +121,11 @@ test "priority parse defaults and parameters" {
     const n = try p.encode(&buf);
     try std.testing.expectEqualStrings("u=7", buf[0..n]);
 
-    try std.testing.expectError(Error.InvalidUrgency, Priority.parse("u=07"));
+    // RFC 9218 §4 ¶7: out-of-range / wrong-type urgency values are silently
+    // ignored. "u=07" has an unexpected shape (multi-digit) so the parser
+    // falls back to the default urgency (3).
+    p = try Priority.parse("u=07");
+    try std.testing.expectEqual(@as(u3, 3), p.urgency);
 }
 
 test "priority extracts Priority field lines case-insensitively" {

@@ -26,6 +26,7 @@
 //!   RFC9114 §5.2   ¶?  NORMATIVE shutdown is irrevocable once GOAWAY is sent
 //!   RFC9114 §5.2   ¶3  MUST     refuse to start a new request whose id ≥ peer GOAWAY id
 //!   RFC9114 §5.2   ¶3  MUST     allow starting a new request whose id < peer GOAWAY id
+//!   RFC9114 §5.2   ¶3  MUST NOT issue a new PUSH_PROMISE after the peer has issued a GOAWAY
 //!   RFC9114 §6.2.1 ¶6  MUST     local SETTINGS frame is shipped immediately after the control-stream type prefix
 //!   RFC9114 §6.2.1 ¶7  MUST     duplicate peer control-stream attempt closes with H3_STREAM_CREATION_ERROR
 //!   RFC9114 §6.2.1 ¶?  MUST     QPACK encoder + decoder critical streams open during start when configured
@@ -45,13 +46,7 @@
 //!   RFC9114 §10.5   ¶?  NORMATIVE Session classifies inbound CONNECTION_CLOSE error space and code
 //!
 //! Visible debt:
-//!   RFC9114 §5.2   ¶3  MUST NOT promise new pushes after a peer GOAWAY.
-//!     null3.Session.startPush does not consult `peer_goaway_id`; the
-//!     request-side analogue (peerAllowsRequest) IS enforced. The push side
-//!     of the same MUST is therefore not testable end-to-end through the
-//!     public surface today; promoting it would require an explicit
-//!     peerAllowsPush guard inside `startPush`. Tracked as a Session
-//!     surface gap.
+//!   (none)
 //!
 //! Out of scope here (covered elsewhere or by design):
 //!   RFC9114 §6.2.1 ¶6  MUST close with H3_MISSING_SETTINGS on a peer's
@@ -376,6 +371,52 @@ test "MUST allow opening a request whose stream id is below the peer GOAWAY id [
     };
     const stream_id = try pair.client_h3.openRequest(&fields);
     try std.testing.expect(stream_id < 8);
+}
+
+test "MUST NOT issue a new PUSH_PROMISE after the peer has issued a GOAWAY [RFC9114 §5.2 ¶3]" {
+    // §5.2 ¶3: "Endpoints MUST NOT initiate new requests or promise new
+    // pushes on the connection after receipt of a GOAWAY frame from the
+    // peer." A client GOAWAY carries a push id (§7.2.6 ¶1); §5.2 ¶7
+    // says "Requests or pushes with the indicated identifier or greater
+    // are rejected by the sender of the GOAWAY", so a server that
+    // observes peer_goaway_id = N MUST refuse to mint a new PUSH_PROMISE
+    // whose push id is at or above N. null3 surfaces this as
+    // `error.PushBlockedByGoaway`, mirroring the request-side
+    // `RequestBlockedByGoaway` analogue.
+    const allocator = std.testing.allocator;
+
+    var pair: fixture.H3Pair = undefined;
+    try pair.initStarted(allocator, .{ .max_push_id = 8 }, .{});
+    defer pair.deinit();
+
+    try fixture.exchangePairSettings(allocator, &pair);
+
+    // Client says: "no pushes with id ≥ 0" — i.e. nothing.
+    try fixture.writeFrame(
+        &pair.client,
+        pair.client_h3.control_stream_id.?,
+        .{ .goaway = 0 },
+    );
+    try fixture.pumpQuiet(allocator, &pair, 64);
+    try std.testing.expectEqual(@as(?u64, 0), pair.server_h3.peer_goaway_id);
+
+    const promise_fields = [_]null3.FieldLine{
+        .{ .name = ":method", .value = "GET" },
+        .{ .name = ":scheme", .value = "https" },
+        .{ .name = ":path", .value = "/blocked.css" },
+        .{ .name = ":authority", .value = "example.com" },
+    };
+    const response_fields = [_]null3.FieldLine{
+        .{ .name = ":status", .value = "200" },
+    };
+
+    // The request_stream_id is irrelevant — the GOAWAY gate fires before
+    // any stream-side validation, so the server refuses the promise even
+    // when the request stream id is well-formed.
+    try std.testing.expectError(
+        null3.session.Error.PushBlockedByGoaway,
+        pair.server_h3.startPush(0, &promise_fields, &response_fields),
+    );
 }
 
 // ---------------------------------------------------------------- §7.2.6 GOAWAY: id role/role validation (local-send side)
