@@ -394,9 +394,7 @@ pub const PendingDatagramBuffer = struct {
 pub const CapsuleRegistry = struct {
     pub const empty: CapsuleRegistry = .{};
 
-    entries: [max_registered_capsule_types]RegisteredCapsuleType = [_]RegisteredCapsuleType{
-        .{ .capsule_type = 0 },
-    } ** max_registered_capsule_types,
+    entries: [max_registered_capsule_types]RegisteredCapsuleType = @splat(.{ .capsule_type = 0 }),
     count: usize = 0,
 
     pub fn init() CapsuleRegistry {
@@ -436,9 +434,10 @@ pub const CapsuleRegistry = struct {
 };
 
 pub const ContextRegistry = struct {
-    entries: [max_registered_contexts]RegisteredContext = [_]RegisteredContext{
-        .{ .context_id = udp_context_id, .kind = .connect_udp },
-    } ** max_registered_contexts,
+    entries: [max_registered_contexts]RegisteredContext = @splat(.{
+        .context_id = udp_context_id,
+        .kind = .connect_udp,
+    }),
     count: usize = 1,
 
     pub fn init() ContextRegistry {
