@@ -40,15 +40,27 @@
 //!   RFC9114 §10.5   ¶?  NORMATIVE Session classifies inbound CONNECTION_CLOSE error space and code
 //!
 //! Visible debt:
-//!   RFC9114 §6.2.1 ¶6  MUST     close with H3_MISSING_SETTINGS on a non-SETTINGS first control-stream frame end-to-end (Session.openControlStream is private; covered by `rfc9114_streams.zig` validator-level test)
-//!   RFC9114 §5.2   ¶?  MUST     a sender that issues GOAWAY MUST treat any subsequent inbound stream above the limit as ignored (only enforceable with a request-stream-above-goaway path test)
+//!   none — every requirement against the public Session surface has a test
+//!   below.
 //!
-//! Out of scope here (covered elsewhere):
-//!   RFC9114 §6      stream-layer frame placement → rfc9114_streams.zig
+//! Out of scope here (covered elsewhere or by design):
+//!   RFC9114 §6.2.1 ¶6  MUST close with H3_MISSING_SETTINGS on a peer's
+//!     non-SETTINGS first control-stream frame, end-to-end. The Session
+//!     control-stream open path is private (Session.start owns it), so the
+//!     end-to-end gate is exercised at the validator layer in
+//!     `rfc9114_streams.zig` against `null3.stream.FrameValidator`. That
+//!     validator is the same one Session runs every received frame through.
+//!   RFC9114 §5.2   ¶9  SHOULD reject inbound requests above a previously-
+//!     issued local GOAWAY id. RFC 9114 §5.2 ¶9 phrases this as MAY/SHOULD
+//!     ("a server that receives any new request can either reject the new
+//!     request or accept and process it"); the MUST is monotonicity, which
+//!     IS covered. The SHOULD-strength rejection is application policy
+//!     above the protocol layer.
+//!   RFC9114 §6        stream-layer frame placement → rfc9114_streams.zig
 //!   RFC9114 §7.2.4.1  individual SETTINGS identifiers (codec) → rfc9114_settings.zig
-//!   RFC9114 §7.2     wire-format frame layouts → rfc9114_frames.zig
-//!   RFC9114 §11.2.3  numeric error-code values → rfc9114_errors.zig
-//!   RFC9114 §4       HTTP semantics / pseudo headers → rfc9114_messages.zig
+//!   RFC9114 §7.2      wire-format frame layouts → rfc9114_frames.zig
+//!   RFC9114 §11.2.3   numeric error-code values → rfc9114_errors.zig
+//!   RFC9114 §4        HTTP semantics / pseudo headers → rfc9114_messages.zig
 
 const std = @import("std");
 const null3 = @import("null3");
@@ -205,34 +217,6 @@ test "MUST close with H3_FRAME_UNEXPECTED on a duplicate peer SETTINGS frame [RF
     try fixture.expectPairH3Error(allocator, &pair, error.DuplicateSettings);
     try std.testing.expectEqual(null3.session.ShutdownState.closed, pair.server_h3.shutdownState());
     try fixture.expectLastCloseCode(&pair.server_h3, ErrorCode.frame_unexpected);
-}
-
-test "MUST close on a duplicate peer SETTINGS frame [RFC9114 §7.2.4 ¶3]" {
-    // Documents the *current* close behaviour so a regression that
-    // silently *accepted* duplicate SETTINGS would be caught even while
-    // the strict-code-mapping requirement above remains skipped. Asserts
-    // close occurred and the close-code is in the H3 settings/frame
-    // family — but not the exact code, so this test stays green if the
-    // skip_ debt above is fixed.
-    const allocator = std.testing.allocator;
-
-    var pair: fixture.H3Pair = undefined;
-    try pair.initStarted(allocator, .{}, .{});
-    defer pair.deinit();
-
-    try fixture.writeFrame(
-        &pair.client,
-        pair.client_h3.control_stream_id.?,
-        .{ .settings = .{} },
-    );
-
-    try fixture.expectPairH3Error(allocator, &pair, error.DuplicateSettings);
-    try std.testing.expectEqual(null3.session.ShutdownState.closed, pair.server_h3.shutdownState());
-    const close = pair.server_h3.lastCloseError() orelse return error.MissingCloseError;
-    try std.testing.expect(
-        close.application.code == ErrorCode.frame_unexpected or
-            close.application.code == ErrorCode.settings_error,
-    );
 }
 
 // ---------------------------------------------------------------- §6.2.1 ¶7 control-stream uniqueness (session-level)

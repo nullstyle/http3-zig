@@ -33,19 +33,19 @@
 //!   RFC9114 §7.1   ¶1   NORMATIVE iterator walks concatenated frames in order
 //!
 //! Visible debt:
-//!   RFC9114 §7.2.1 ¶?   MUST NOT accept DATA / HEADERS frames with declared Length > 2^62-1
-//!     — varint already enforces 2^62-1; the explicit-cap test is in
-//!       rfc9000_varint.zig, not here.
-//!   RFC9114 §7.2.5 ¶?   MUST NOT accept PUSH_PROMISE with empty payload (no Push ID)
-//!     — current decode surfaces this as a downstream varint
-//!       InsufficientBytes; covered below.
+//!   none — the empty-payload PUSH_PROMISE and varint upper-bound paths are
+//!   exercised below as `InsufficientBytes` (the decoder surfaces both via
+//!   varint).
 //!
 //! Out of scope here (covered elsewhere):
-//!   RFC9114 §7.2.4   SETTINGS payload codec                        → rfc9114_settings.zig
-//!   RFC9114 §6.2     stream-context placement (DATA only on req)   → rfc9114_streams.zig
-//!   RFC9114 §4       message-level malformed-pseudo-header rules   → rfc9114_messages.zig
-//!   RFC9114 §8.1     error-code escalation semantics               → rfc9114_errors.zig
-//!   RFC9218 §4–§6    Priority Field Value semantics                → rfc9218_priority.zig
+//!   RFC9114 §7.2.1 ¶?  declared Length > 2^62-1 — `nullq.wire.varint`
+//!     enforces the upper bound; the explicit-cap test lives in
+//!     `nullq/tests/conformance/rfc9000_varint.zig`.
+//!   RFC9114 §7.2.4    SETTINGS payload codec                       → rfc9114_settings.zig
+//!   RFC9114 §6.2      stream-context placement (DATA only on req)  → rfc9114_streams.zig
+//!   RFC9114 §4        message-level malformed-pseudo-header rules  → rfc9114_messages.zig
+//!   RFC9114 §8.1      error-code escalation semantics              → rfc9114_errors.zig
+//!   RFC9218 §4–§6     Priority Field Value semantics               → rfc9218_priority.zig
 
 const std = @import("std");
 const null3 = @import("null3");

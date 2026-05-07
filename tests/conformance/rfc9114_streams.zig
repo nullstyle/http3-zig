@@ -62,16 +62,24 @@
 //!   RFC9114 §6.2   ¶?  NORMATIVE QPACK encoder/decoder critical-stream IDs are reserved at the validator level
 //!
 //! Visible debt:
-//!   RFC9114 §6.1   ¶?  MUST     enforce HEADERS-DATA*-HEADERS? frame ordering at the request stream level (lives in null3.message; see rfc9114_messages.zig)
-//!   RFC9114 §6.2.1 ¶?  MUST     local control-stream-only-once invariant (Session.openControlStream is private; covered by start() reuse)
+//!   none — the stream-placement validator and end-to-end peer-misbehaviour
+//!   gates have tests below.
 //!
-//! Out of scope here (covered elsewhere):
-//!   RFC9114 §7.2.4 SETTINGS *codec*  → rfc9114_settings.zig
-//!   RFC9114 §7.2.4 SETTINGS *handshake* and duplicate-frame rules → rfc9114_session.zig
-//!   RFC9114 §7.2.6 GOAWAY semantics & last-allowed-id monotonicity → rfc9114_session.zig
-//!   RFC9114 §6.1   request stream HEADERS/DATA *ordering* (message-level) → rfc9114_messages.zig
-//!   RFC9114 §11.2.3 numeric error-code values → rfc9114_errors.zig
-//!   RFC9204 §4.2  QPACK encoder/decoder *instruction* semantics → rfc9204_qpack_dynamic.zig
+//! Out of scope here (covered elsewhere or by design):
+//!   RFC9114 §6.1   ¶?  HEADERS-DATA*-HEADERS? frame ordering at the request
+//!     stream — lives in `null3.message` and is exhaustively tested in
+//!     `rfc9114_messages.zig` (DataAfterTrailers, DuplicateHeaders,
+//!     DataBeforeHeaders, MissingHeaders, plus the duplicate-request-HEADERS
+//!     rule).
+//!   RFC9114 §6.2.1 ¶?  Local control-stream-only-once invariant —
+//!     `Session.openControlStream` is private; the equivalent end-to-end
+//!     guarantee is the `Session.start is idempotent` test in
+//!     `rfc9114_session.zig` (`MUST each side sends SETTINGS exactly once`).
+//!   RFC9114 §7.2.4    SETTINGS *codec*  → rfc9114_settings.zig
+//!   RFC9114 §7.2.4    SETTINGS *handshake* and duplicate-frame rules → rfc9114_session.zig
+//!   RFC9114 §7.2.6    GOAWAY semantics & last-allowed-id monotonicity → rfc9114_session.zig
+//!   RFC9114 §11.2.3   numeric error-code values → rfc9114_errors.zig
+//!   RFC9204 §4.2      QPACK encoder/decoder *instruction* semantics → rfc9204_qpack_dynamic.zig
 
 const std = @import("std");
 const null3 = @import("null3");

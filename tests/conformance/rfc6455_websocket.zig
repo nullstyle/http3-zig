@@ -52,9 +52,13 @@
 //!   RFC8.1         ¶?  MUST     close with 1007 on invalid UTF-8 (handled at message decoder)
 //!
 //! Visible debt:
-//!   RFC6455 §5.5.2 ¶?  MUST     a Pong MAY be sent unsolicited (not modelled — codec is symmetric)
+//!   none — every BCP 14 requirement against the codec has a test below.
 //!
-//! Out of scope here (covered elsewhere):
+//! Out of scope here (covered elsewhere or by design):
+//!   RFC6455 §5.5.3 ¶?  Unsolicited Pong is `MAY` strength — the encoder is
+//!     symmetric (any side can encode any opcode), so there's no behaviour
+//!     to gate. This is documented as `Pong carries optional <=125-byte
+//!     payload` in the Covered list above.
 //!   RFC9220 §3, §4   bootstrap handshake / SETTINGS_ENABLE_CONNECT_PROTOCOL → rfc9220_websocket_h3.zig
 //!   RFC9220 §4.5 ¶?  "client-side masking is not necessary in HTTP/3"        — exercised here, both
 //!                                                                             masked and unmasked paths.
