@@ -22,8 +22,10 @@
 //!   RFC6455 §5.1 ¶?  MUST       server-to-client frames are NOT masked (encode)
 //!   RFC6455 §5.1 ¶?  MUST NOT   accept an unmasked client-to-server frame (decode policy=required)
 //!   RFC6455 §5.1 ¶?  MUST NOT   accept a masked server-to-client frame (decode policy=forbidden)
+//!   RFC9220 §4.5 ¶?  MAY        accept either masked or unmasked frames under MaskPolicy.any
 //!   RFC6455 §5.2 ¶?  MUST       FIN=1 marks final frame of a message
 //!   RFC6455 §5.2 ¶?  MUST NOT   accept a frame with any of RSV1/RSV2/RSV3 set
+//!   RFC6455 §5.2 ¶?  NORMATIVE  Opcode classifier distinguishes data vs. control
 //!   RFC6455 §5.2 ¶?  MUST       payload length <= 125 fits in 7-bit length field
 //!   RFC6455 §5.2 ¶?  MUST       payload length 126..65535 uses 7+16 extended length
 //!   RFC6455 §5.2 ¶?  MUST       payload length > 65535 uses 7+64 extended length
@@ -37,7 +39,10 @@
 //!   RFC6455 §5.4 ¶?  MUST       continuation frames use opcode 0
 //!   RFC6455 §5.4 ¶?  MUST NOT   start a new data message while another is fragmented (interleaving)
 //!   RFC6455 §5.4 ¶?  MUST NOT   accept a continuation frame with no fragmented message in progress
+//!   RFC6455 §5.4 ¶?  MUST       fragmented-message state clears on FIN=1 continuation frame
+//!   RFC6455 §5.4 ¶?  MUST       reassemble a fragmented binary message
 //!   RFC6455 §5.5 ¶?  MUST NOT   send a control frame larger than 125 bytes payload
+//!   RFC6455 §5.5 ¶?  MUST       accept a control frame with payload exactly 125 bytes
 //!   RFC6455 §5.5 ¶?  MUST NOT   fragment a control frame
 //!   RFC6455 §5.5.1 ¶?  MUST     close payload of length 1 is invalid
 //!   RFC6455 §5.5.1 ¶?  MUST     close payload of length 0 is valid
@@ -46,6 +51,7 @@
 //!   RFC6455 §5.5.2 ¶?  NORMATIVE Ping carries optional <=125-byte payload
 //!   RFC6455 §5.5.3 ¶?  NORMATIVE Pong carries optional <=125-byte payload
 //!   RFC6455 §5.6   ¶?  MUST     text frames carry valid UTF-8 (data-message reassembly)
+//!   RFC6455 §5.6   ¶?  NORMATIVE message-layer Kind maps to text/binary opcodes
 //!   RFC7.4         ¶?  MUST     close codes 1000-1011 are reserved by IANA
 //!   RFC7.4         ¶?  MUST NOT use code 1015 on the wire (reserved for TLS handshake failure)
 //!   RFC7.4         ¶?  MAY      use codes 3000-3999 (registered apps) or 4000-4999 (private)
@@ -134,6 +140,28 @@ test "MAY skip masking on a WebSocket-over-HTTP/3 client frame [RFC9220 §4.5 ¶
     try std.testing.expectEqualStrings("hi", decoded.frame.payload);
 }
 
+test "MAY accept either masked or unmasked frames under MaskPolicy.any [RFC9220 §4.5 ¶?]" {
+    // The default `mask_policy = .any` is the symmetric companion to the
+    // §4.5 "masking not necessary" relaxation: the codec accepts both a
+    // masked and an unmasked frame on the same decoder configuration.
+    var buf: [32]u8 = undefined;
+
+    // Masked frame round-trips.
+    const masked_n = try frame.encodeText(&buf, "ab", .{
+        .mask = true,
+        .masking_key = .{ 0x00, 0x11, 0x22, 0x33 },
+    });
+    const masked_decoded = try frame.decode(allocator, buf[0..masked_n], .{ .mask_policy = .any });
+    defer masked_decoded.deinit(allocator);
+    try std.testing.expectEqualStrings("ab", masked_decoded.frame.payload);
+
+    // Unmasked frame on the same policy also round-trips.
+    const unmasked_n = try frame.encodeText(&buf, "cd", .{ .mask = false });
+    const unmasked_decoded = try frame.decode(allocator, buf[0..unmasked_n], .{ .mask_policy = .any });
+    defer unmasked_decoded.deinit(allocator);
+    try std.testing.expectEqualStrings("cd", unmasked_decoded.frame.payload);
+}
+
 // ---------------------------------------------------------------- §5.2 base framing protocol
 
 test "MUST set the FIN bit (high bit of byte 0) on a non-fragmented frame [RFC6455 §5.2 ¶?]" {
@@ -150,6 +178,31 @@ test "MUST NOT set the FIN bit on a non-final fragment [RFC6455 §5.2 ¶?]" {
     var buf: [8]u8 = undefined;
     _ = try frame.encode(&buf, .{ .fin = false, .opcode = .text, .payload = "x" }, .{});
     try std.testing.expectEqual(@as(u8, 0), buf[0] & 0x80);
+}
+
+test "NORMATIVE Opcode classifier distinguishes data vs. control [RFC6455 §5.2 ¶?]" {
+    // §5.2: opcodes < 0x8 are data frames; opcodes >= 0x8 are control
+    // frames. null3 exposes the distinction via `Opcode.isControl` and
+    // `Opcode.isData` — used by the codec's fragmentation and size gates.
+    // Continuation (0x0) is neither data nor control: it's the carrier of
+    // a fragmented data message.
+    try std.testing.expect(!frame.Opcode.continuation.isControl());
+    try std.testing.expect(!frame.Opcode.continuation.isData());
+
+    try std.testing.expect(!frame.Opcode.text.isControl());
+    try std.testing.expect(frame.Opcode.text.isData());
+
+    try std.testing.expect(!frame.Opcode.binary.isControl());
+    try std.testing.expect(frame.Opcode.binary.isData());
+
+    try std.testing.expect(frame.Opcode.close.isControl());
+    try std.testing.expect(!frame.Opcode.close.isData());
+
+    try std.testing.expect(frame.Opcode.ping.isControl());
+    try std.testing.expect(!frame.Opcode.ping.isData());
+
+    try std.testing.expect(frame.Opcode.pong.isControl());
+    try std.testing.expect(!frame.Opcode.pong.isData());
 }
 
 test "MUST encode the opcode in the low 4 bits of byte 0 [RFC6455 §5.2 ¶?]" {
@@ -448,6 +501,82 @@ test "MUST permit a control frame between data fragments [RFC6455 §5.4 ¶?]" {
     }
 }
 
+test "MUST clear fragmented-message state on a FIN=1 continuation frame [RFC6455 §5.4 ¶?]" {
+    // §5.4: "A fragmented message ... terminated by a single frame with
+    // the FIN bit set and an opcode of 0." After the closing fragment,
+    // the decoder is back in the idle state — a *new* unfragmented data
+    // frame is well-formed, but a continuation frame is not (because
+    // there is again no fragmented message in progress).
+    var buf: [32]u8 = undefined;
+    var pos: usize = 0;
+    pos += try frame.encode(buf[pos..], .{ .fin = false, .opcode = .text, .payload = "he" }, .{});
+    pos += try frame.encode(buf[pos..], .{ .fin = true, .opcode = .continuation, .payload = "llo" }, .{});
+    // A bare continuation here must be rejected — the previous fragmented
+    // message is already closed.
+    pos += try frame.encode(buf[pos..], .{ .fin = true, .opcode = .continuation, .payload = "x" }, .{});
+
+    var decoder = frame.Decoder.init(allocator, .{});
+    defer decoder.deinit();
+    try decoder.push(buf[0..pos]);
+
+    const first = (try decoder.next()).?;
+    defer first.deinit(allocator);
+    const second = (try decoder.next()).?;
+    defer second.deinit(allocator);
+    try std.testing.expectError(frame.Error.UnexpectedContinuation, decoder.next());
+}
+
+test "MUST permit a fresh data frame after a fragmented message has finished [RFC6455 §5.4 ¶?]" {
+    // Companion to the test above: once the fragmented message terminates
+    // with a FIN=1 continuation frame, a brand-new data frame (text or
+    // binary) is well-formed.
+    var buf: [32]u8 = undefined;
+    var pos: usize = 0;
+    pos += try frame.encode(buf[pos..], .{ .fin = false, .opcode = .text, .payload = "he" }, .{});
+    pos += try frame.encode(buf[pos..], .{ .fin = true, .opcode = .continuation, .payload = "llo" }, .{});
+    pos += try frame.encode(buf[pos..], .{ .fin = true, .opcode = .binary, .payload = "\xaa\xbb" }, .{});
+
+    var decoder = frame.Decoder.init(allocator, .{});
+    defer decoder.deinit();
+    try decoder.push(buf[0..pos]);
+
+    const f1 = (try decoder.next()).?;
+    defer f1.deinit(allocator);
+    const f2 = (try decoder.next()).?;
+    defer f2.deinit(allocator);
+    const f3 = (try decoder.next()).?;
+    defer f3.deinit(allocator);
+    try std.testing.expectEqual(frame.Opcode.binary, f3.opcode);
+    try std.testing.expect(f3.fin);
+    try std.testing.expectEqualSlices(u8, &.{ 0xaa, 0xbb }, f3.payload);
+}
+
+test "MUST reassemble a fragmented binary message at the message layer [RFC6455 §5.4 ¶?]" {
+    // §5.4 mirror for binary: the message decoder concatenates fragments
+    // into a single binary event regardless of how many fragments the
+    // message uses, and does not impose UTF-8 validation on binary.
+    var buf: [64]u8 = undefined;
+    var pos: usize = 0;
+    pos += try frame.encode(buf[pos..], .{ .fin = false, .opcode = .binary, .payload = &.{ 0x00, 0xff } }, .{});
+    pos += try frame.encode(buf[pos..], .{ .fin = false, .opcode = .continuation, .payload = &.{ 0xfe, 0x80 } }, .{});
+    pos += try frame.encode(buf[pos..], .{ .fin = true, .opcode = .continuation, .payload = &.{ 0x01, 0x02 } }, .{});
+
+    var decoder = message.Decoder.init(allocator, .{ .frame = .{ .mask_policy = .forbidden } });
+    defer decoder.deinit();
+    try decoder.push(buf[0..pos]);
+
+    const event = (try decoder.next()).?;
+    defer event.deinit(allocator);
+    switch (event) {
+        .binary => |payload| try std.testing.expectEqualSlices(
+            u8,
+            &.{ 0x00, 0xff, 0xfe, 0x80, 0x01, 0x02 },
+            payload,
+        ),
+        else => return error.UnexpectedWebSocketEvent,
+    }
+}
+
 test "MUST track FIN through a fragmented message [RFC6455 §5.4 ¶?]" {
     // The first frame has fin=false; the closing frame has fin=true.
     // The incremental Decoder reports both with their FIN flags intact.
@@ -518,6 +647,25 @@ test "MUST NOT encode a control frame with FIN clear [RFC6455 §5.5 ¶?]" {
         frame.Error.FragmentedControlFrame,
         frame.encode(&buf, .{ .fin = false, .opcode = .ping, .payload = "x" }, .{}),
     );
+}
+
+test "MUST accept a control frame with payload exactly 125 bytes [RFC6455 §5.5 ¶?]" {
+    // §5.5 boundary: 125 bytes is the maximum permitted control-frame
+    // payload. Encoder and decoder MUST accept exactly 125 bytes and
+    // reject 126+ (covered by the previous tests).
+    var payload: [125]u8 = undefined;
+    @memset(&payload, 'p');
+    var buf: [256]u8 = undefined;
+    const n = try frame.encode(&buf, .{ .opcode = .ping, .payload = &payload }, .{});
+    // Header = 2 bytes (FIN+ping, len=125); no extended length needed
+    // because 125 still fits in the 7-bit field.
+    try std.testing.expectEqual(@as(usize, 2 + 125), n);
+    try std.testing.expectEqual(@as(u8, 125), buf[1] & 0x7f);
+
+    const decoded = try frame.decode(allocator, buf[0..n], .{});
+    defer decoded.deinit(allocator);
+    try std.testing.expectEqual(frame.Opcode.ping, decoded.frame.opcode);
+    try std.testing.expectEqual(@as(usize, 125), decoded.frame.payload.len);
 }
 
 // ---------------------------------------------------------------- §5.5.1 close frame
@@ -927,6 +1075,14 @@ test "MUST cap aggregate message size when configured [RFC6455 §5.4 ¶?]" {
     defer decoder.deinit();
     try decoder.push(buf[0..pos]);
     try std.testing.expectError(message.Error.MessageTooLarge, decoder.next());
+}
+
+test "NORMATIVE message-layer Kind maps to RFC 6455 data opcodes [RFC6455 §5.6 ¶?]" {
+    // §5.6 defines the data opcodes as text=0x1 and binary=0x2. The
+    // null3 message-layer `Kind` enum projects onto exactly those two
+    // opcodes via `opcodeForKind` — there is no third data opcode.
+    try std.testing.expectEqual(frame.Opcode.text, message.opcodeForKind(.text));
+    try std.testing.expectEqual(frame.Opcode.binary, message.opcodeForKind(.binary));
 }
 
 test "MUST emit a binary message after reassembly [RFC6455 §5.4 ¶?]" {

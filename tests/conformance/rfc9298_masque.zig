@@ -30,6 +30,11 @@
 //!   RFC9298 §3.1 ¶?   MUST NOT   accept a path with empty port segment
 //!   RFC9298 §3.1 ¶?   MUST NOT   accept a path with port 0
 //!   RFC9298 §3.1 ¶?   MUST       parse percent-encoded IPv6 host (zero-compression)
+//!   RFC9298 §3.1 ¶?   MUST       connectUdpPathEncodedLen matches encodeConnectUdpPath byte count
+//!   RFC9298 §3.1 ¶?   MUST       round-trip a path with prefix that already ends with '/'
+//!   RFC9298 §3.1 ¶?   MUST       round-trip the boundary port 65535
+//!   RFC9298 §3.1 ¶?   MUST       round-trip the smallest legal port 1
+//!   RFC9298 §3.1 ¶?   MUST NOT   overrun a too-small path encode buffer
 //!   RFC9298 §3.2 ¶?   MUST       2xx response indicates the UDP tunnel is open
 //!   RFC9298 §3.3 ¶?   MUST       non-2xx response is a CONNECT-UDP failure
 //!   RFC9298 §3   ¶?   NORMATIVE  Capsule-Protocol: ?1 header is sent on a CONNECT-UDP request
@@ -38,8 +43,12 @@
 //!   RFC9298 §4   ¶?   MUST NOT   unregister the default Context ID 0
 //!   RFC9298 §4   ¶?   MUST       client-allocated context IDs are even
 //!   RFC9298 §4   ¶?   MUST       proxy-allocated context IDs are odd
+//!   RFC9298 §4   ¶?   MUST       parity classification holds for full u16 range
+//!   RFC9298 §4   ¶?   MUST       validateAllocatedContextId mirrors registry parity gate
+//!   RFC9298 §4   ¶?   MUST       register(... .connect_udp) is rejected for any non-zero id
 //!   RFC9298 §5   ¶?   MUST       HTTP Datagram payload format = Context ID (varint) + payload
 //!   RFC9298 §5   ¶?   MUST       Context ID 0 datagram payload is the unencapsulated UDP payload
+//!   RFC9298 §5   ¶?   MUST       udpPayloadEncodedLen matches encodeUdpPayload byte count
 //!   RFC9298 §5   ¶?   MUST       reject a Context ID 0 datagram whose payload exceeds the UDP cap
 //!   RFC9298 §5   ¶?   MUST       buffer datagrams for unknown contexts (deferred receive)
 //!   RFC9298 §5   ¶?   MUST       drop unknown-context datagrams when the buffer is full
@@ -47,6 +56,8 @@
 //!   RFC9298 §6   ¶?   MUST       reserved GREASE capsule type is silently ignored
 //!   RFC9298 §6   ¶?   MUST NOT   register the DATAGRAM capsule type as an extension
 //!   RFC9298 §6   ¶?   MUST NOT   register a reserved-GREASE capsule type as an extension
+//!   RFC9298 §6   ¶?   MUST NOT   register a duplicate capsule type
+//!   RFC9298 §6   ¶?   MUST       isReservedGreaseCapsuleType detects 0x29*N + 0x17 family
 //!   RFC9298 §7   ¶?   MUST NOT   accept a UDP payload exceeding the per-datagram size cap
 //!   RFC9298 §8   ¶?   MUST       map malformed/oversized datagram errors to H3_CONNECT_ERROR (0x010f)
 //!   RFC9298 §8   ¶?   MUST       acceptConnectUdp refuses a non-CONNECT-UDP request
@@ -352,6 +363,102 @@ test "MUST NOT accept a path with extra slash-separated segments after the port 
     );
 }
 
+test "MUST report connectUdpPathEncodedLen matching the encoded byte count [RFC9298 §3.1 ¶?]" {
+    // The predictor MUST equal what encodeConnectUdpPath actually
+    // writes — callers rely on it for buffer pre-allocation.
+    const target: masque.ConnectUdpTarget = .{
+        .host = "example.com",
+        .port = 443,
+    };
+    const predicted = try masque.connectUdpPathEncodedLen(masque.default_connect_udp_path_prefix, target);
+    var buf: [128]u8 = undefined;
+    const n = try masque.encodeConnectUdpPath(&buf, masque.default_connect_udp_path_prefix, target);
+    try std.testing.expectEqual(predicted, n);
+}
+
+test "MUST round-trip a path with a prefix that already ends with '/' [RFC9298 §3.1 ¶?]" {
+    // §3.1 separator handling: a prefix ending in '/' MUST NOT cause a
+    // doubled slash on encode and MUST round-trip through parse.
+    const path = try masque.allocConnectUdpPath(allocator, .{
+        .target_host = "example.com",
+        .target_port = 443,
+        .path_prefix = "/.well-known/masque/udp/",
+    });
+    defer allocator.free(path);
+    try std.testing.expectEqualStrings("/.well-known/masque/udp/example.com/443/", path);
+
+    const parsed = try masque.parseConnectUdpTarget(
+        allocator,
+        path,
+        "/.well-known/masque/udp/",
+    );
+    defer parsed.deinit(allocator);
+    try std.testing.expectEqualStrings("example.com", parsed.host);
+    try std.testing.expectEqual(@as(u16, 443), parsed.port);
+}
+
+test "MUST round-trip the boundary port 65535 [RFC9298 §3.1 ¶?]" {
+    // §3.1 inherits IANA UDP port range 1..65535. The encoder MUST
+    // accept the maximum and the parser MUST recover it.
+    const path = try masque.allocConnectUdpPath(allocator, .{
+        .target_host = "example.com",
+        .target_port = 65535,
+    });
+    defer allocator.free(path);
+    try std.testing.expectEqualStrings("/.well-known/masque/udp/example.com/65535/", path);
+    const parsed = try masque.parseConnectUdpTarget(
+        allocator,
+        path,
+        masque.default_connect_udp_path_prefix,
+    );
+    defer parsed.deinit(allocator);
+    try std.testing.expectEqual(@as(u16, 65535), parsed.port);
+}
+
+test "MUST round-trip the smallest legal port 1 [RFC9298 §3.1 ¶?]" {
+    // Smallest legal UDP port is 1; port 0 is rejected separately.
+    const path = try masque.allocConnectUdpPath(allocator, .{
+        .target_host = "example.com",
+        .target_port = 1,
+    });
+    defer allocator.free(path);
+    try std.testing.expectEqualStrings("/.well-known/masque/udp/example.com/1/", path);
+    const parsed = try masque.parseConnectUdpTarget(
+        allocator,
+        path,
+        masque.default_connect_udp_path_prefix,
+    );
+    defer parsed.deinit(allocator);
+    try std.testing.expectEqual(@as(u16, 1), parsed.port);
+}
+
+test "MUST NOT overrun a too-small path encode buffer [RFC9298 §3.1 ¶?]" {
+    // The encoder MUST surface BufferTooSmall instead of writing past
+    // the destination — callers may use a stack buffer sized to a
+    // worst-case prefix and a 4-byte port slot.
+    var tiny: [8]u8 = undefined;
+    try std.testing.expectError(
+        masque.Error.BufferTooSmall,
+        masque.encodeConnectUdpPath(&tiny, masque.default_connect_udp_path_prefix, .{
+            .host = "example.com",
+            .port = 443,
+        }),
+    );
+}
+
+test "MUST report connectUdpPathEncodedLen matching encoded byte count for percent-encoded IPv6 host [RFC9298 §3.1 ¶?]" {
+    // The predictor must include all '%XX' triples emitted by
+    // percent-encoding sub-delim characters in the host segment.
+    const target: masque.ConnectUdpTarget = .{
+        .host = "2001:db8::1",
+        .port = 443,
+    };
+    const predicted = try masque.connectUdpPathEncodedLen(masque.default_connect_udp_path_prefix, target);
+    var buf: [128]u8 = undefined;
+    const n = try masque.encodeConnectUdpPath(&buf, masque.default_connect_udp_path_prefix, target);
+    try std.testing.expectEqual(predicted, n);
+}
+
 // ---------------------------------------------------------------- §3.2 / §3.3 success / failure response
 
 test "MUST treat a 2xx response as a successful CONNECT-UDP open [RFC9298 §3.2 ¶?]" {
@@ -395,6 +502,31 @@ test "MUST refuse acceptConnectUdp on a non-CONNECT-UDP request [RFC9298 §8 ¶?
     };
     try std.testing.expect(!masque.isConnectUdpRequest(&non_connect_udp));
     try std.testing.expectError(error.NotConnectUdp, simulateNotConnectUdp(&non_connect_udp));
+}
+
+test "MUST NOT classify a CONNECT request missing the :protocol pseudo-header [RFC9298 §3 ¶?]" {
+    // §3.4 ¶2.2: ":protocol pseudo-header field SHALL be 'connect-udp'".
+    // A bare CONNECT (no :protocol) is the legacy CONNECT method and
+    // does not classify as CONNECT-UDP.
+    const fields = [_]FieldLine{
+        .{ .name = ":method", .value = "CONNECT" },
+        .{ .name = ":scheme", .value = "https" },
+        .{ .name = ":authority", .value = "proxy.example" },
+        .{ .name = ":path", .value = "/" },
+    };
+    try std.testing.expect(!masque.isConnectUdpRequest(&fields));
+    try std.testing.expectEqual(@as(?[]const u8, null), masque.requestProtocol(&fields));
+}
+
+test "MUST treat \"connect-udp\" :protocol as exact-match (case-sensitive) [RFC9298 §3 ¶?]" {
+    // §3.4 ¶2.2: the literal token MUST be "connect-udp" — RFC 9298
+    // does not permit casefolded variants because :protocol is a
+    // structured token field. The matcher must therefore reject
+    // mixed-case tokens.
+    try std.testing.expect(!masque.isProtocolToken("Connect-Udp"));
+    try std.testing.expect(!masque.isProtocolToken("CONNECT-UDP"));
+    try std.testing.expect(!masque.isProtocolToken("connect-UDP"));
+    try std.testing.expect(masque.isProtocolToken("connect-udp"));
 }
 
 fn simulateNotConnectUdp(fields: []const FieldLine) masque.Error!void {
@@ -535,6 +667,41 @@ test "MUST reject unregistering an unknown Context ID [RFC9298 §4 ¶?]" {
     try std.testing.expectError(masque.Error.UnknownContext, registry.unregister(9));
 }
 
+test "MUST refuse to register a Context ID via register(... .connect_udp) [RFC9298 §4 ¶?]" {
+    // §4: kind=connect_udp is reserved exclusively for the default
+    // Context ID 0; the public `register(id, kind)` surface must reject
+    // any explicit registration with that kind, even for an otherwise
+    // legal extension id.
+    var registry = masque.ContextRegistry.init();
+    try std.testing.expectError(
+        masque.Error.InvalidContextRegistration,
+        registry.register(2, .connect_udp),
+    );
+}
+
+test "MUST classify the largest u16 even Context ID as client-allocated [RFC9298 §4 ¶?]" {
+    // Boundary check: the parity rule applies to the entire 62-bit
+    // Context ID space, not just small values.
+    try std.testing.expectEqual(masque.ContextIdAllocator.client, try masque.contextIdAllocator(0xfffe));
+    try std.testing.expectEqual(masque.ContextIdAllocator.proxy, try masque.contextIdAllocator(0xffff));
+}
+
+test "NORMATIVE validateAllocatedContextId mirrors registerAllocatedExtension parity [RFC9298 §4 ¶?]" {
+    // Parity validation is exposed independently of the registry so
+    // callers can check before allocating storage. It MUST agree with
+    // the registry's gate.
+    try masque.validateAllocatedContextId(.client, 4);
+    try masque.validateAllocatedContextId(.proxy, 5);
+    try std.testing.expectError(
+        masque.Error.InvalidContextRegistration,
+        masque.validateAllocatedContextId(.client, 5),
+    );
+    try std.testing.expectError(
+        masque.Error.InvalidContextRegistration,
+        masque.validateAllocatedContextId(.proxy, 4),
+    );
+}
+
 // ---------------------------------------------------------------- §5 HTTP Datagram payload format
 
 test "MUST encode HTTP Datagram payload as Context ID (varint) + payload [RFC9298 §5 ¶?]" {
@@ -547,6 +714,16 @@ test "MUST encode HTTP Datagram payload as Context ID (varint) + payload [RFC929
     try std.testing.expectEqual(@as(usize, 5), n);
     try std.testing.expectEqual(@as(u8, 0), buf[0]); // Context ID 0 = single 0x00 varint
     try std.testing.expectEqualStrings("abcd", buf[1..5]);
+}
+
+test "MUST report udpPayloadEncodedLen matching the encoded byte count [RFC9298 §5 ¶?]" {
+    // The predictor MUST equal what encodeUdpPayload writes — callers
+    // rely on it for pre-allocation, so the two MUST agree byte-for-byte.
+    const payload = "packet";
+    const predicted = masque.udpPayloadEncodedLen(payload.len);
+    var buf: [16]u8 = undefined;
+    const n = try masque.encodeUdpPayload(&buf, payload);
+    try std.testing.expectEqual(predicted, n);
 }
 
 test "MUST decode HTTP Datagram payload back to its UDP payload [RFC9298 §5 ¶?]" {
@@ -655,6 +832,28 @@ test "MUST permit registering a non-reserved capsule type [RFC9298 §6 ¶?]" {
     var registry = masque.CapsuleRegistry.init();
     try registry.registerExtension(0x41);
     try std.testing.expect(registry.isKnown(0x41));
+}
+
+test "MUST validate that GREASE capsule types are detected for every N [RFC9298 §6 ¶?]" {
+    // The GREASE family is `0x29 * N + 0x17`. Verify the predicate
+    // on a sweep of N so registry policy stays consistent.
+    var n: u64 = 0;
+    while (n < 8) : (n += 1) {
+        const grease = 0x29 * n + 0x17;
+        try std.testing.expect(masque.isReservedGreaseCapsuleType(grease));
+    }
+    // Adjacent non-GREASE values MUST NOT be flagged.
+    try std.testing.expect(!masque.isReservedGreaseCapsuleType(0x18));
+    try std.testing.expect(!masque.isReservedGreaseCapsuleType(0x16));
+}
+
+test "MUST reject duplicate capsule type registration [RFC9298 §6 ¶?]" {
+    var registry = masque.CapsuleRegistry.init();
+    try registry.registerExtension(0x41);
+    try std.testing.expectError(
+        masque.Error.CapsuleTypeAlreadyRegistered,
+        registry.registerExtension(0x41),
+    );
 }
 
 test "MUST silently ignore an unknown (non-GREASE) capsule type [RFC9298 §6 ¶?]" {

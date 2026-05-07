@@ -50,6 +50,7 @@
 //!   RFC9218 §4   ¶?      MUST NOT emit "i" when incremental=false
 //!   RFC9218 §4   ¶?      MUST     encoded value re-parses to the same Priority
 //!   RFC9218 §4   ¶?      MUST NOT overrun the encode buffer
+//!   RFC9218 §11  ¶?      MUST     PRIORITY_UPDATE frame type IDs are 0xF0700 / 0xF0701
 //!   RFC9218 §7.2 ¶?      MUST     PRIORITY_UPDATE Request frame round-trips Prioritized Element ID + Priority value
 //!   RFC9218 §7.2 ¶?      MUST     PRIORITY_UPDATE Push frame round-trips Prioritized Element ID + Priority value
 //!   RFC9218 §7.2 ¶?      NORMATIVE empty Priority field value is allowed (server applies defaults)
@@ -58,14 +59,24 @@
 //!   RFC9218 §7.1 ¶?      MUST NOT send PRIORITY_UPDATE for a push id when push not enabled
 //!   RFC9218 §7.1 ¶?      MUST NOT a server send PRIORITY_UPDATE
 //!   RFC9218 §8   ¶target server MUST close with H3_ID_ERROR on PRIORITY_UPDATE for an invalid request stream id
+//!   RFC9218 §8   ¶?      server MUST close with H3_ID_ERROR on PRIORITY_UPDATE-Push when push is not enabled
 //!   RFC9218 §8   ¶?      server MUST close with H3_GENERAL_PROTOCOL_ERROR on a malformed Priority value
 //!   RFC9218 §8   ¶?      client MUST close with H3_FRAME_UNEXPECTED on receiving PRIORITY_UPDATE
 //!   RFC9218 §7   ¶?      MUST     received PRIORITY_UPDATE is reflected in priorityForRequest
 //!   RFC9218 §5   ¶?      NORMATIVE PRIORITY_UPDATE value overrides the request-header value
+//!   RFC9218 §4   ¶5      NORMATIVE priorityForRequest returns null when no Priority signal has been seen
+//!   RFC9218 §7   ¶4      NORMATIVE PRIORITY_UPDATE received before the stream opens is buffered
+//!   RFC9218 §7   ¶3      NORMATIVE empty PRIORITY_UPDATE Priority Field Value applies parameter defaults
 //!
 //! Visible debt:
-//!   none — every requirement against `null3.priority` and the
-//!   PRIORITY_UPDATE send/receive paths has a test below.
+//!   RFC9218 §4   ¶7      "Unknown priority parameters, priority parameters
+//!                with out-of-range values, or values of unexpected types
+//!                MUST be ignored." null3's parser treats out-of-range
+//!                urgency (e.g. "u=8") as a hard error rather than
+//!                silently falling back to the default. §7 ¶3 makes
+//!                strict parse-failure handling a MAY at the frame
+//!                level, but the conformance gap remains for the
+//!                Priority header parser. Tracked in src/priority.zig.
 //!
 //! Out of scope here (covered elsewhere or by design):
 //!   RFC9218 §7.2 wire layout (frame-type ID, Prioritized Element ID
@@ -77,6 +88,13 @@
 //!                via the FrameValidator suite.
 //!   RFC9218 §6   PRIORITY_UPDATE frame ack/observability — internal to
 //!                null3's tracing layer, not an interop requirement.
+//!   RFC9218 §9   Scheduling policy — RFC explicitly leaves the policy
+//!                to the implementation; nothing to lock down here.
+//!   RFC9218 §12  "Priority signals MUST NOT leak application data" —
+//!                generally not testable: the priority signal is
+//!                application data by definition, and the rule is a
+//!                cross-cutting design constraint rather than an
+//!                observable behavior at any single API surface.
 
 const std = @import("std");
 const null3 = @import("null3");
@@ -365,6 +383,18 @@ test "MUST NOT overrun the encode buffer [RFC9218 §4]" {
     try std.testing.expectError(priority.Error.BufferTooSmall, p.encode(&tiny));
 }
 
+// ---------------------------------------------------------------- §11 — IANA-assigned frame type IDs
+
+test "MUST register PRIORITY_UPDATE frame type IDs as 0xF0700 / 0xF0701 [RFC9218 §11 ¶?]" {
+    // IANA "HTTP/3 Frame Types" registry (RFC 9218 §11; §7.2 ¶1):
+    // 0xF0700 → PRIORITY_UPDATE Request, 0xF0701 → PRIORITY_UPDATE Push.
+    // null3 mirrors these in `protocol.FrameType.priority_update_*`
+    // and the codec dispatches on these values; pin them so an
+    // accidental constant edit is caught at conformance time.
+    try std.testing.expectEqual(@as(u64, 0xF0700), protocol.FrameType.priority_update_request);
+    try std.testing.expectEqual(@as(u64, 0xF0701), protocol.FrameType.priority_update_push);
+}
+
 // ---------------------------------------------------------------- §7.2 — PRIORITY_UPDATE wire round-trip (semantic view)
 
 test "MUST round-trip PRIORITY_UPDATE Request frame (Prioritized Element ID + Priority Field Value) [RFC9218 §7.2 ¶?]" {
@@ -629,6 +659,30 @@ test "MUST close with H3_FRAME_UNEXPECTED when a client receives PRIORITY_UPDATE
     try fixture.expectLastCloseCode(&pair.client_h3, ErrorCode.frame_unexpected);
 }
 
+test "MUST close with H3_ID_ERROR on PRIORITY_UPDATE-Push when push is not enabled [RFC9218 §8 ¶?]" {
+    // §8 ¶? Server-side companion of `validatePriorityPushId`: if a
+    // client sends a PRIORITY_UPDATE Push frame for a push id that
+    // exceeds the server-known MAX_PUSH_ID (or no MAX_PUSH_ID has been
+    // received), the server MUST close with H3_ID_ERROR. We craft the
+    // frame directly because the client API would refuse to emit it.
+    const allocator = std.testing.allocator;
+
+    var pair: fixture.H3Pair = undefined;
+    try pair.initStarted(allocator, .{}, .{});
+    defer pair.deinit();
+    try fixture.exchangePairSettings(allocator, &pair);
+
+    try fixture.writeFrame(&pair.client, pair.client_h3.control_stream_id.?, .{
+        .priority_update_push = .{
+            .prioritized_element_id = 0,
+            .priority_field_value = "u=2",
+        },
+    });
+
+    try fixture.expectPairH3Error(allocator, &pair, error.InvalidPriorityTarget);
+    try fixture.expectLastCloseCode(&pair.server_h3, ErrorCode.id_error);
+}
+
 // ---------------------------------------------------------------- §5 / §7 — applied priority
 
 test "MUST reflect a received PRIORITY_UPDATE in priorityForRequest [RFC9218 §7 ¶?]" {
@@ -701,4 +755,82 @@ test "NORMATIVE PRIORITY_UPDATE value overrides a Priority request header [RFC92
 
     const stored = pair.server_h3.priorityForRequest(request_stream_id) orelse return error.MissingPriority;
     try std.testing.expectEqual(@as(u3, 2), stored.urgency);
+}
+
+test "NORMATIVE priorityForRequest returns null when no Priority signal has been seen [RFC9218 §4 ¶5]" {
+    // §4 ¶5: "When receiving an HTTP request that does not carry these
+    // priority parameters, a server SHOULD act as if their default
+    // values were specified." null3 lets the caller distinguish "no
+    // signal" from "explicit default" by returning null from
+    // `priorityForRequest` when neither a Priority header nor a
+    // PRIORITY_UPDATE has touched the stream id — the application
+    // chooses how to apply defaults.
+    const allocator = std.testing.allocator;
+
+    var pair: fixture.H3Pair = undefined;
+    try pair.initStarted(allocator, .{}, .{});
+    defer pair.deinit();
+    try fixture.exchangePairSettings(allocator, &pair);
+
+    try std.testing.expect(pair.server_h3.priorityForRequest(0) == null);
+}
+
+test "NORMATIVE server buffers PRIORITY_UPDATE received before the stream is open [RFC9218 §7 ¶4]" {
+    // §7 ¶4: "A client MAY send a PRIORITY_UPDATE frame before the
+    // stream that it references is open." §7.4 ¶2: "Servers SHOULD
+    // buffer the most recently received PRIORITY_UPDATE frame and
+    // apply it once the referenced stream is opened." null3's
+    // `request_priorities` map is keyed on stream id, so the priority
+    // is recorded immediately and remains visible via
+    // `priorityForRequest` regardless of whether the stream has
+    // arrived. We verify by sending PRIORITY_UPDATE for stream id 4
+    // (a valid client-initiated bidi id) without ever opening that
+    // stream and observing the stored value.
+    const allocator = std.testing.allocator;
+
+    var pair: fixture.H3Pair = undefined;
+    try pair.initStarted(allocator, .{}, .{});
+    defer pair.deinit();
+    try fixture.exchangePairSettings(allocator, &pair);
+
+    const future_stream_id: u64 = 4;
+    try pair.client_h3.sendPriorityUpdateForRequest(future_stream_id, .{
+        .urgency = 0,
+        .incremental = true,
+    });
+    try fixture.pumpQuiet(allocator, &pair, 64);
+
+    const stored = pair.server_h3.priorityForRequest(future_stream_id) orelse return error.MissingPriority;
+    try std.testing.expectEqual(@as(u3, 0), stored.urgency);
+    try std.testing.expect(stored.incremental);
+}
+
+test "NORMATIVE empty PRIORITY_UPDATE Priority Field Value applies the parameter defaults [RFC9218 §7 ¶3]" {
+    // §7 ¶3: "A PRIORITY_UPDATE frame communicates a complete set of
+    // all priority parameters in the Priority Field Value field.
+    // Omitting a priority parameter is a signal to use its default
+    // value." An empty Priority Field Value omits every parameter, so
+    // the receiver MUST apply the defaults from §4.1 (urgency=3) and
+    // §4.2 (incremental=false). We craft the frame on the wire (the
+    // `Priority.encode` helper always emits "u=N") and then observe
+    // `priorityForRequest`.
+    const allocator = std.testing.allocator;
+
+    var pair: fixture.H3Pair = undefined;
+    try pair.initStarted(allocator, .{}, .{});
+    defer pair.deinit();
+    try fixture.exchangePairSettings(allocator, &pair);
+
+    const request_stream_id: u64 = 0;
+    try fixture.writeFrame(&pair.client, pair.client_h3.control_stream_id.?, .{
+        .priority_update_request = .{
+            .prioritized_element_id = request_stream_id,
+            .priority_field_value = "",
+        },
+    });
+    try fixture.pumpQuiet(allocator, &pair, 64);
+
+    const stored = pair.server_h3.priorityForRequest(request_stream_id) orelse return error.MissingPriority;
+    try std.testing.expectEqual(@as(u3, 3), stored.urgency);
+    try std.testing.expect(!stored.incremental);
 }

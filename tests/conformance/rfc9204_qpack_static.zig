@@ -20,6 +20,7 @@
 //!                     into the prefix; cites RFC7541 §5.1.
 //!   RFC9204 §4.1.1 ¶2 NORMATIVE prefixed-integer continuation bytes
 //!                     for values >= (1 << prefix_bits) - 1.
+//!   RFC9204 §4.1.1 ¶2 MUST     decoder accepts integers up to 62 bits.
 //!   RFC9204 §4.1.1    MUST decoder rejects a continuation that would
 //!                     overflow u64.
 //!   RFC9204 §4.1.1    MUST decoder rejects a truncated continuation.
@@ -63,6 +64,8 @@
 //!                     (incorporated by RFC9204 §4.1.1).
 //!   RFC7541 Appx B    NORMATIVE Huffman encoder/decoder round-trips
 //!                     for selected RFC examples and edge symbols.
+//!   RFC7541 Appx B    NORMATIVE Huffman codec round-trips every
+//!                     individual byte symbol (0x00..0xff).
 //!   RFC7541 Appx B    MUST    Huffman decoder rejects the EOS symbol.
 //!   RFC7541 Appx B    MUST    Huffman decoder rejects padding longer
 //!                     than 7 bits.
@@ -155,6 +158,20 @@ test "NORMATIVE round-trip a large multi-byte prefixed integer [RFC9204 §4.1.1 
     // (28 bits past the prefix limit) round-trips cleanly.
     var buf: [16]u8 = undefined;
     const value: u64 = 0x0FFF_FFFF;
+    const n = try integer.encode(&buf, 5, 0, value);
+    try std.testing.expect(n > 1);
+    const decoded = try integer.decode(buf[0..n], 5);
+    try std.testing.expectEqual(value, decoded.value);
+    try std.testing.expectEqual(n, decoded.bytes_read);
+}
+
+test "MUST decode prefixed integers up to 62 bits long [RFC9204 §4.1.1 ¶2]" {
+    // RFC 9204 §4.1.1 ¶2: "QPACK implementations MUST be able to decode
+    // integers up to and including 62 bits long." Drive a 62-bit value
+    // (within the QUIC varint upper bound) through the codec to prove
+    // the decoder accepts the full mandated range.
+    var buf: [16]u8 = undefined;
+    const value: u64 = (@as(u64, 1) << 62) - 1;
     const n = try integer.encode(&buf, 5, 0, value);
     try std.testing.expect(n > 1);
     const decoded = try integer.decode(buf[0..n], 5);
@@ -407,6 +424,23 @@ test "MUST reject a destination buffer too small for a Huffman-encoded string [R
         huffman.Error.BufferTooSmall,
         huffman.encode(&buf, "abcdefghij"),
     );
+}
+
+test "NORMATIVE Huffman codec round-trips every individual byte symbol [RFC7541 Appx B]" {
+    // RFC 7541 Appendix B assigns a code to every value in 0..255. The
+    // QPACK codec inherits that table (RFC 9204 §4.1.2). Drive every
+    // single-byte input through encode/decode to prove every symbol is
+    // emitted and recovered correctly across the byte boundary packing.
+    var buf: [16]u8 = undefined;
+    var symbol: u16 = 0;
+    while (symbol < 256) : (symbol += 1) {
+        const input = [_]u8{@intCast(symbol)};
+        const n = try huffman.encode(&buf, &input);
+        try std.testing.expectEqual(huffman.encodedLen(&input), n);
+        const decoded = try huffman.decode(std.testing.allocator, buf[0..n]);
+        defer std.testing.allocator.free(decoded);
+        try std.testing.expectEqualSlices(u8, &input, decoded);
+    }
 }
 
 // ---------------------------------------------------------------- §3.1 / §4.5.2 field section prefix (Required Insert Count = 0)

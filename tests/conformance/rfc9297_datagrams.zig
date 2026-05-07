@@ -45,7 +45,11 @@
 //!   RFC9297 §2.2   ¶?     MUST     decode of empty payload yields zero-length body
 //!   RFC9297 §2.2   ¶?     MUST     decode rejects empty input
 //!   RFC9297 §2.2   ¶?     MUST NOT overflow the encode buffer
+//!   RFC9297 §2.2   ¶?     MUST     encodedLen rejects non-bidi stream id (mirror of encode)
+//!   RFC9297 §2.2   ¶?     MUST     multi-byte Quarter-Stream-ID round-trips through encode/decode
+//!   RFC9297 §2.2   ¶ctx   NORMATIVE encodedLenWithContext matches encodeWithContext byte count
 //!   RFC9297 §2     ¶?     MUST     transport DATAGRAM payload size cap is enforced via QUIC max_datagram_frame_size
+//!   RFC9297 §2     ¶?     MUST     context-encoded DATAGRAM size cap is enforced via QUIC max_datagram_frame_size
 //!   RFC9297 §2     ¶?     MUST     server received DATAGRAM is dispatched to the right stream
 //!   RFC9297 §2     ¶?     MUST     malformed HTTP/3 DATAGRAM closes with H3_DATAGRAM_ERROR
 //!   RFC9297 §2.2   ¶ctx   NORMATIVE Context-ID is a varint immediately after the Quarter-Stream-ID
@@ -56,7 +60,10 @@
 //!   RFC9297 §3     ¶?     MUST NOT decode a capsule whose Length exceeds the remaining input
 //!   RFC9297 §3     ¶?     MUST     iterator walks consecutive capsules in order
 //!   RFC9297 §3.2   ¶1     MUST     receivers tolerate unknown capsule types as opaque value bytes
-//!   RFC9297 §3.2   ¶1     MUST     receivers tolerate GREASE capsule types (0x1f * N + 0x21)
+//!   RFC9297 §3.2   ¶1     MUST     receivers tolerate single-byte GREASE capsule types (0x29*N + 0x17)
+//!   RFC9297 §9     ¶?     MUST     receivers tolerate multi-byte GREASE capsule types
+//!   RFC9297 §3     ¶?     MUST     iterator bytes_read accounts for type+length+value of each capsule
+//!   RFC9297 §3     ¶?     MUST     iterator boundary is correct between a zero-length capsule and the next
 //!   RFC9297 §3     ¶?     MUST     empty-value capsule is legal (length 0)
 //!   RFC9297 §3     ¶?     NORMATIVE encodedLen matches the encoded byte count
 //!   RFC9297 §4     ¶?     NORMATIVE capsules ride inside HTTP/3 DATA frames on the request stream
@@ -319,6 +326,34 @@ test "MUST report encodedLen matching the encoded byte count [RFC9297 §2.2 ¶1]
     const predicted = try datagram.encodedLen(8, 6);
     var buf: [16]u8 = undefined;
     const n = try datagram.encode(&buf, 8, "abcdef");
+    try std.testing.expectEqual(predicted, n);
+}
+
+test "MUST reject encodedLen for a non-bidirectional stream id [RFC9297 §2.2 ¶1]" {
+    // The predictor must mirror encode's rejection of stream ids whose
+    // low 2 bits are non-zero (i.e. not client-initiated bidirectional).
+    try std.testing.expectError(error.InvalidDatagramStream, datagram.encodedLen(1, 4));
+}
+
+test "MUST round-trip a multi-byte Quarter-Stream-ID through encode/decode [RFC9297 §2.2 ¶1]" {
+    // Stream id 256 → Quarter-Stream-ID = 64, which is the smallest value
+    // that requires the 2-byte QUIC varint form. The codec MUST handle
+    // multi-byte Quarter-Stream-IDs without truncation.
+    var buf: [32]u8 = undefined;
+    const stream_id: u64 = 256;
+    const n = try datagram.encode(&buf, stream_id, "wide");
+    try std.testing.expect(n >= 2 + 4); // 2-byte varint + 4-byte body
+    const got = try datagram.decode(buf[0..n]);
+    try std.testing.expectEqual(stream_id, got.stream_id);
+    try std.testing.expectEqualStrings("wide", got.payload);
+}
+
+test "MUST round-trip encodedLenWithContext through encodeWithContext [RFC9297 §2.2 ¶1]" {
+    // The two-layer predictor (Quarter-Stream-ID + Context ID + payload)
+    // MUST agree byte-for-byte with what encodeWithContext writes.
+    const predicted = try datagram.encodedLenWithContext(8, 64, 5);
+    var buf: [32]u8 = undefined;
+    const n = try datagram.encodeWithContext(&buf, 8, 64, "abcde");
     try std.testing.expectEqual(predicted, n);
 }
 
@@ -597,13 +632,14 @@ test "MUST tolerate an unknown capsule type as opaque value bytes [RFC9297 §3.2
     try std.testing.expectEqualStrings("vendor-data", got.capsule.value);
 }
 
-test "MUST tolerate a GREASE capsule type (0x21 = 0x1f * 0 + 0x21) [RFC9297 §3.2 ¶1]" {
-    // RFC 9297 §3.2 + RFC 8701: GREASE values exist to exercise
-    // unknown-type tolerance. The smallest GREASE id is 0x21.
+test "MUST tolerate a GREASE capsule type (0x17 = 0x29 * 0 + 0x17) [RFC9297 §3.2 ¶1]" {
+    // RFC 9297 §9 IANA Considerations + §3.2: GREASE values of the form
+    // `0x29 * N + 0x17` are reserved to exercise unknown-type tolerance.
+    // The smallest GREASE id is 0x17 (N = 0).
     var buf: [32]u8 = undefined;
-    const n = try capsule.encode(&buf, 0x21, "grease");
+    const n = try capsule.encode(&buf, 0x17, "grease");
     const got = try capsule.decode(buf[0..n]);
-    try std.testing.expectEqual(@as(u64, 0x21), got.capsule.capsule_type);
+    try std.testing.expectEqual(@as(u64, 0x17), got.capsule.capsule_type);
     try std.testing.expect(!got.capsule.isDatagram());
     try std.testing.expectEqualStrings("grease", got.capsule.value);
 }
@@ -635,6 +671,53 @@ test "MUST decode a Capsule with a multi-byte type varint [RFC9297 §3 ¶?]" {
     const got = try capsule.decode(buf[0..n]);
     try std.testing.expectEqual(@as(u64, 64), got.capsule.capsule_type);
     try std.testing.expectEqualStrings("x", got.capsule.value);
+}
+
+test "MUST tolerate a multi-byte GREASE capsule type (0x29 * 3 + 0x17 = 0x92) [RFC9297 §9 ¶?]" {
+    // RFC 9297 §9: the IANA registry reserves the family
+    // `0x29 * N + 0x17` for GREASE; codec must round-trip them as
+    // opaque values regardless of N. N=3 yields 0x92, the smallest
+    // GREASE id beyond the 1-byte varint range.
+    var buf: [32]u8 = undefined;
+    const grease: u64 = 0x29 * 3 + 0x17;
+    const n = try capsule.encode(&buf, grease, "g");
+    const got = try capsule.decode(buf[0..n]);
+    try std.testing.expectEqual(grease, got.capsule.capsule_type);
+    try std.testing.expect(!got.capsule.isDatagram());
+    try std.testing.expectEqualStrings("g", got.capsule.value);
+}
+
+test "MUST advance the iterator pos by the encoded length of each capsule [RFC9297 §3 ¶?]" {
+    // §3.3 ¶2 implicit invariant: each capsule occupies exactly the
+    // bytes its TLV declares — the iterator's bytes_read MUST equal
+    // type-varint + length-varint + value-bytes for every step.
+    var buf: [64]u8 = undefined;
+    var pos: usize = 0;
+    pos += try capsule.encode(buf[pos..], capsule.Type.datagram, "abc"); // 1+1+3 = 5
+    pos += try capsule.encode(buf[pos..], 0x40, "de"); // 2+1+2 = 5
+    var it = capsule.iter(buf[0..pos]);
+    const a = (try it.next()).?;
+    try std.testing.expectEqual(@as(usize, 5), a.bytes_read);
+    const b = (try it.next()).?;
+    try std.testing.expectEqual(@as(usize, 5), b.bytes_read);
+}
+
+test "MUST NOT misparse a Capsule whose Length is 0 followed by trailing bytes [RFC9297 §3 ¶?]" {
+    // A zero-length capsule consumes only its type+length prefix; the
+    // following bytes are a *separate* capsule, not part of the value.
+    // Verify the iterator detects the boundary.
+    var buf: [16]u8 = undefined;
+    var pos: usize = 0;
+    pos += try capsule.encode(buf[pos..], capsule.Type.datagram, ""); // 0x00 0x00
+    pos += try capsule.encode(buf[pos..], 0x29, "x"); // 0x29 0x01 'x'
+    var it = capsule.iter(buf[0..pos]);
+    const first = (try it.next()).?;
+    try std.testing.expect(first.capsule.isDatagram());
+    try std.testing.expectEqual(@as(usize, 0), first.capsule.value.len);
+    try std.testing.expectEqual(@as(usize, 2), first.bytes_read);
+    const second = (try it.next()).?;
+    try std.testing.expectEqual(@as(u64, 0x29), second.capsule.capsule_type);
+    try std.testing.expectEqualStrings("x", second.capsule.value);
 }
 
 // ---------------------------------------------------------------- §4 — Capsule over HTTP/3 DATA frame
@@ -676,6 +759,29 @@ test "MUST register H3_DATAGRAM_ERROR at code 0x33 [RFC9297 §5.1 ¶1]" {
 }
 
 // ---------------------------------------------------------------- §2 — sender-side payload size cap
+
+test "MUST refuse to send an HTTP/3 DATAGRAM whose context-encoded length exceeds the QUIC cap [RFC9297 §2 ¶?]" {
+    // sendDatagramWithContext shares the same QUIC cap path; an oversized
+    // context-id payload must surface DatagramTooLarge before any frame
+    // hits the wire. Combined varint+payload exceeds the 1200-byte
+    // max_datagram_frame_size set by the fixture.
+    const allocator = std.testing.allocator;
+
+    var pair: fixture.H3Pair = undefined;
+    try pair.initStarted(
+        allocator,
+        .{ .settings = .{ .h3_datagram = true } },
+        .{ .settings = .{ .h3_datagram = true } },
+    );
+    defer pair.deinit();
+    try fixture.exchangePairSettings(allocator, &pair);
+
+    const oversized: [1199]u8 = @splat('C'); // 1 + 1 + 1199 > 1200
+    try std.testing.expectError(
+        error.DatagramTooLarge,
+        pair.client_h3.sendDatagramWithContext(0, 0, &oversized),
+    );
+}
 
 test "MUST refuse to send an HTTP/3 DATAGRAM larger than the QUIC max_datagram_frame_size [RFC9297 §2 ¶?]" {
     // §2 ¶?: HTTP/3 DATAGRAMs ride inside QUIC DATAGRAM frames; the

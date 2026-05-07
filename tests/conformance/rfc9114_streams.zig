@@ -19,6 +19,7 @@
 //! ## Coverage
 //!
 //! Covered:
+//!   RFC9114 §6.1   ¶3  MUST     reject a server-initiated bidi stream observed by a client as H3_STREAM_CREATION_ERROR
 //!   RFC9114 §6.1   ¶?  MUST     reject GOAWAY observed on a request stream as H3_FRAME_UNEXPECTED
 //!   RFC9114 §6.1   ¶?  MUST     reject SETTINGS observed on a request stream as H3_FRAME_UNEXPECTED
 //!   RFC9114 §6.1   ¶?  MUST     reject CANCEL_PUSH observed on a request stream as H3_FRAME_UNEXPECTED
@@ -29,6 +30,8 @@
 //!   RFC9114 §6.2   ¶3  MUST     classify stream type 0x01 as push
 //!   RFC9114 §6.2   ¶3  MUST     classify stream type 0x02 as the QPACK encoder stream
 //!   RFC9114 §6.2   ¶3  MUST     classify stream type 0x03 as the QPACK decoder stream
+//!   RFC9114 §6.2   ¶10 MUST     tolerate a peer-initiated unidirectional stream that is reset before its stream-type byte
+//!   RFC9114 §6.2   ¶10 MUST     tolerate a peer-initiated unidirectional stream FIN before its stream-type byte
 //!   RFC9114 §6.2.1 ¶3  MUST     reject HEADERS observed on the control stream as H3_FRAME_UNEXPECTED
 //!   RFC9114 §6.2.1 ¶3  MUST     reject DATA observed on the control stream as H3_FRAME_UNEXPECTED
 //!   RFC9114 §6.2.1 ¶3  MUST     reject PUSH_PROMISE observed on the control stream as H3_FRAME_UNEXPECTED
@@ -40,7 +43,7 @@
 //!   RFC9114 §6.2.1 ¶8  MUST     reject FIN on the QPACK encoder stream as H3_CLOSED_CRITICAL_STREAM
 //!   RFC9114 §6.2.1 ¶8  MUST     reject FIN on the QPACK decoder stream as H3_CLOSED_CRITICAL_STREAM
 //!   RFC9114 §6.2.2 ¶?  MUST     reject a peer push stream observed by a server as H3_STREAM_CREATION_ERROR
-//!   RFC9114 §6.2.2 ¶?  MUST     reject duplicate Push IDs observed by a client as H3_ID_ERROR
+//!   RFC9114 §6.2.2 ¶6  MUST     reject a second push stream that reuses a Push ID as H3_ID_ERROR
 //!   RFC9114 §6.2.2 ¶?  MUST     reject a Push ID above the advertised MAX_PUSH_ID as H3_ID_ERROR
 //!   RFC9114 §6.2.2 ¶?  MUST     reject a push stream when MAX_PUSH_ID is unset as H3_ID_ERROR
 //!   RFC9114 §6.2.3 ¶?  MUST NOT consider a reserved (unknown) unidirectional stream type a connection error
@@ -53,6 +56,10 @@
 //!   RFC9114 §7.2   ¶?  MUST     allow CANCEL_PUSH on the control stream
 //!   RFC9114 §7.2   ¶?  MUST     allow MAX_PUSH_ID on the control stream
 //!   RFC9114 §7.2   ¶?  MUST     allow PRIORITY_UPDATE on the control stream
+//!   RFC9114 §7.2.5 ¶?  MUST     close with H3_FRAME_UNEXPECTED on PUSH_PROMISE on the control stream
+//!   RFC9114 §7.2.7 ¶?  MUST     close with H3_FRAME_UNEXPECTED on MAX_PUSH_ID on a request stream
+//!   RFC9114 §7.2.8 ¶3  MUST     reject HTTP/2 PRIORITY (0x02) end-to-end on the control stream
+//!   RFC9114 §7.2.8 ¶3  MUST     reject HTTP/2 CONTINUATION (0x09) end-to-end on a request stream
 //!   RFC9114 §7.2.8 ¶?  MUST     reject DATA observed on a push stream's first frame as H3_FRAME_UNEXPECTED
 //!   RFC9114 §7.2.8 ¶?  MUST     reject SETTINGS observed on a push stream as H3_FRAME_UNEXPECTED
 //!   RFC9114 §7.2.8 ¶?  MUST     reject GOAWAY observed on a push stream as H3_FRAME_UNEXPECTED
@@ -755,4 +762,191 @@ test "MUST close with H3_CLOSED_CRITICAL_STREAM when the peer closes the QPACK d
 
     try fixture.expectPairH3Error(allocator, &pair, error.ClosedCriticalStream);
     try fixture.expectLastCloseCode(&pair.server_h3, ErrorCode.closed_critical_stream);
+}
+
+// ---------------------------------------------------------------- §6.1 server-initiated bidi rejection
+
+test "MUST close with H3_STREAM_CREATION_ERROR when a server-initiated bidi stream is observed [RFC9114 §6.1 ¶3]" {
+    // §6.1 ¶3: "Clients MUST treat receipt of a server-initiated
+    // bidirectional stream as a connection error of type
+    // H3_STREAM_CREATION_ERROR unless such an extension has been
+    // negotiated." null3.Session enforces this symmetrically — any
+    // session whose role disagrees with a bidi stream's
+    // client-initiated bit raises Error.UnexpectedStream, which maps
+    // to H3_STREAM_CREATION_ERROR. Stream id 1 has the "server-
+    // initiated bidi" id pattern (low bits 0b01); injecting it via
+    // the server's own openBidi proves the gate fires before any
+    // payload is delivered to the client.
+    const allocator = std.testing.allocator;
+
+    var pair: fixture.H3Pair = undefined;
+    try pair.initStarted(allocator, .{}, .{});
+    defer pair.deinit();
+
+    _ = try pair.server.openBidi(1);
+    try fixture.writeRawBytes(&pair.server, 1, "x");
+
+    try fixture.expectPairH3Error(allocator, &pair, error.UnexpectedStream);
+    // The session that detects the role mismatch first closes; both
+    // sides map UnexpectedStream → H3_STREAM_CREATION_ERROR so the
+    // close code is unambiguous. We assert at least one side closed
+    // and used the right code.
+    const closed_side = if (pair.server_h3.shutdownState() == .closed)
+        &pair.server_h3
+    else
+        &pair.client_h3;
+    try std.testing.expectEqual(null3.session.ShutdownState.closed, closed_side.shutdownState());
+    try fixture.expectLastCloseCode(closed_side, ErrorCode.stream_creation_error);
+}
+
+// ---------------------------------------------------------------- §6.2.2 ¶6 duplicate Push ID
+
+test "MUST close with H3_ID_ERROR on a second push stream that reuses a Push ID [RFC9114 §6.2.2 ¶6]" {
+    // §6.2.2 ¶6: "Each push ID MUST only be used once in a push stream
+    // header. If a client detects that a push stream header includes a
+    // push ID that was used in another push stream header, the client
+    // MUST treat this as a connection error of type H3_ID_ERROR." The
+    // client opts into push (max_push_id = 5) so push_id 0 is in
+    // range; the server then claims push_id 0 on two distinct
+    // server-initiated unidirectional streams.
+    const allocator = std.testing.allocator;
+
+    var pair: fixture.H3Pair = undefined;
+    try pair.initStarted(allocator, .{ .max_push_id = 5 }, .{});
+    defer pair.deinit();
+
+    try fixture.openUniWithType(&pair.server, 7, StreamType.push);
+    try fixture.writeVarint(&pair.server, 7, 0); // push_id = 0
+    try fixture.openUniWithType(&pair.server, 11, StreamType.push);
+    try fixture.writeVarint(&pair.server, 11, 0); // push_id = 0 — duplicate
+
+    try fixture.expectPairH3Error(allocator, &pair, error.InvalidPushId);
+    try fixture.expectLastCloseCode(&pair.client_h3, ErrorCode.id_error);
+}
+
+// ---------------------------------------------------------------- §6.2 ¶10 reset before stream-type header
+
+test "MUST tolerate a peer-initiated unidirectional stream reset before the stream-type header [RFC9114 §6.2 ¶10]" {
+    // §6.2 ¶10: "A receiver MUST tolerate unidirectional streams being
+    // closed or reset prior to the reception of the unidirectional
+    // stream header." The server opens a uni stream and resets it
+    // before any stream-type byte is sent. The client must keep its
+    // session healthy.
+    const allocator = std.testing.allocator;
+
+    var pair: fixture.H3Pair = undefined;
+    try pair.initStarted(allocator, .{}, .{});
+    defer pair.deinit();
+
+    _ = try pair.server.openUni(7);
+    try pair.server.streamReset(7, 0);
+
+    try fixture.pumpQuiet(allocator, &pair, 64);
+    try std.testing.expectEqual(null3.session.ShutdownState.active, pair.client_h3.shutdownState());
+    try std.testing.expectEqual(null3.session.ShutdownState.active, pair.server_h3.shutdownState());
+}
+
+test "MUST tolerate a peer-initiated unidirectional stream FIN before the stream-type header [RFC9114 §6.2 ¶10]" {
+    // §6.2 ¶10 also covers clean closure (FIN) before the stream-type
+    // byte arrives. Open a uni stream and FIN it without sending a
+    // type prefix; the receiver must NOT close the connection.
+    const allocator = std.testing.allocator;
+
+    var pair: fixture.H3Pair = undefined;
+    try pair.initStarted(allocator, .{}, .{});
+    defer pair.deinit();
+
+    _ = try pair.server.openUni(7);
+    try pair.server.streamFinish(7);
+
+    try fixture.pumpQuiet(allocator, &pair, 64);
+    try std.testing.expectEqual(null3.session.ShutdownState.active, pair.client_h3.shutdownState());
+    try std.testing.expectEqual(null3.session.ShutdownState.active, pair.server_h3.shutdownState());
+}
+
+// ---------------------------------------------------------------- §7.2.8 reserved HTTP/2 frame types end-to-end
+
+test "MUST close with H3_FRAME_UNEXPECTED when reserved HTTP/2 PRIORITY (0x02) is observed on the control stream [RFC9114 §7.2.8 ¶3]" {
+    // §7.2.8 ¶3: "Frame types that were used in HTTP/2 where there is
+    // no corresponding HTTP/3 frame have also been reserved. These
+    // frame types MUST NOT be sent, and their receipt MUST be treated
+    // as a connection error of type H3_FRAME_UNEXPECTED." The
+    // validator-level tests confirm the gate exists; this end-to-end
+    // test confirms a peer that writes a reserved HTTP/2 frame on the
+    // control stream triggers a real CONNECTION_CLOSE with the right
+    // code.
+    const allocator = std.testing.allocator;
+
+    var pair: fixture.H3Pair = undefined;
+    try pair.initStarted(allocator, .{}, .{});
+    defer pair.deinit();
+
+    try fixture.writeFrame(
+        &pair.client,
+        pair.client_h3.control_stream_id.?,
+        .{ .unknown = .{ .frame_type = FrameType.http2_priority, .payload = "" } },
+    );
+
+    try fixture.expectPairH3Error(allocator, &pair, error.FrameUnexpected);
+    try fixture.expectLastCloseCode(&pair.server_h3, ErrorCode.frame_unexpected);
+}
+
+test "MUST close with H3_FRAME_UNEXPECTED when reserved HTTP/2 CONTINUATION (0x09) is observed on a request stream [RFC9114 §7.2.8 ¶3]" {
+    const allocator = std.testing.allocator;
+
+    var pair: fixture.H3Pair = undefined;
+    try pair.initStarted(allocator, .{}, .{});
+    defer pair.deinit();
+
+    const stream_id: u64 = 0;
+    _ = try pair.client.openBidi(stream_id);
+    try fixture.writeFrame(
+        &pair.client,
+        stream_id,
+        .{ .unknown = .{ .frame_type = FrameType.http2_continuation, .payload = "" } },
+    );
+
+    try fixture.expectPairH3Error(allocator, &pair, error.FrameUnexpected);
+    try fixture.expectLastCloseCode(&pair.server_h3, ErrorCode.frame_unexpected);
+}
+
+// ---------------------------------------------------------------- §6.2.1 control stream — PUSH_PROMISE end-to-end
+
+test "MUST close with H3_FRAME_UNEXPECTED when PUSH_PROMISE is observed on the control stream [RFC9114 §7.2.5 ¶?]" {
+    // PUSH_PROMISE belongs on a request stream (§7.2.5 ¶3); on the
+    // control stream it is one of the placement violations §7.2.8 ¶1
+    // routes to H3_FRAME_UNEXPECTED. End-to-end check confirms the
+    // session, not just the validator, raises the close.
+    const allocator = std.testing.allocator;
+
+    var pair: fixture.H3Pair = undefined;
+    try pair.initStarted(allocator, .{}, .{});
+    defer pair.deinit();
+
+    try fixture.writeFrame(
+        &pair.client,
+        pair.client_h3.control_stream_id.?,
+        .{ .push_promise = .{ .push_id = 0, .field_section = "header-block-payload" } },
+    );
+
+    try fixture.expectPairH3Error(allocator, &pair, error.FrameUnexpected);
+    try fixture.expectLastCloseCode(&pair.server_h3, ErrorCode.frame_unexpected);
+}
+
+test "MUST close with H3_FRAME_UNEXPECTED when MAX_PUSH_ID is observed on a request stream [RFC9114 §7.2.7 ¶?]" {
+    // MAX_PUSH_ID is exclusively a control-stream frame. A peer that
+    // writes it on a request stream must trigger
+    // H3_FRAME_UNEXPECTED.
+    const allocator = std.testing.allocator;
+
+    var pair: fixture.H3Pair = undefined;
+    try pair.initStarted(allocator, .{}, .{});
+    defer pair.deinit();
+
+    const stream_id: u64 = 0;
+    _ = try pair.client.openBidi(stream_id);
+    try fixture.writeFrame(&pair.client, stream_id, .{ .max_push_id = 0 });
+
+    try fixture.expectPairH3Error(allocator, &pair, error.FrameUnexpected);
+    try fixture.expectLastCloseCode(&pair.server_h3, ErrorCode.frame_unexpected);
 }

@@ -15,6 +15,7 @@
 //! Covered:
 //!   RFC9220 §3   ¶1   MUST       SETTINGS_ENABLE_CONNECT_PROTOCOL identifier is 0x08
 //!   RFC9220 §3   ¶1   MUST       endpoint advertises 0x08=1 to enable Extended CONNECT (encode-side)
+//!   RFC9220 §3   ¶1   MUST       on-wire encoding pairs identifier 0x08 with value 0x01
 //!   RFC9220 §3   ¶?   MUST       SETTINGS_ENABLE_CONNECT_PROTOCOL value is 0 or 1
 //!   RFC9220 §3   ¶?   MUST       default for SETTINGS_ENABLE_CONNECT_PROTOCOL is 0 (disabled)
 //!   RFC9220 §3   ¶2   MUST NOT   client accepts :protocol unless peer advertised 0x08=1 (gate)
@@ -23,15 +24,21 @@
 //!   RFC9220 §4.1 ¶?   MUST       CONNECT request with :protocol = "websocket" carries :authority
 //!   RFC9220 §4.1 ¶?   MUST       :method on a WebSocket bootstrap request is "CONNECT"
 //!   RFC9220 §4.1 ¶?   MUST       :protocol value identifying WebSocket is "websocket"
+//!   RFC9220 §4.1 ¶?   MUST       :protocol token "websocket" is case-sensitive
 //!   RFC9220 §4.1 ¶?   MUST NOT   classify non-CONNECT method as a WebSocket bootstrap request
 //!   RFC9220 §4.1 ¶?   MUST NOT   classify CONNECT-with-other-:protocol as WebSocket
 //!   RFC9220 §4.1 ¶?   MUST NOT   classify CONNECT without :protocol as WebSocket
 //!   RFC9220 §4.1 ¶?   NORMATIVE  startWebSocket emits :method=CONNECT + :protocol=websocket
 //!   RFC9220 §4.1 ¶?   NORMATIVE  startWebSocket emits the requested :scheme/:authority/:path verbatim
+//!   RFC9220 §4.1 ¶?   NORMATIVE  WebSocketConnectOptions defaults to scheme=https + path=/
+//!   RFC9220 §4.1 ¶?   NORMATIVE  requestProtocol accessor returns :protocol value verbatim
 //!   RFC9220 §4.1 ¶?   MAY        startWebSocket carries application headers (e.g. sec-websocket-protocol)
 //!   RFC9220 §4.2 ¶?   MAY        request includes Sec-WebSocket-Protocol when offering subprotocols
 //!   RFC9220 §4.2 ¶?   MAY        request includes Sec-WebSocket-Extensions when offering extensions
+//!   RFC9220 §4.2 ¶?   MUST       Sec-WebSocket-Version token is the literal "13"
 //!   RFC9220 §4.2 ¶?   MUST       receive-side validates Sec-WebSocket-Version = 13 (RFC 6455 §4.1)
+//!   RFC9220 §4.2 ¶?   MUST       requestVersion accessor surfaces the raw header value
+//!   RFC9220 §4.2 ¶?   MUST NOT   accept an empty Sec-WebSocket-Version value
 //!   RFC9220 §4.3 ¶?   MUST       a 2xx response indicates the WebSocket was accepted
 //!   RFC9220 §4.3 ¶?   MUST NOT   classify a 1xx response as accepted (no 101 in HTTP/3)
 //!   RFC9220 §4.3 ¶?   MUST NOT   classify a 3xx redirect as accepted
@@ -139,6 +146,32 @@ test "MUST allow :protocol once SETTINGS_ENABLE_CONNECT_PROTOCOL = 1 has been ob
     try headers.validateRequestWithOptions(&fields, .{ .enable_connect_protocol = true });
 }
 
+test "MUST encode the SETTINGS_ENABLE_CONNECT_PROTOCOL identifier 0x08 with the value 1 on the wire [RFC9220 §3 ¶1]" {
+    // The encoded form of the on-wire SETTINGS payload pairs varint(0x08)
+    // with varint(1) for the enabled state. Decoders that read the same
+    // identifier and pull a value other than 0/1 reject the setting (per
+    // the §3 valid-value rule), so the encoded byte sequence is the
+    // load-bearing observation. We verify the identifier byte is present
+    // and the paired value byte is exactly 0x01.
+    const enabled: settings_mod.Settings = .{ .enable_connect_protocol = true };
+    var buf: [32]u8 = undefined;
+    const n = try enabled.encode(&buf);
+
+    // The single setting `enable_connect_protocol = true` encodes to two
+    // varint bytes: id=0x08 and value=0x01. We don't pin the position
+    // beyond "the payload contains both bytes adjacent" since the encoder
+    // is free to emit other settings before this one in larger configs.
+    var found = false;
+    var i: usize = 0;
+    while (i + 1 < n) : (i += 1) {
+        if (buf[i] == 0x08 and buf[i + 1] == 0x01) {
+            found = true;
+            break;
+        }
+    }
+    try std.testing.expect(found);
+}
+
 // ---------------------------------------------------------------- §4.1 use of HTTP CONNECT
 
 test "MUST use the literal token \"websocket\" as the :protocol value for a WebSocket bootstrap [RFC9220 §4.1 ¶?]" {
@@ -149,6 +182,65 @@ test "MUST use the literal token \"websocket\" as the :protocol value for a WebS
     try std.testing.expect(!websocket.isProtocolToken("WebSocket"));
     try std.testing.expect(!websocket.isProtocolToken("h2"));
     try std.testing.expect(!websocket.isProtocolToken(""));
+}
+
+test "MUST treat the \"websocket\" :protocol token as case-sensitive [RFC9220 §4.1 ¶?]" {
+    // The Upgrade Token Registry value is the lowercase "websocket".
+    // RFC 9220 §4.1 (inheriting RFC 8441 §5) requires the value MUST be
+    // "websocket" exactly; mixed-case spellings are not the registered
+    // token and MUST NOT classify as a WebSocket bootstrap.
+    const variants = [_][]const u8{ "WEBSOCKET", "WebSocket", "Websocket", "webSocket" };
+    for (variants) |variant| {
+        try std.testing.expect(!websocket.isProtocolToken(variant));
+        const fields = [_]FieldLine{
+            .{ .name = ":method", .value = "CONNECT" },
+            .{ .name = ":scheme", .value = "https" },
+            .{ .name = ":authority", .value = "example.com" },
+            .{ .name = ":path", .value = "/" },
+            .{ .name = ":protocol", .value = variant },
+        };
+        try std.testing.expect(!websocket.isRequest(&fields));
+    }
+}
+
+test "MUST expose :protocol value through requestProtocol accessor [RFC9220 §4.1 ¶?]" {
+    // The accessor `websocket.requestProtocol` returns the on-wire
+    // :protocol value verbatim (returning null when missing). Callers
+    // use it to dispatch among multiple Extended-CONNECT protocols.
+    const ws_request = [_]FieldLine{
+        .{ .name = ":method", .value = "CONNECT" },
+        .{ .name = ":scheme", .value = "https" },
+        .{ .name = ":authority", .value = "example.com" },
+        .{ .name = ":path", .value = "/" },
+        .{ .name = ":protocol", .value = "websocket" },
+    };
+    try std.testing.expectEqualStrings("websocket", websocket.requestProtocol(&ws_request).?);
+
+    const other_request = [_]FieldLine{
+        .{ .name = ":method", .value = "CONNECT" },
+        .{ .name = ":authority", .value = "example.com" },
+        .{ .name = ":path", .value = "/" },
+        .{ .name = ":protocol", .value = "connect-udp" },
+    };
+    try std.testing.expectEqualStrings("connect-udp", websocket.requestProtocol(&other_request).?);
+
+    const no_protocol = [_]FieldLine{
+        .{ .name = ":method", .value = "CONNECT" },
+        .{ .name = ":authority", .value = "example.com:443" },
+    };
+    try std.testing.expectEqual(@as(?[]const u8, null), websocket.requestProtocol(&no_protocol));
+}
+
+test "NORMATIVE WebSocketConnectOptions defaults to scheme=https and path=/ [RFC9220 §4.1 ¶?]" {
+    // §4.1 inherits RFC 8441 §4: requests bound for a WebSocket resource
+    // carry :scheme and :path. null3's `WebSocketConnectOptions` provides
+    // sensible defaults so the caller only needs to supply :authority.
+    // The defaults match RFC 6455 §3 / RFC 8441 §5: "https" for "wss".
+    const defaults: null3.client.WebSocketConnectOptions = .{};
+    try std.testing.expectEqualStrings("https", defaults.scheme);
+    try std.testing.expectEqualStrings("/", defaults.path);
+    try std.testing.expectEqualStrings("", defaults.authority);
+    try std.testing.expectEqual(@as(usize, 0), defaults.headers.len);
 }
 
 test "MUST classify CONNECT + :protocol = websocket as a WebSocket bootstrap request [RFC9220 §4.1 ¶?]" {
@@ -314,6 +406,56 @@ test "MAY pass Sec-WebSocket-Protocol through WebSocketConnectOptions.headers [R
     try std.testing.expectEqual(@as(usize, 1), options.headers.len);
     try std.testing.expectEqualStrings("sec-websocket-protocol", options.headers[0].name);
     try std.testing.expectEqualStrings("chat", options.headers[0].value);
+}
+
+test "MUST fix Sec-WebSocket-Version token at the literal \"13\" [RFC9220 §4.2 ¶?]" {
+    // §4.2 inherits RFC 6455 §11.6: "Sec-WebSocket-Version" — registered
+    // values include only "13"; null3 pins the value at the constant
+    // `websocket.version_token`. The header field name is fixed to the
+    // canonical lowercase HTTP/3 spelling (RFC 9114 §4.2).
+    try std.testing.expectEqualStrings("13", websocket.version_token);
+    try std.testing.expectEqualStrings("sec-websocket-version", websocket.version_header_name);
+}
+
+test "MUST expose Sec-WebSocket-Version value through requestVersion accessor [RFC9220 §4.2 ¶?]" {
+    // The receive-side helper `websocket.requestVersion` returns the
+    // raw value (without trimming) so callers can apply their own
+    // policy or use the strict `validateClientRequestVersion` gate.
+    const fields = [_]FieldLine{
+        .{ .name = ":method", .value = "CONNECT" },
+        .{ .name = ":scheme", .value = "https" },
+        .{ .name = ":authority", .value = "example.com" },
+        .{ .name = ":path", .value = "/" },
+        .{ .name = ":protocol", .value = "websocket" },
+        .{ .name = "sec-websocket-version", .value = "13" },
+    };
+    try std.testing.expectEqualStrings("13", websocket.requestVersion(&fields).?);
+
+    const missing = [_]FieldLine{
+        .{ .name = ":method", .value = "CONNECT" },
+        .{ .name = ":scheme", .value = "https" },
+        .{ .name = ":authority", .value = "example.com" },
+        .{ .name = ":path", .value = "/" },
+        .{ .name = ":protocol", .value = "websocket" },
+    };
+    try std.testing.expectEqual(@as(?[]const u8, null), websocket.requestVersion(&missing));
+}
+
+test "MUST reject an empty Sec-WebSocket-Version value [RFC9220 §4.2 ¶?]" {
+    // §4.2 inherits RFC 6455 §11.6: the registered value is "13".
+    // An empty value is not "13" and cannot be a defined version.
+    const empty = [_]FieldLine{
+        .{ .name = ":method", .value = "CONNECT" },
+        .{ .name = ":scheme", .value = "https" },
+        .{ .name = ":authority", .value = "example.com" },
+        .{ .name = ":path", .value = "/" },
+        .{ .name = ":protocol", .value = "websocket" },
+        .{ .name = "sec-websocket-version", .value = "" },
+    };
+    try std.testing.expectError(
+        websocket.Error.UnsupportedWebSocketVersion,
+        websocket.validateClientRequestVersion(&empty),
+    );
 }
 
 test "MUST validate Sec-WebSocket-Version = 13 on incoming WebSocket request [RFC9220 §4.2 ¶?]" {

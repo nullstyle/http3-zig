@@ -48,6 +48,7 @@
 //!   RFC9114 §4.3.2 ¶?   MUST NOT   accept :protocol with empty value
 //!   RFC9114 §4.3.1 ¶?   MUST       :authority must not contain userinfo or fragment
 //!   RFC9114 §4.3.1 ¶?   MUST       :path is non-empty for http/https requests
+//!   RFC9114 §4.3.1 ¶?   MAY        :path is "*" for OPTIONS-style requests
 //!   RFC9114 §4.4   ¶?   MUST       response carries :status
 //!   RFC9114 §4.4   ¶?   MUST       :status is exactly three ASCII digits
 //!   RFC9114 §4.4   ¶?   MUST NOT   accept a response without :status
@@ -56,12 +57,16 @@
 //!   RFC9114 §4.5   ¶?   NORMATIVE  trailer field section permitted after response body
 //!   RFC9114 §4.5   ¶?   MUST NOT   include any pseudo-header in trailers
 //!   RFC9114 §4.5   ¶?   MUST NOT   include connection-specific fields in trailers
-//!   RFC9114 §4.5   ¶?   MUST NOT   send DATA after trailers
+//!   RFC9114 §4.5   ¶?   MUST NOT   send DATA after trailers (request)
+//!   RFC9114 §4.1   ¶7   MUST NOT   send DATA after trailers (response)
 //!   RFC9114 §4.5   ¶?   MUST NOT   send a second HEADERS section after trailers
 //!   RFC9114 §4.5   ¶?   MUST NOT   send DATA before a HEADERS section
 //!   RFC9114 §4.5   ¶?   MUST NOT   close request stream before a HEADERS section is observed
+//!   RFC9114 §4.5   ¶?   MUST NOT   send a duplicate request HEADERS section
+//!   RFC9114 §4.1   ¶3   MUST NOT   send a duplicate response HEADERS section (additional response after final)
 //!   RFC9114 §4.6   ¶?   MUST       reject malformed messages — encoder side refuses bad outbound
 //!   RFC9114 §4.6   ¶?   MUST       reject malformed messages — decoder side refuses bad inbound
+//!   RFC9114 §4.6   ¶?   MUST       reject a response stream that closes without HEADERS
 //!
 //! Visible debt:
 //!   (none)
@@ -71,6 +76,25 @@
 //!   RFC9114 §6.1    HEADERS-on-control-stream rejection (stream context) → rfc9114_streams.zig
 //!   RFC9204         field-section *encoding* (static-table / Huffman)   → rfc9204_qpack_*.zig
 //!   RFC9220         WebSocket-specific :protocol value validation       → rfc9220_websocket_h3.zig
+//!
+//! Out of scope here (no public surface in null3.headers / null3.message):
+//!   RFC9114 §4.2  ¶4   MUST NOT  TE header field with value other than "trailers"
+//!                                — validator does not inspect TE; classification of TE
+//!                                as connection-specific-with-exception is unimplemented
+//!   RFC9114 §4.3.1 ¶? MUST NOT  :authority MUST NOT be empty if present
+//!                                — validator currently accepts an empty :authority
+//!                                  (treats it as absent for syntax-check purposes)
+//!   RFC9114 §4.3.1 ¶? MUST      :authority and Host header MUST contain the same value
+//!                                — validator does not cross-check pseudo against regular field
+//!   RFC9114 §4.4   ¶3 MUST      classic CONNECT (omit :scheme and :path)
+//!                                — validator demands :scheme + :path for every request;
+//!                                  classic CONNECT is rejected as MissingPseudoHeader
+//!   RFC9114 §4.4   ¶8 MUST      after CONNECT completes, only DATA frames permitted
+//!                                — frame-context concern → rfc9114_streams.zig
+//!   RFC9114 §4.1   ¶13 MUST     client closes stream-for-sending after request
+//!                                — stream-state concern → rfc9114_streams.zig
+//!   RFC9114 §4.2.1 ¶2 MUST      cookie-line concatenation across H/3 → H/1.1 boundary
+//!                                — gateway concern, not part of validator surface
 
 const std = @import("std");
 const null3 = @import("null3");
@@ -324,20 +348,14 @@ test "MUST NOT accept an unknown pseudo-header on a request [RFC9114 §4.2.2 ¶?
 }
 
 test "MUST NOT accept an unknown pseudo-header on a response [RFC9114 §4.2.2 ¶?]" {
-    const fields = [_]FieldLine{
-        .{ .name = ":status", .value = "200" },
-    };
-    try headers.validateResponse(&fields);
-
+    // §4.3 ¶1: "Endpoints MUST NOT generate pseudo-header fields other
+    // than those defined in this document." Receivers surface this as
+    // malformed-message handling; the validator returns InvalidPseudoHeader.
     const bad = [_]FieldLine{
         .{ .name = ":status", .value = "200" },
-        .{ .name = ":also-bad", .value = "x" }, // unknown pseudo, but caught after :status as PseudoAfterRegular vs Invalid…
+        .{ .name = ":also-bad", .value = "x" },
     };
-    // The validator walks pseudos before regulars; an unknown pseudo fails
-    // the InvalidPseudoHeader gate. Either error suffices for the
-    // RFC-required malformed-message handling — assert one or the other.
-    const r = headers.validateResponse(&bad);
-    try std.testing.expectError(headers.Error.InvalidPseudoHeader, r);
+    try std.testing.expectError(headers.Error.InvalidPseudoHeader, headers.validateResponse(&bad));
 }
 
 test "MUST NOT accept a duplicate :method [RFC9114 §4.2.2 ¶?]" {
@@ -433,6 +451,20 @@ test "MUST NOT accept a request without :path [RFC9114 §4.3.1 ¶?]" {
         .{ .name = ":authority", .value = "example.com" },
     };
     try std.testing.expectError(headers.Error.MissingPseudoHeader, headers.validateRequest(&fields));
+}
+
+test "MAY carry :path value \"*\" on an OPTIONS request [RFC9114 §4.3.1 ¶?]" {
+    // §4.3.1 ¶? : "An OPTIONS request that does not include a path
+    // component includes the value '*' (ASCII 0x2a) for the :path
+    // pseudo-header field." The validator must accept "*" as a non-empty
+    // path, distinct from the http/https path-absolute requirement.
+    const fields = [_]FieldLine{
+        .{ .name = ":method", .value = "OPTIONS" },
+        .{ .name = ":scheme", .value = "https" },
+        .{ .name = ":path", .value = "*" },
+        .{ .name = ":authority", .value = "example.com" },
+    };
+    try headers.validateRequest(&fields);
 }
 
 // ---------------------------------------------------------------- §4.3.2 Extended CONNECT (:protocol)
@@ -629,6 +661,29 @@ test "MUST NOT send a duplicate request HEADERS section [RFC9114 §4.5 ¶?]" {
     try std.testing.expectError(message.Error.DuplicateHeaders, enc.encodeHeaders(buf[0..], &minimal_request));
 }
 
+test "MUST NOT send a duplicate response HEADERS section [RFC9114 §4.1 ¶3]" {
+    // §4.1 ¶3: "On a given stream, receipt of multiple requests or
+    // receipt of an additional HTTP response following a final HTTP
+    // response MUST be treated as malformed." The encoder enforces the
+    // sender-side counterpart by refusing a second HEADERS frame.
+    var buf: [256]u8 = undefined;
+    var enc = MessageEncoder.init(.response, .{});
+    _ = try enc.encodeHeaders(buf[0..], &minimal_response);
+    try std.testing.expectError(message.Error.DuplicateHeaders, enc.encodeHeaders(buf[0..], &minimal_response));
+}
+
+test "MUST NOT send DATA after a response trailer field section [RFC9114 §4.1 ¶7]" {
+    // §4.1 ¶7: "a HEADERS or DATA frame after the trailing HEADERS frame
+    // ... MUST be treated as a connection error of type
+    // H3_FRAME_UNEXPECTED." Sender side: encoder refuses the DATA frame.
+    var buf: [256]u8 = undefined;
+    var enc = MessageEncoder.init(.response, .{});
+    _ = try enc.encodeHeaders(buf[0..], &minimal_response);
+    _ = try enc.encodeData(buf[0..], "ok");
+    _ = try enc.encodeTrailers(buf[0..], &[_]FieldLine{.{ .name = "x-end", .value = "1" }});
+    try std.testing.expectError(message.Error.DataAfterTrailers, enc.encodeData(buf[0..], "after"));
+}
+
 // ---------------------------------------------------------------- §4.6 malformed messages — decode side
 
 test "MUST reject a decoded request that is missing :path [RFC9114 §4.6 ¶?]" {
@@ -756,6 +811,14 @@ test "MUST reject DATA observed after trailers on a request stream [RFC9114 §4.
 
 test "MUST reject a request stream that closes without HEADERS [RFC9114 §4.6 ¶?]" {
     const dec = MessageDecoder.init(.request, .{});
+    try std.testing.expectError(message.Error.MissingHeaders, dec.finish());
+}
+
+test "MUST reject a response stream that closes without HEADERS [RFC9114 §4.6 ¶?]" {
+    // §4.1.2 ¶1 (the RFC's malformed-message subsection): a response that
+    // never delivers a HEADERS frame is "an invalid sequence of HTTP
+    // messages." The decoder's finish() surfaces this for the receiver.
+    const dec = MessageDecoder.init(.response, .{});
     try std.testing.expectError(message.Error.MissingHeaders, dec.finish());
 }
 

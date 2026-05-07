@@ -21,6 +21,8 @@
 //!   RFC9204 §3.2 ¶1     MUST     dynamic table refuses an entry larger than
 //!                                its capacity.
 //!   RFC9204 §3.2 ¶2     MUST     setCapacity refuses a value above max_capacity.
+//!   RFC9204 §3.2 ¶2     MUST     a max_capacity of zero disables every
+//!                                dynamic-table mutation.
 //!   RFC9204 §3.2 ¶3     NORMATIVE entry size = name + value + 32 byte overhead.
 //!   RFC9204 §3.2 ¶4     NORMATIVE evicting an oldest entry to make room.
 //!   RFC9204 §3.2.2 ¶1   NORMATIVE absolute index is monotonically increasing.
@@ -45,6 +47,8 @@
 //!                                outstanding is reported.
 //!   RFC9204 §4.4.2 ¶1   NORMATIVE Stream Cancellation wire codec
 //!                                (6-bit prefix, 01xxxxxx).
+//!   RFC9204 §4.4.2 ¶1   NORMATIVE encoder tolerates a stream_cancel
+//!                                that names no outstanding section.
 //!   RFC9204 §4.4.3 ¶1   NORMATIVE Insert Count Increment wire codec
 //!                                (6-bit prefix, 00xxxxxx, increment >= 1).
 //!   RFC9204 §4.4.3 ¶2   MUST     insert_count_increment with value 0 is
@@ -56,11 +60,16 @@
 //!                                Insert Count first, then Base.
 //!   RFC9204 §4.5.1.1 ¶1 NORMATIVE Required Insert Count wraps modulo
 //!                                2 * MaxEntries(MaxTableCapacity).
+//!   RFC9204 §4.5.1.1 ¶1 NORMATIVE decodeRequiredInsertCount picks the
+//!                                wrap-around candidate within
+//!                                MaxEntries of total_inserts.
 //!   RFC9204 §4.5.1.1 ¶2 MUST     decoder rejects an encoded RIC larger
 //!                                than 2 * MaxEntries.
 //!   RFC9204 §4.5.1.2 ¶1 NORMATIVE Base = required_insert_count + delta
 //!                                when sign=0; required_insert_count -
 //!                                delta - 1 when sign=1.
+//!   RFC9204 §4.5.1.2 ¶3 MUST     decoder rejects Sign=1 with Required
+//!                                Insert Count <= Delta Base.
 //!   RFC9204 §4.5.2 ¶1   NORMATIVE field-section prefix round-trips through
 //!                                encode/decodeFieldSectionPrefix.
 //!   RFC9204 §4.5.5 ¶1   NORMATIVE indexed field line with post-base index
@@ -186,6 +195,27 @@ test "NORMATIVE setCapacity to zero evicts all entries [RFC9204 §3.2 ¶4]" {
     try std.testing.expectEqual(@as(usize, 0), table.size);
     try std.testing.expectEqual(@as(u64, 2), table.insert_count);
     try std.testing.expectEqual(@as(u64, 2), table.dropped_count);
+}
+
+test "MUST refuse to insert anything when max_capacity is zero [RFC9204 §3.2 ¶2]" {
+    // RFC 9204 §3.2.3: when SETTINGS_QPACK_MAX_TABLE_CAPACITY = 0 the
+    // encoder cannot use the dynamic table at all; the table refuses
+    // setCapacity > 0 and any insert attempt thereafter.
+    var table = qpack.DynamicTable.init(std.testing.allocator, 0);
+    defer table.deinit();
+    try table.setCapacity(0);
+    try std.testing.expectError(
+        qpack.dynamic_table.Error.CapacityTooLarge,
+        table.setCapacity(1),
+    );
+    try std.testing.expectError(
+        qpack.dynamic_table.Error.EntryTooLarge,
+        table.insert("a", "1", false),
+    );
+    try std.testing.expectError(
+        qpack.dynamic_table.Error.InvalidDynamicIndex,
+        table.duplicate(0),
+    );
 }
 
 test "NORMATIVE encoder-relative index 0 names the most recent insert [RFC9204 §3.2.4 ¶1]" {
@@ -528,6 +558,25 @@ test "MUST reject an encoded Required Insert Count above 2 * MaxEntries [RFC9204
     );
 }
 
+test "NORMATIVE decodeRequiredInsertCount selects the wrap-around window relative to total_inserts [RFC9204 §4.5.1.1 ¶1]" {
+    // Drive the wrap-around algorithm explicitly: with MaxTableCapacity
+    // = 100 (MaxEntries=3, full_range=6), a RIC value of 4 is encoded
+    // as (4 mod 6) + 1 = 5. When total_inserts is well past the first
+    // wrap (e.g. 10 = 1 full_range + 4), the decoder MUST recover RIC
+    // = 4 by selecting the candidate within MaxEntries(=3) of total
+    // inserts rather than picking the smaller raw value 4.
+    try std.testing.expectEqual(
+        @as(u64, 10),
+        try state_mod.decodeRequiredInsertCount(5, 100, 10),
+    );
+    // Same encoded value with total_inserts = 4: the decoder MUST
+    // resolve RIC = 4 (no wrap needed).
+    try std.testing.expectEqual(
+        @as(u64, 4),
+        try state_mod.decodeRequiredInsertCount(5, 100, 4),
+    );
+}
+
 test "NORMATIVE Base = required_insert_count + delta when sign=0 [RFC9204 §4.5.1.2 ¶1]" {
     // Sign=0 (S=0): Base = ReqInsertCount + DeltaBase.
     var buf: [16]u8 = undefined;
@@ -548,6 +597,24 @@ test "NORMATIVE Base = required_insert_count - delta - 1 when sign=1 [RFC9204 §
     try std.testing.expect((buf[1] & 0x80) != 0);
     const decoded = try state_mod.decodeFieldSectionPrefix(buf[0..n], 256, 5);
     try std.testing.expectEqual(@as(u64, 2), decoded.prefix.base);
+}
+
+test "MUST reject a field section prefix where Sign=1 and Required Insert Count <= Delta Base [RFC9204 §4.5.1.2 ¶3]" {
+    // RFC 9204 §4.5.1.2: "An endpoint MUST treat a field block with a
+    // Sign bit of 1 as invalid if the value of Required Insert Count is
+    // less than or equal to the value of Delta Base." Construct a wire
+    // form that explicitly violates that invariant: encoded RIC = 2
+    // (decoded RIC = 1 when total_inserts = 1), Sign = 1, Delta = 1.
+    // RIC(1) <= Delta(1) ⇒ reject as invalid.
+    var buf: [4]u8 = undefined;
+    var pos: usize = 0;
+    pos += try integer.encode(buf[pos..], 8, 0, 2); // EncodedInsertCount = 2 → RIC = 1
+    pos += try integer.encode(buf[pos..], 7, 0x80, 1); // Sign=1, Delta=1
+
+    try std.testing.expectError(
+        state_mod.Error.InvalidRequiredInsertCount,
+        state_mod.decodeFieldSectionPrefix(buf[0..pos], 100, 1),
+    );
 }
 
 test "NORMATIVE field section prefix encodedLen agrees with the encoder [RFC9204 §4.5.2 ¶1]" {
@@ -825,6 +892,18 @@ test "NORMATIVE stream_cancel decrements reference counts for the cancelled stre
     try std.testing.expectEqual(@as(u64, 1), encoder.referenceCount(2));
     try encoder.receiveDecoderInstruction(.{ .stream_cancel = 8 });
     try std.testing.expectEqual(@as(u64, 0), encoder.referenceCount(2));
+}
+
+test "NORMATIVE stream_cancel for an unknown stream is tolerated by the encoder [RFC9204 §4.4.2 ¶1]" {
+    // RFC 9204 §4.4.2 doesn't elevate an unknown stream cancellation to
+    // a connection error: the encoder may simply have no outstanding
+    // section for that stream id. Verify the implementation accepts it
+    // as a no-op rather than surfacing an error like section_ack does.
+    var encoder = state_mod.EncoderState.init(std.testing.allocator, 4);
+    defer encoder.deinit();
+    encoder.recordInsertCount(3);
+    try encoder.receiveDecoderInstruction(.{ .stream_cancel = 99 });
+    try std.testing.expectEqual(@as(usize, 0), encoder.blockedStreamCount());
 }
 
 test "NORMATIVE DecoderState emits an insert_count_increment that coalesces multiple inserts [RFC9204 §4.4.3 ¶1]" {

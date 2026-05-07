@@ -1,8 +1,9 @@
 //! RFC 9114 §8 — Error Handling, and §11.2.3 — HTTP/3 Error Codes registry.
 //!
 //! HTTP/3 carries error codes as QUIC application error codes. The numeric
-//! values are registered in RFC 9114 §11.2.3, with QPACK extensions in
-//! RFC 9204 §6.1–§6.2 and the H3_DATAGRAM_ERROR addition in RFC 9297 §5.2.
+//! values are listed in RFC 9114 §8.1 and registered in §11.2.3, with QPACK
+//! extensions defined in RFC 9204 §6 (registered in §8.3) and the
+//! H3_DATAGRAM_ERROR addition in RFC 9297 §5.2 (referenced by §2 and §2.1).
 //! null3 hosts the constants in `src/protocol.zig` (`protocol.ErrorCode.*`)
 //! and the classification helpers (`Scope`, `Source`, `Category`,
 //! `applicationError`, `classify`, …) in `src/errors.zig`.
@@ -12,7 +13,7 @@
 //!   * classification helpers map known codes to the right name + category;
 //!   * local-cause classification routes representative errors into the
 //!     code the RFC requires for that condition;
-//!   * §8.2's H3_VERSION_FALLBACK is present and routable.
+//!   * H3_VERSION_FALLBACK is present and routable.
 //!
 //! ## Coverage
 //!
@@ -35,10 +36,10 @@
 //!   RFC9114 §11.2.3  H3_CONNECT_ERROR                0x010f
 //!   RFC9114 §11.2.3  H3_VERSION_FALLBACK             0x0110
 //!
-//! Covered (RFC 9204 §6.1–§6.2 QPACK Error Codes):
-//!   RFC9204 §6.1     QPACK_DECOMPRESSION_FAILED      0x0200
-//!   RFC9204 §6.2.1   QPACK_ENCODER_STREAM_ERROR      0x0201
-//!   RFC9204 §6.2.2   QPACK_DECODER_STREAM_ERROR      0x0202
+//! Covered (RFC 9204 §6 + §8.3 QPACK Error Codes):
+//!   RFC9204 §6       QPACK_DECOMPRESSION_FAILED      0x0200
+//!   RFC9204 §6       QPACK_ENCODER_STREAM_ERROR      0x0201
+//!   RFC9204 §6       QPACK_DECODER_STREAM_ERROR      0x0202
 //!
 //! Covered (RFC 9297 §5.2 HTTP Datagrams Error Code):
 //!   RFC9297 §5.2     H3_DATAGRAM_ERROR               0x33
@@ -52,25 +53,37 @@
 //!   RFC9114 §8.1   ¶?  NORMATIVE  H3_DATAGRAM_ERROR is categorised as Category.datagram
 //!   RFC9114 §8.1   ¶?  NORMATIVE  classify(MissingSettings)         → H3_MISSING_SETTINGS
 //!   RFC9114 §8.1   ¶?  NORMATIVE  classify(DuplicateSetting)        → H3_SETTINGS_ERROR
+//!   RFC9114 §7.2.4 ¶3  NORMATIVE  classify(DuplicateSettings)       → H3_FRAME_UNEXPECTED
 //!   RFC9114 §8.1   ¶?  NORMATIVE  classify(FrameUnexpected)         → H3_FRAME_UNEXPECTED
 //!   RFC9114 §8.1   ¶?  NORMATIVE  classify(InvalidFramePayload)     → H3_FRAME_ERROR
 //!   RFC9114 §8.1   ¶?  NORMATIVE  classify(MissingPseudoHeader)     → H3_MESSAGE_ERROR
 //!   RFC9114 §8.1   ¶?  NORMATIVE  classify(ClosedCriticalStream)    → H3_CLOSED_CRITICAL_STREAM
 //!   RFC9114 §8.1   ¶?  NORMATIVE  classify(StreamAlreadyOpen)       → H3_STREAM_CREATION_ERROR
 //!   RFC9114 §8.1   ¶?  NORMATIVE  classify(InvalidGoawayId)         → H3_ID_ERROR
+//!   RFC9114 §8.1   ¶?  NORMATIVE  classify(InvalidPushId)           → H3_ID_ERROR
+//!   RFC9114 §8.1   ¶?  NORMATIVE  classify(InvalidDatagramStream)   → H3_ID_ERROR
+//!   RFC9114 §8.1   ¶?  NORMATIVE  classify(PushNotEnabled)          → H3_ID_ERROR
 //!   RFC9114 §8.1   ¶?  NORMATIVE  classify(RequestBlockedByGoaway)  → H3_REQUEST_REJECTED + stream scope
 //!   RFC9114 §8.1   ¶?  NORMATIVE  classify(InvalidConnectUdpPath)   → H3_CONNECT_ERROR + stream scope
 //!   RFC9114 §8.1   ¶?  NORMATIVE  classify(OutOfMemory)             → H3_INTERNAL_ERROR + Category.resource
+//!   RFC9114 §8.1   ¶?  NORMATIVE  classify(SendBufferFull)          → H3_INTERNAL_ERROR + stream scope + Category.resource
+//!   RFC9114 §8.1   ¶?  NORMATIVE  classify(BodyTooLarge)            → H3_INTERNAL_ERROR + stream scope + Category.resource
+//!   RFC9114 §8.1   ¶?  NORMATIVE  classify(EventQueueFull)          → H3_INTERNAL_ERROR + Category.resource
+//!   RFC9114 §8.1   ¶?  NORMATIVE  classify(DecodedFieldSectionTooLarge) → H3_MESSAGE_ERROR + Category.resource
 //!   RFC9114 §8.1   ¶?  NORMATIVE  classify(unmapped)                → H3_GENERAL_PROTOCOL_ERROR
 //!   RFC9114 §8.1   ¶?  NORMATIVE  classify(DatagramNotEnabled)      → H3_SETTINGS_ERROR
 //!   RFC9114 §8.1   ¶?  NORMATIVE  classify(MalformedEncoderInstr.)  → QPACK_ENCODER_STREAM_ERROR
 //!   RFC9114 §8.1   ¶?  NORMATIVE  classify(MalformedDecoderInstr.)  → QPACK_DECODER_STREAM_ERROR
 //!   RFC9114 §8.1   ¶?  NORMATIVE  classify(MalformedFieldSection)   → QPACK_DECOMPRESSION_FAILED
-//!   RFC9114 §8.1   ¶?  NORMATIVE  peerConnectionError carries Source.peer
-//!   RFC9114 §8.1   ¶?  NORMATIVE  localConnectionError carries Source.local + cause name
+//!   RFC9297 §2.1   ¶6  MUST       classify(UdpPayloadTooLarge)      → H3_CONNECT_ERROR + stream scope
+//!   RFC9114 §8.1   ¶?  NORMATIVE  classify(ContextBufferFull)       → H3_CONNECT_ERROR + stream scope + Category.resource
+//!   RFC9114 §8.1   ¶?  NORMATIVE  classify(CapsuleTooLarge)         → H3_INTERNAL_ERROR + stream scope + Category.resource
+//!   RFC9114 §8     ¶?  NORMATIVE  peerConnectionError carries Source.peer
+//!   RFC9114 §8     ¶?  NORMATIVE  localConnectionError carries Source.local + cause name
+//!   RFC9114 §8     ¶?  NORMATIVE  localConnectionCode produces a Source.local close
+//!   RFC9114 §8     ¶?  NORMATIVE  peerStreamError carries stream id + final size
 //!   RFC9114 §8.1   ¶?  NORMATIVE  ApplicationError.isQpack identifies QPACK codes
 //!   RFC9114 §8.1   ¶?  NORMATIVE  ApplicationError.isRequestScoped identifies request-stream codes
-//!   RFC9114 §8.2   ¶?  NORMATIVE  H3_VERSION_FALLBACK present and addressable
 //!
 //! Visible debt:
 //!   none — the module exposes every defined code as a named constant.
@@ -157,17 +170,17 @@ test "MUST encode H3_VERSION_FALLBACK as 0x0110 [RFC9114 §11.2.3]" {
     try std.testing.expectEqual(@as(u64, 0x0110), ErrorCode.version_fallback);
 }
 
-// ---------------------------------------------------------------- RFC 9204 §6.1–§6.2 QPACK
+// ---------------------------------------------------------------- RFC 9204 §6 QPACK
 
-test "MUST encode QPACK_DECOMPRESSION_FAILED as 0x0200 [RFC9204 §6.1]" {
+test "MUST encode QPACK_DECOMPRESSION_FAILED as 0x0200 [RFC9204 §6]" {
     try std.testing.expectEqual(@as(u64, 0x0200), ErrorCode.qpack_decompression_failed);
 }
 
-test "MUST encode QPACK_ENCODER_STREAM_ERROR as 0x0201 [RFC9204 §6.2.1]" {
+test "MUST encode QPACK_ENCODER_STREAM_ERROR as 0x0201 [RFC9204 §6]" {
     try std.testing.expectEqual(@as(u64, 0x0201), ErrorCode.qpack_encoder_stream_error);
 }
 
-test "MUST encode QPACK_DECODER_STREAM_ERROR as 0x0202 [RFC9204 §6.2.2]" {
+test "MUST encode QPACK_DECODER_STREAM_ERROR as 0x0202 [RFC9204 §6]" {
     try std.testing.expectEqual(@as(u64, 0x0202), ErrorCode.qpack_decoder_stream_error);
 }
 
@@ -283,10 +296,13 @@ test "NORMATIVE applicationError names H3_CONNECT_ERROR [RFC9114 §8.1 ¶?]" {
     try std.testing.expectEqual(errors.Scope.stream, a.default_scope);
 }
 
-test "NORMATIVE applicationError names H3_VERSION_FALLBACK [RFC9114 §8.2 ¶?]" {
-    // §8.2 reserves H3_VERSION_FALLBACK for negotiated downgrade. The
-    // category in our taxonomy is `general` because it's a connection-
-    // close signal rather than a behavioural class.
+test "NORMATIVE applicationError names H3_VERSION_FALLBACK [RFC9114 §8.1]" {
+    // §8.1 defines H3_VERSION_FALLBACK (0x0110) — "the requested operation
+    // cannot be served over HTTP/3. The peer should retry over HTTP/1.1."
+    // The category in our taxonomy is `general` because it's a connection-
+    // close signal rather than a behavioural class, and the default scope
+    // is connection because the negotiated downgrade necessarily aborts
+    // the whole HTTP/3 session.
     const a = errors.applicationError(ErrorCode.version_fallback);
     try std.testing.expectEqualStrings("H3_VERSION_FALLBACK", a.name);
     try std.testing.expectEqual(errors.Category.general, a.category);
@@ -295,20 +311,20 @@ test "NORMATIVE applicationError names H3_VERSION_FALLBACK [RFC9114 §8.2 ¶?]" 
 
 // ---------------------------------------------------------------- RFC 9204 §6 + RFC 9297 §5.2 naming
 
-test "NORMATIVE applicationError names QPACK_DECOMPRESSION_FAILED [RFC9204 §6.1]" {
+test "NORMATIVE applicationError names QPACK_DECOMPRESSION_FAILED [RFC9204 §6]" {
     const a = errors.applicationError(ErrorCode.qpack_decompression_failed);
     try std.testing.expectEqualStrings("QPACK_DECOMPRESSION_FAILED", a.name);
     try std.testing.expectEqual(errors.Category.qpack, a.category);
     try std.testing.expect(a.isQpack());
 }
 
-test "NORMATIVE applicationError names QPACK_ENCODER_STREAM_ERROR [RFC9204 §6.2.1]" {
+test "NORMATIVE applicationError names QPACK_ENCODER_STREAM_ERROR [RFC9204 §6]" {
     const a = errors.applicationError(ErrorCode.qpack_encoder_stream_error);
     try std.testing.expectEqualStrings("QPACK_ENCODER_STREAM_ERROR", a.name);
     try std.testing.expect(a.isQpack());
 }
 
-test "NORMATIVE applicationError names QPACK_DECODER_STREAM_ERROR [RFC9204 §6.2.2]" {
+test "NORMATIVE applicationError names QPACK_DECODER_STREAM_ERROR [RFC9204 §6]" {
     const a = errors.applicationError(ErrorCode.qpack_decoder_stream_error);
     try std.testing.expectEqualStrings("QPACK_DECODER_STREAM_ERROR", a.name);
     try std.testing.expect(a.isQpack());
@@ -487,35 +503,179 @@ test "NORMATIVE classify(DatagramNotEnabled) maps to H3_SETTINGS_ERROR [RFC9114 
     try std.testing.expectEqual(ErrorCode.settings_error, c.application.code);
 }
 
-test "NORMATIVE classify(MalformedEncoderInstruction) maps to QPACK_ENCODER_STREAM_ERROR [RFC9204 §6.2.1]" {
+test "NORMATIVE classify(MalformedEncoderInstruction) maps to QPACK_ENCODER_STREAM_ERROR [RFC9204 §6]" {
     const c = errors.classify(error.MalformedEncoderInstruction);
     try std.testing.expectEqual(ErrorCode.qpack_encoder_stream_error, c.application.code);
     try std.testing.expectEqual(errors.Category.qpack, c.application.category);
 }
 
-test "NORMATIVE classify(MalformedDecoderInstruction) maps to QPACK_DECODER_STREAM_ERROR [RFC9204 §6.2.2]" {
+test "NORMATIVE classify(MalformedDecoderInstruction) maps to QPACK_DECODER_STREAM_ERROR [RFC9204 §6]" {
     const c = errors.classify(error.MalformedDecoderInstruction);
     try std.testing.expectEqual(ErrorCode.qpack_decoder_stream_error, c.application.code);
 }
 
-test "NORMATIVE classify(InsertCountIncrementZero) maps to QPACK_DECODER_STREAM_ERROR [RFC9204 §4.4.1]" {
+test "NORMATIVE classify(InsertCountIncrementZero) maps to QPACK_DECODER_STREAM_ERROR [RFC9204 §4.4.3]" {
+    // §4.4.3 ¶4: an Insert Count Increment of zero is a connection error
+    // of type QPACK_DECODER_STREAM_ERROR.
     const c = errors.classify(error.InsertCountIncrementZero);
     try std.testing.expectEqual(ErrorCode.qpack_decoder_stream_error, c.application.code);
 }
 
-test "NORMATIVE classify(MalformedFieldSection) maps to QPACK_DECOMPRESSION_FAILED [RFC9204 §6.1]" {
+test "NORMATIVE classify(MalformedFieldSection) maps to QPACK_DECOMPRESSION_FAILED [RFC9204 §6]" {
     const c = errors.classify(error.MalformedFieldSection);
     try std.testing.expectEqual(ErrorCode.qpack_decompression_failed, c.application.code);
 }
 
-test "NORMATIVE classify(InvalidStaticIndex) maps to QPACK_DECOMPRESSION_FAILED [RFC9204 §6.1]" {
+test "NORMATIVE classify(InvalidStaticIndex) maps to QPACK_DECOMPRESSION_FAILED [RFC9204 §6]" {
     const c = errors.classify(error.InvalidStaticIndex);
     try std.testing.expectEqual(ErrorCode.qpack_decompression_failed, c.application.code);
 }
 
-test "NORMATIVE classify(HuffmanEos) maps to QPACK_DECOMPRESSION_FAILED [RFC9204 §6.1]" {
+test "NORMATIVE classify(HuffmanEos) maps to QPACK_DECOMPRESSION_FAILED [RFC9204 §6]" {
     const c = errors.classify(error.HuffmanEos);
     try std.testing.expectEqual(ErrorCode.qpack_decompression_failed, c.application.code);
+}
+
+// ---------------------------------------------------------------- §7.2.4 ¶3 + §8.1 additional code-only mappings
+
+test "NORMATIVE classify(DuplicateSettings) maps to H3_FRAME_UNEXPECTED [RFC9114 §7.2.4 ¶3]" {
+    // §7.2.4 ¶3: receipt of a second SETTINGS frame on the control stream
+    // is a connection error of type H3_FRAME_UNEXPECTED. (The in-frame
+    // duplicate-identifier case `DuplicateSetting` (singular) instead
+    // maps to H3_SETTINGS_ERROR per §7.2.4 ¶5.)
+    const c = errors.classify(error.DuplicateSettings);
+    try std.testing.expectEqual(ErrorCode.frame_unexpected, c.application.code);
+    try std.testing.expectEqual(errors.Category.frame, c.category);
+    try std.testing.expectEqual(errors.Scope.connection, c.scope);
+}
+
+test "NORMATIVE classify(InvalidDatagramStream) maps to H3_ID_ERROR [RFC9114 §8.1 ¶?]" {
+    // RFC 9297 §2.1 ¶12: when an HTTP/3 Datagram references a stream id
+    // that exceeds bidirectional-stream limits, the connection SHOULD
+    // close with H3_ID_ERROR.
+    const c = errors.classify(error.InvalidDatagramStream);
+    try std.testing.expectEqual(ErrorCode.id_error, c.application.code);
+    try std.testing.expectEqual(errors.Category.id, c.category);
+}
+
+test "NORMATIVE classify(PushNotEnabled) maps to H3_ID_ERROR [RFC9114 §8.1 ¶?]" {
+    // §7.2.5 ¶3 / §6.2.2 ¶6: a PUSH_PROMISE or push-id usage when push
+    // has not been negotiated is an H3_ID_ERROR.
+    const c = errors.classify(error.PushNotEnabled);
+    try std.testing.expectEqual(ErrorCode.id_error, c.application.code);
+}
+
+test "NORMATIVE classify(InvalidPriorityTarget) maps to H3_ID_ERROR [RFC9114 §8.1 ¶?]" {
+    const c = errors.classify(error.InvalidPriorityTarget);
+    try std.testing.expectEqual(ErrorCode.id_error, c.application.code);
+}
+
+test "NORMATIVE classify(ReservedSetting) maps to H3_SETTINGS_ERROR [RFC9114 §7.2.4.1 ¶5]" {
+    // §7.2.4.1 ¶5: receiving an HTTP/2-reserved setting id is an
+    // H3_SETTINGS_ERROR.
+    const c = errors.classify(error.ReservedSetting);
+    try std.testing.expectEqual(ErrorCode.settings_error, c.application.code);
+    try std.testing.expectEqual(errors.Category.settings, c.category);
+}
+
+test "NORMATIVE classify(InvalidLength) maps to H3_FRAME_ERROR [RFC9114 §8.1 ¶?]" {
+    const c = errors.classify(error.InvalidLength);
+    try std.testing.expectEqual(ErrorCode.frame_error, c.application.code);
+    try std.testing.expectEqual(errors.Category.frame, c.category);
+}
+
+test "NORMATIVE classify(DataAfterTrailers) maps to H3_MESSAGE_ERROR [RFC9114 §4.1 ¶14]" {
+    // §4.1 ¶14: trailers terminate the message; further DATA is malformed.
+    const c = errors.classify(error.DataAfterTrailers);
+    try std.testing.expectEqual(ErrorCode.message_error, c.application.code);
+}
+
+test "NORMATIVE classify(DuplicatePseudoHeader) maps to H3_MESSAGE_ERROR [RFC9114 §4.3 ¶?]" {
+    const c = errors.classify(error.DuplicatePseudoHeader);
+    try std.testing.expectEqual(ErrorCode.message_error, c.application.code);
+}
+
+test "NORMATIVE classify(PseudoHeaderAfterRegular) maps to H3_MESSAGE_ERROR [RFC9114 §4.3 ¶?]" {
+    const c = errors.classify(error.PseudoHeaderAfterRegular);
+    try std.testing.expectEqual(ErrorCode.message_error, c.application.code);
+}
+
+// ---------------------------------------------------------------- §8.1 + RFC 9297 §2.1 scope/category mappings
+
+test "NORMATIVE classify(SendBufferFull) maps to H3_INTERNAL_ERROR with stream scope and Category.resource [RFC9114 §8.1 ¶?]" {
+    // Local back-pressure: callers can recover by retrying without
+    // tearing the connection down, so the scope is stream and the
+    // category is resource.
+    const c = errors.classify(error.SendBufferFull);
+    try std.testing.expectEqual(ErrorCode.internal_error, c.application.code);
+    try std.testing.expectEqual(errors.Scope.stream, c.scope);
+    try std.testing.expectEqual(errors.Category.resource, c.category);
+}
+
+test "NORMATIVE classify(BodyTooLarge) maps to H3_INTERNAL_ERROR with stream scope and Category.resource [RFC9114 §8.1 ¶?]" {
+    const c = errors.classify(error.BodyTooLarge);
+    try std.testing.expectEqual(ErrorCode.internal_error, c.application.code);
+    try std.testing.expectEqual(errors.Scope.stream, c.scope);
+    try std.testing.expectEqual(errors.Category.resource, c.category);
+}
+
+test "NORMATIVE classify(EventQueueFull) maps to H3_INTERNAL_ERROR with Category.resource [RFC9114 §8.1 ¶?]" {
+    const c = errors.classify(error.EventQueueFull);
+    try std.testing.expectEqual(ErrorCode.internal_error, c.application.code);
+    try std.testing.expectEqual(errors.Category.resource, c.category);
+}
+
+test "NORMATIVE classify(CapsuleTooLarge) maps to H3_INTERNAL_ERROR with stream scope and Category.resource [RFC9114 §8.1 ¶?]" {
+    const c = errors.classify(error.CapsuleTooLarge);
+    try std.testing.expectEqual(ErrorCode.internal_error, c.application.code);
+    try std.testing.expectEqual(errors.Scope.stream, c.scope);
+    try std.testing.expectEqual(errors.Category.resource, c.category);
+}
+
+test "NORMATIVE classify(DecodedFieldSectionTooLarge) maps to H3_MESSAGE_ERROR with Category.resource [RFC9114 §4.2.2 ¶?]" {
+    // §4.2.2: an overly large decoded field section is treated as a
+    // malformed message; the resource flavour distinguishes it from
+    // structurally invalid headers.
+    const c = errors.classify(error.DecodedFieldSectionTooLarge);
+    try std.testing.expectEqual(ErrorCode.message_error, c.application.code);
+    try std.testing.expectEqual(errors.Category.resource, c.category);
+}
+
+test "NORMATIVE classify(UdpPayloadTooLarge) maps to H3_CONNECT_ERROR with stream scope [RFC9297 §2.1 ¶6]" {
+    // RFC 9298 / RFC 9297: a CONNECT-UDP payload that exceeds the
+    // negotiated MTU is a stream-scoped H3_CONNECT_ERROR.
+    const c = errors.classify(error.UdpPayloadTooLarge);
+    try std.testing.expectEqual(ErrorCode.connect_error, c.application.code);
+    try std.testing.expectEqual(errors.Scope.stream, c.scope);
+    try std.testing.expectEqual(errors.Category.connect, c.category);
+}
+
+test "NORMATIVE classify(ContextBufferFull) maps to H3_CONNECT_ERROR with stream scope and Category.resource [RFC9114 §8.1 ¶?]" {
+    const c = errors.classify(error.ContextBufferFull);
+    try std.testing.expectEqual(ErrorCode.connect_error, c.application.code);
+    try std.testing.expectEqual(errors.Scope.stream, c.scope);
+    try std.testing.expectEqual(errors.Category.resource, c.category);
+}
+
+test "NORMATIVE classify(CapsuleTypeLimitExceeded) maps to H3_CONNECT_ERROR with stream scope and Category.resource [RFC9114 §8.1 ¶?]" {
+    const c = errors.classify(error.CapsuleTypeLimitExceeded);
+    try std.testing.expectEqual(ErrorCode.connect_error, c.application.code);
+    try std.testing.expectEqual(errors.Scope.stream, c.scope);
+    try std.testing.expectEqual(errors.Category.resource, c.category);
+}
+
+// ---------------------------------------------------------------- §8 unknown-code MUST treat as H3_NO_ERROR
+
+test "NORMATIVE applicationError preserves the raw value of an unknown code [RFC9114 §8 ¶?]" {
+    // §8 ¶5: receivers MUST treat an unknown code as equivalent to
+    // H3_NO_ERROR. The classifier preserves the raw value so the caller
+    // can decide how to handle the close, but flags the code as
+    // unrecognised so behaviour layers can apply that rule.
+    const a = errors.applicationError(0x4242);
+    try std.testing.expect(!a.known());
+    try std.testing.expectEqual(@as(u64, 0x4242), a.code);
+    try std.testing.expectEqualStrings("UNKNOWN_APPLICATION_ERROR", a.name);
+    try std.testing.expectEqual(errors.Category.unknown, a.category);
 }
 
 // ---------------------------------------------------------------- §8.1 helpers on ApplicationError

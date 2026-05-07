@@ -15,33 +15,43 @@
 //! ## Coverage
 //!
 //! Covered:
-//!   RFC9114 §3.1   ¶?  MUST     advertise ALPN identifier "h3" (TLS handshake)
-//!   RFC9114 §3.1   ¶?  MUST     expose only the "h3" ALPN id in null3.protocol.alpn_protocols
+//!   RFC9114 §3.1   ¶3  MUST     advertise ALPN identifier "h3" (TLS handshake)
+//!   RFC9114 §3.1   ¶3  MUST     expose only the "h3" ALPN id in null3.protocol.alpn_protocols
 //!   RFC9114 §5.1   ¶?  MUST     each peer opens exactly one control stream during start()
 //!   RFC9114 §5.1   ¶?  MUST     local Session.start() emits SETTINGS as first frame on the control stream
 //!   RFC9114 §5.2   ¶1  MUST     GOAWAY transitions the local session into draining
-//!   RFC9114 §5.2   ¶?  MUST     GOAWAY transitions the receiving session into draining
+//!   RFC9114 §5.2   ¶1  MUST     Session.sent_goaway_id reflects the locally advertised GOAWAY id
+//!   RFC9114 §5.2   ¶3  MUST     GOAWAY transitions the receiving session into draining
+//!   RFC9114 §5.2   ¶3  MUST     Session.peer_goaway_id reflects the peer-advertised GOAWAY id
 //!   RFC9114 §5.2   ¶?  NORMATIVE shutdown is irrevocable once GOAWAY is sent
-//!   RFC9114 §5.2   ¶?  MUST     refuse to start a new request whose id ≥ peer GOAWAY id
-//!   RFC9114 §5.2   ¶?  MUST     allow starting a new request whose id < peer GOAWAY id
+//!   RFC9114 §5.2   ¶3  MUST     refuse to start a new request whose id ≥ peer GOAWAY id
+//!   RFC9114 §5.2   ¶3  MUST     allow starting a new request whose id < peer GOAWAY id
 //!   RFC9114 §6.2.1 ¶6  MUST     local SETTINGS frame is shipped immediately after the control-stream type prefix
 //!   RFC9114 §6.2.1 ¶7  MUST     duplicate peer control-stream attempt closes with H3_STREAM_CREATION_ERROR
+//!   RFC9114 §6.2.1 ¶?  MUST     QPACK encoder + decoder critical streams open during start when configured
 //!   RFC9114 §7.2.4 ¶2  MUST     applied peer SETTINGS surface as Session.peer_settings
 //!   RFC9114 §7.2.4 ¶3  MUST     each side sends SETTINGS exactly once (Session.start is idempotent)
 //!   RFC9114 §7.2.4 ¶3  MUST     close with H3_FRAME_UNEXPECTED on a duplicate peer SETTINGS frame
 //!   RFC9114 §7.2.6 ¶1  MUST     server GOAWAY id is a 4-divisible client-bidi stream id
-//!   RFC9114 §7.2.6 ¶?  MUST     client GOAWAY id is a server-initiated push id (any varint allowed)
+//!   RFC9114 §7.2.6 ¶1  MUST     client GOAWAY id is an arbitrary push id varint (incl. non-bidi shapes)
 //!   RFC9114 §7.2.6 ¶?  MUST     server rejects a GOAWAY whose id is non-bidi or server-initiated
-//!   RFC9114 §7.2.6 ¶?  MUST     local sender refuses to monotonically *increase* a previously sent GOAWAY id
-//!   RFC9114 §7.2.6 ¶?  MUST     receiver refuses a peer GOAWAY whose id increases versus a prior peer GOAWAY
+//!   RFC9114 §7.2.6 ¶7  MUST     local sender refuses to monotonically *increase* a previously sent server GOAWAY id
+//!   RFC9114 §7.2.6 ¶7  MUST     local sender refuses to monotonically *increase* a previously sent client GOAWAY id
+//!   RFC9114 §7.2.6 ¶?  MUST     local sender accepts narrowing (decreasing) client GOAWAY ids
+//!   RFC9114 §7.2.6 ¶7  MUST     receiver refuses a peer GOAWAY whose id increases versus a prior peer GOAWAY
 //!   RFC9114 §7.2.6 ¶?  MUST     receiver accepts a peer GOAWAY whose id decreases versus a prior peer GOAWAY
 //!   RFC9114 §7.2.6 ¶?  MUST     receiver accepts a repeated peer GOAWAY id
 //!   RFC9114 §7.2.6 ¶?  MUST     out-of-role peer GOAWAY (server-initiated bidi id from server) closes with H3_ID_ERROR
 //!   RFC9114 §10.5   ¶?  NORMATIVE Session classifies inbound CONNECTION_CLOSE error space and code
 //!
 //! Visible debt:
-//!   none — every requirement against the public Session surface has a test
-//!   below.
+//!   RFC9114 §5.2   ¶3  MUST NOT promise new pushes after a peer GOAWAY.
+//!     null3.Session.startPush does not consult `peer_goaway_id`; the
+//!     request-side analogue (peerAllowsRequest) IS enforced. The push side
+//!     of the same MUST is therefore not testable end-to-end through the
+//!     public surface today; promoting it would require an explicit
+//!     peerAllowsPush guard inside `startPush`. Tracked as a Session
+//!     surface gap.
 //!
 //! Out of scope here (covered elsewhere or by design):
 //!   RFC9114 §6.2.1 ¶6  MUST close with H3_MISSING_SETTINGS on a peer's
@@ -56,7 +66,12 @@
 //!     request or accept and process it"); the MUST is monotonicity, which
 //!     IS covered. The SHOULD-strength rejection is application policy
 //!     above the protocol layer.
+//!   RFC9114 §3.1   ¶2  MUST verify the server certificate matches the
+//!     URI's origin server. This is a TLS-layer requirement that flows
+//!     through `null3.client.initTlsContext` / boringssl-zig; it is not
+//!     observable through the bare Session API.
 //!   RFC9114 §6        stream-layer frame placement → rfc9114_streams.zig
+//!   RFC9114 §6.1   ¶3  server-initiated bidi rejection → rfc9114_streams.zig
 //!   RFC9114 §7.2.4.1  individual SETTINGS identifiers (codec) → rfc9114_settings.zig
 //!   RFC9114 §7.2      wire-format frame layouts → rfc9114_frames.zig
 //!   RFC9114 §11.2.3   numeric error-code values → rfc9114_errors.zig
@@ -551,4 +566,141 @@ test "NORMATIVE classify an unknown application error code [RFC9114 §10 ¶?]" {
     const unknown = null3.errors.applicationError(0xface);
     try std.testing.expect(!unknown.known());
     try std.testing.expectEqual(null3.ErrorScope.application, unknown.default_scope);
+}
+
+// ---------------------------------------------------------------- §7.2.6 client-side GOAWAY (push ID) semantics
+
+test "MUST allow a client GOAWAY whose id is an arbitrary push id varint [RFC9114 §7.2.6 ¶1]" {
+    // §7.2.6 ¶1: "a server sends a client-initiated stream ID, and a
+    // client sends a push ID." Push IDs are unconstrained varints so
+    // null3 must accept ids that would be illegal as a server GOAWAY
+    // (e.g. low bits 0b01, 0b10, 0b11). This is the dual of the
+    // server-side client-bidi rejection test.
+    const allocator = std.testing.allocator;
+
+    var pair: fixture.H3Pair = undefined;
+    try pair.initStarted(allocator, .{}, .{});
+    defer pair.deinit();
+    try fixture.exchangePairSettings(allocator, &pair);
+
+    try pair.client_h3.sendGoaway(1); // illegal as server GOAWAY id
+    // After sendGoaway the client MUST be in draining; that is the
+    // observable assertion the local-id-shape rule does not block.
+    try std.testing.expectEqual(null3.session.ShutdownState.draining, pair.client_h3.shutdownState());
+}
+
+test "MUST refuse to monotonically increase a previously sent client GOAWAY id [RFC9114 §7.2.6 ¶7]" {
+    // §7.2.6 ¶7: "the identifier in each frame MUST NOT be greater
+    // than the identifier in any previous frame." This is symmetric
+    // across both peer roles — the existing server-side test has a
+    // client-side dual.
+    const allocator = std.testing.allocator;
+
+    var pair: fixture.H3Pair = undefined;
+    try pair.initStarted(allocator, .{}, .{});
+    defer pair.deinit();
+    try fixture.exchangePairSettings(allocator, &pair);
+
+    try pair.client_h3.sendGoaway(4);
+    try std.testing.expectError(
+        null3.session.Error.InvalidGoawayId,
+        pair.client_h3.sendGoaway(8),
+    );
+}
+
+test "MUST allow a client GOAWAY id that decreases versus a previously sent client GOAWAY [RFC9114 §7.2.6 ¶7]" {
+    // The narrowing complement: a client may follow GOAWAY(8) with
+    // GOAWAY(4). null3 must accept the smaller subsequent push id
+    // and remain in draining.
+    const allocator = std.testing.allocator;
+
+    var pair: fixture.H3Pair = undefined;
+    try pair.initStarted(allocator, .{}, .{});
+    defer pair.deinit();
+    try fixture.exchangePairSettings(allocator, &pair);
+
+    try pair.client_h3.sendGoaway(8);
+    try pair.client_h3.sendGoaway(4);
+    try std.testing.expectEqual(null3.session.ShutdownState.draining, pair.client_h3.shutdownState());
+}
+
+// ---------------------------------------------------------------- §5.2 GOAWAY observable session state
+
+test "MUST record the locally-sent GOAWAY id on Session.sent_goaway_id [RFC9114 §5.2 ¶1]" {
+    // §5.2 ¶1: "Endpoints initiate the graceful shutdown of an HTTP/3
+    // connection by sending a GOAWAY frame." After sendGoaway returns
+    // the local session must surface the id it advertised so callers
+    // can synchronize their own state machines.
+    const allocator = std.testing.allocator;
+
+    var pair: fixture.H3Pair = undefined;
+    try pair.initStarted(allocator, .{}, .{});
+    defer pair.deinit();
+    try fixture.exchangePairSettings(allocator, &pair);
+
+    try std.testing.expectEqual(@as(?u64, null), pair.server_h3.sent_goaway_id);
+    try pair.server_h3.sendGoaway(0);
+    try std.testing.expectEqual(@as(?u64, 0), pair.server_h3.sent_goaway_id);
+}
+
+test "MUST record the peer-observed GOAWAY id on Session.peer_goaway_id [RFC9114 §5.2 ¶3]" {
+    // §5.2 ¶3: "Endpoints MUST NOT initiate new requests or promise
+    // new pushes on the connection after receipt of a GOAWAY frame
+    // from the peer." Enforcement requires remembering the peer's
+    // last-allowed id, which Session exposes as peer_goaway_id.
+    const allocator = std.testing.allocator;
+
+    var pair: fixture.H3Pair = undefined;
+    try pair.initStarted(allocator, .{}, .{});
+    defer pair.deinit();
+    try fixture.exchangePairSettings(allocator, &pair);
+
+    try std.testing.expectEqual(@as(?u64, null), pair.client_h3.peer_goaway_id);
+    try fixture.writeFrame(
+        &pair.server,
+        pair.server_h3.control_stream_id.?,
+        .{ .goaway = 8 },
+    );
+    try fixture.pumpQuiet(allocator, &pair, 64);
+    try std.testing.expectEqual(@as(?u64, 8), pair.client_h3.peer_goaway_id);
+}
+
+// ---------------------------------------------------------------- §6.2.1 critical-stream open during start()
+
+test "MUST open the QPACK encoder + decoder critical streams when configured [RFC9114 §6.2.1 ¶? + RFC9204 §4.2 ¶?]" {
+    // The QPACK encoder/decoder streams are critical streams in the
+    // RFC 9204 sense; null3.Session.start opens them when
+    // open_qpack_streams is set. Verify the stream ids are populated
+    // and follow the local-uni id pattern (low bits 0b10 for client,
+    // 0b11 for server).
+    const allocator = std.testing.allocator;
+
+    var pair: fixture.H3Pair = undefined;
+    try pair.initStarted(
+        allocator,
+        .{ .open_qpack_streams = true },
+        .{ .open_qpack_streams = true },
+    );
+    defer pair.deinit();
+
+    const enc_id = pair.client_h3.qpack_encoder_stream_id orelse
+        return error.MissingEncoderStream;
+    const dec_id = pair.client_h3.qpack_decoder_stream_id orelse
+        return error.MissingDecoderStream;
+    try std.testing.expect(null3.stream.isUnidirectional(enc_id));
+    try std.testing.expect(null3.stream.isUnidirectional(dec_id));
+    try std.testing.expect(null3.stream.isClientInitiated(enc_id));
+    try std.testing.expect(null3.stream.isClientInitiated(dec_id));
+    try std.testing.expect(enc_id != dec_id);
+}
+
+// ---------------------------------------------------------------- §3.1 TLS ALPN list shape
+
+test "MUST advertise exactly one ALPN protocol identifier in the offer list [RFC9114 §3.1 ¶3]" {
+    // §3.1 ¶3: "the token \"h3\" is used in the Application-Layer
+    // Protocol Negotiation". null3 must offer that token and only
+    // that token from its base configuration; extensions can extend
+    // the list but the suite asserts the conformance baseline.
+    try std.testing.expectEqual(@as(usize, 1), protocol.alpn_protocols.len);
+    try std.testing.expectEqualStrings("h3", protocol.alpn_protocols[0]);
 }

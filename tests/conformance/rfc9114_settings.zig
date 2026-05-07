@@ -19,8 +19,9 @@
 //! Covered:
 //!   RFC9114 §7.2.4   ¶1   MUST     SETTINGS payload is a sequence of varint pairs
 //!   RFC9114 §7.2.4   ¶3   NORMATIVE encoder emits each (id, value) pair using minimum varint form
-//!   RFC9114 §7.2.4   ¶5   MUST     reject a SETTINGS payload that repeats the same identifier
+//!   RFC9114 §7.2.4   ¶5   MAY      reject a SETTINGS payload that repeats the same identifier
 //!   RFC9114 §7.2.4.1 ¶8   MUST NOT honour HTTP/2 reserved SETTINGS IDs (0x00, 0x02–0x05)
+//!   RFC9114 §7.2.4.1 ¶8   MUST NOT honour an HTTP/2 reserved ID even when sandwiched between defined IDs
 //!   RFC9114 §7.2.4.1 ¶7   NORMATIVE ignore unknown / GREASE setting identifiers on receive
 //!   RFC9114 §7.2.4   ¶?   NORMATIVE QPACK_MAX_TABLE_CAPACITY default value is 0
 //!   RFC9114 §7.2.4   ¶?   NORMATIVE QPACK_BLOCKED_STREAMS default value is 0
@@ -227,12 +228,12 @@ test "MUST round-trip SETTINGS_H3_DATAGRAM = 1 as `true` [RFC9297 §2.1 ¶2]" {
 
 // ---------------------------------------------------------------- §7.2.4 ¶5 duplicate-identifier rule
 
-test "MUST reject a SETTINGS payload that repeats the QPACK_MAX_TABLE_CAPACITY identifier [RFC9114 §7.2.4 ¶5]" {
-    // §7.2.4 ¶5: "An implementation MUST ignore any parameter with an
-    // identifier it does not understand. A SETTINGS frame MUST NOT
-    // include the same identifier twice. Receipt of a duplicate
-    // setting MUST be treated as a connection error of type
-    // H3_SETTINGS_ERROR." nullq surfaces this as `DuplicateSetting`.
+test "MAY reject a SETTINGS payload that repeats the QPACK_MAX_TABLE_CAPACITY identifier [RFC9114 §7.2.4 ¶5]" {
+    // §7.2.4 ¶5 (sender): "The same setting identifier MUST NOT occur
+    // more than once in the SETTINGS frame." (receiver): "A receiver
+    // MAY treat the presence of duplicate setting identifiers as a
+    // connection error of type H3_SETTINGS_ERROR." nullq elects the
+    // MAY-reject path and surfaces this as `DuplicateSetting`.
     var buf: [32]u8 = undefined;
     var pos: usize = 0;
     pos += try varint.encode(buf[pos..], protocol.SettingId.qpack_max_table_capacity);
@@ -246,7 +247,7 @@ test "MUST reject a SETTINGS payload that repeats the QPACK_MAX_TABLE_CAPACITY i
     );
 }
 
-test "MUST reject a SETTINGS payload that repeats the QPACK_BLOCKED_STREAMS identifier [RFC9114 §7.2.4 ¶5]" {
+test "MAY reject a SETTINGS payload that repeats the QPACK_BLOCKED_STREAMS identifier [RFC9114 §7.2.4 ¶5]" {
     var buf: [32]u8 = undefined;
     var pos: usize = 0;
     pos += try varint.encode(buf[pos..], protocol.SettingId.qpack_blocked_streams);
@@ -260,7 +261,7 @@ test "MUST reject a SETTINGS payload that repeats the QPACK_BLOCKED_STREAMS iden
     );
 }
 
-test "MUST reject a SETTINGS payload that repeats the MAX_FIELD_SECTION_SIZE identifier [RFC9114 §7.2.4 ¶5]" {
+test "MAY reject a SETTINGS payload that repeats the MAX_FIELD_SECTION_SIZE identifier [RFC9114 §7.2.4 ¶5]" {
     var buf: [32]u8 = undefined;
     var pos: usize = 0;
     pos += try varint.encode(buf[pos..], protocol.SettingId.max_field_section_size);
@@ -274,7 +275,7 @@ test "MUST reject a SETTINGS payload that repeats the MAX_FIELD_SECTION_SIZE ide
     );
 }
 
-test "MUST reject a SETTINGS payload that repeats the ENABLE_CONNECT_PROTOCOL identifier [RFC9114 §7.2.4 ¶5]" {
+test "MAY reject a SETTINGS payload that repeats the ENABLE_CONNECT_PROTOCOL identifier [RFC9114 §7.2.4 ¶5]" {
     var buf: [32]u8 = undefined;
     var pos: usize = 0;
     pos += try varint.encode(buf[pos..], protocol.SettingId.enable_connect_protocol);
@@ -288,7 +289,7 @@ test "MUST reject a SETTINGS payload that repeats the ENABLE_CONNECT_PROTOCOL id
     );
 }
 
-test "MUST reject a SETTINGS payload that repeats the H3_DATAGRAM identifier [RFC9114 §7.2.4 ¶5]" {
+test "MAY reject a SETTINGS payload that repeats the H3_DATAGRAM identifier [RFC9114 §7.2.4 ¶5]" {
     var buf: [32]u8 = undefined;
     var pos: usize = 0;
     pos += try varint.encode(buf[pos..], protocol.SettingId.h3_datagram);
@@ -368,6 +369,25 @@ test "MUST NOT accept a SETTINGS payload containing reserved-zero ID 0x00 [RFC91
     var pos: usize = 0;
     pos += try varint.encode(buf[pos..], 0);
     pos += try varint.encode(buf[pos..], 0);
+
+    try std.testing.expectError(
+        settings_mod.Error.ReservedSetting,
+        settings_mod.Settings.decode(buf[0..pos]),
+    );
+}
+
+test "MUST NOT accept a SETTINGS payload where a reserved HTTP/2 ID follows a defined ID [RFC9114 §7.2.4.1 ¶8]" {
+    // §7.2.4.1 ¶8 requires receipt of any reserved HTTP/2 ID to be
+    // H3_SETTINGS_ERROR. Order MUST NOT matter — applying defined
+    // identifiers first does not exempt a later reserved ID from the
+    // rule. Catches a defect where the decoder might commit a
+    // partially-successful Settings before scanning the rest.
+    var buf: [16]u8 = undefined;
+    var pos: usize = 0;
+    pos += try varint.encode(buf[pos..], protocol.SettingId.qpack_max_table_capacity);
+    pos += try varint.encode(buf[pos..], 4096);
+    pos += try varint.encode(buf[pos..], 0x05); // HTTP/2 SETTINGS_INITIAL_WINDOW_SIZE
+    pos += try varint.encode(buf[pos..], 65535);
 
     try std.testing.expectError(
         settings_mod.Error.ReservedSetting,

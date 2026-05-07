@@ -13,21 +13,20 @@
 //! Covered:
 //!   RFC9114 §7.1   ¶1   MUST     every frame begins Type (i) Length (i) Payload
 //!   RFC9114 §7.1   ¶3   MUST NOT accept a frame whose declared Length exceeds the buffer
+//!   RFC9114 §7.1   ¶3   MUST NOT accept a frame with trailing garbage after the identified fields
+//!   RFC9114 §7.1   ¶3   MUST NOT accept a frame whose embedded varint exceeds declared Length
+//!   RFC9114 §7.1   ¶1   NORMATIVE multi-byte Length varint round-trips when payload >= 64 bytes
+//!   RFC9114 §7.1   ¶1   NORMATIVE Decoded.bytes_read advances by the frame's full envelope size
 //!   RFC9114 §7.2.1 ¶2   NORMATIVE DATA frame body is the unframed payload
-//!   RFC9114 §7.2.1 ¶?   MUST     DATA frame round-trip is byte-exact
 //!   RFC9114 §7.2.2 ¶1   NORMATIVE HEADERS frame body carries the QPACK field section
-//!   RFC9114 §7.2.2 ¶?   MUST     HEADERS frame round-trip is byte-exact
 //!   RFC9114 §7.2.3 ¶1   MUST     CANCEL_PUSH carries a single Push ID varint
-//!   RFC9114 §7.2.3 ¶?   MUST NOT accept CANCEL_PUSH with trailing garbage
 //!   RFC9114 §7.2.5 ¶1   MUST     PUSH_PROMISE carries Push ID varint then Encoded Field Section
-//!   RFC9114 §7.2.5 ¶?   MUST     PUSH_PROMISE round-trips push_id and field_section verbatim
 //!   RFC9114 §7.2.6 ¶1   MUST     GOAWAY carries a single Stream/Push ID varint
-//!   RFC9114 §7.2.6 ¶?   MUST NOT accept GOAWAY with trailing garbage
 //!   RFC9114 §7.2.7 ¶1   MUST     MAX_PUSH_ID carries a single Push ID varint
-//!   RFC9114 §7.2.7 ¶?   MUST NOT accept MAX_PUSH_ID with trailing garbage
-//!   RFC9114 §7.2.8 ¶1   MUST     ignore unknown frame types per §9
-//!   RFC9114 §7.2.8 ¶3   MUST     reserve frame-type IDs of the form 0x1f*N+0x21 for greasing
-//!   RFC9114 §7.2.4 ¶2   MUST     SETTINGS payload is opaque to the frame-envelope codec (parsed by Settings.decode)
+//!   RFC9114 §9     ¶3   MUST     ignore unknown frame types (codec yields `unknown`)
+//!   RFC9114 §7.2.8 ¶1   MUST     reserve frame-type IDs of the form 0x1f*N+0x21 for greasing
+//!   RFC9114 §7.2.8 ¶3   MUST     reserved HTTP/2 frame types decode as `unknown` at the codec layer
+//!   RFC9114 §7.2.4 ¶1   MUST     SETTINGS payload is opaque to the frame-envelope codec (parsed by Settings.decode)
 //!   RFC9218 §7.2   ¶3   MUST     PRIORITY_UPDATE Request is type 0xF0700, carries Element ID + Priority Field Value
 //!   RFC9218 §7.2   ¶3   MUST     PRIORITY_UPDATE Push is type 0xF0701, carries Element ID + Priority Field Value
 //!   RFC9114 §7.1   ¶1   NORMATIVE iterator walks concatenated frames in order
@@ -76,12 +75,13 @@ test "MUST encode every frame as `Type (i) Length (i) Payload` [RFC9114 §7.1 ¶
 }
 
 test "MUST NOT accept a frame whose declared Length exceeds the available buffer [RFC9114 §7.1 ¶3]" {
-    // §7.1 ¶3: "If a frame is incomplete or larger than what is
-    // remaining in the QUIC stream's current readable bytes, the
-    // implementation MUST treat the [...]" — at the codec layer this
-    // surfaces as InsufficientBytes when the Length declares more
-    // bytes than the slice contains.
-    // type=0x00, length=0x10 (16 bytes), but only 0 bytes follow.
+    // §7.1 ¶3: "Each frame's payload MUST contain exactly the fields
+    // identified in its description. A frame payload that ... terminates
+    // before the end of the identified fields MUST be treated as a
+    // connection error of type H3_FRAME_ERROR." At the codec layer this
+    // surfaces as InsufficientBytes when the Length declares more bytes
+    // than the slice contains. type=0x00, length=0x10 (16 bytes), but
+    // only 0 bytes follow.
     const truncated = [_]u8{ 0x00, 0x10 };
     try std.testing.expectError(
         nullq.wire.varint.Error.InsufficientBytes,
@@ -116,6 +116,51 @@ test "MUST NOT accept a frame whose Length refers to bytes past the slice bounda
         nullq.wire.varint.Error.InsufficientBytes,
         frame_mod.decode(&truncated),
     );
+}
+
+test "MUST NOT accept a frame whose embedded varint claims more bytes than declared Length permits [RFC9114 §7.1 ¶3]" {
+    // §7.1 ¶3: "redundant length encodings MUST be verified to be
+    // self-consistent". CANCEL_PUSH (type=0x03) has Length=1 but the
+    // single payload byte 0x40 declares a 2-byte varint — an internal
+    // inconsistency that MUST surface as a parse error.
+    const malformed = [_]u8{ 0x03, 0x01, 0x40 };
+    try std.testing.expectError(
+        nullq.wire.varint.Error.InsufficientBytes,
+        frame_mod.decode(&malformed),
+    );
+}
+
+test "NORMATIVE frame envelope round-trips with a multi-byte Length varint [RFC9114 §7.1 ¶1]" {
+    // §7.1 ¶1: Length is a QUIC variable-length integer. Payloads of
+    // 64+ bytes need the 2-byte form on the wire — confirms the
+    // codec's Length field is varint-encoded, not fixed-width.
+    var payload: [100]u8 = undefined;
+    @memset(&payload, 0xab);
+    var buf: [128]u8 = undefined;
+    const n = try frame_mod.encode(&buf, .{ .data = &payload });
+    // Type byte 0x00 (1-byte), then Length varint must use the 2-byte
+    // form (top 2 bits = 01) because 100 > 63.
+    try std.testing.expectEqual(@as(u8, 0x00), buf[0]);
+    try std.testing.expectEqual(@as(u8, 0x40), buf[1] & 0xc0);
+    const d = try frame_mod.decode(buf[0..n]);
+    try std.testing.expectEqual(n, d.bytes_read);
+    switch (d.frame) {
+        .data => |bytes| try std.testing.expectEqualSlices(u8, &payload, bytes),
+        else => return error.TestExpectedEqual,
+    }
+}
+
+test "NORMATIVE Decoded.bytes_read advances by the frame's full envelope size [RFC9114 §7.1 ¶1]" {
+    // The iterator's pos += d.bytes_read invariant requires that
+    // Decoded.bytes_read equal Type.len + Length.len + payload.len.
+    // A discrepancy would either skip frames or revisit them.
+    const payload = "abc";
+    var buf: [16]u8 = undefined;
+    const n = try frame_mod.encode(&buf, .{ .data = payload });
+    const d = try frame_mod.decode(buf[0..n]);
+    try std.testing.expectEqual(n, d.bytes_read);
+    // Sanity-check the layout: 1 byte type + 1 byte length + 3 bytes payload.
+    try std.testing.expectEqual(@as(usize, 5), n);
 }
 
 // ---------------------------------------------------------------- §7.2.1 DATA
@@ -216,10 +261,14 @@ test "MUST round-trip the Push ID carried by CANCEL_PUSH [RFC9114 §7.2.3 ¶1]" 
     }
 }
 
-test "MUST NOT accept a CANCEL_PUSH frame with trailing garbage after the Push ID [RFC9114 §7.2.3 ¶1]" {
-    // §7.2.3 grammar declares exactly one Push ID varint; any
-    // trailing bytes are malformed. type=0x03, length=0x02, payload =
-    // varint Push ID (1 byte) + extra byte.
+test "MUST NOT accept a CANCEL_PUSH frame with trailing garbage after the Push ID [RFC9114 §7.1 ¶3]" {
+    // §7.1 ¶3: "Each frame's payload MUST contain exactly the fields
+    // identified in its description. A frame payload that contains
+    // additional bytes after the identified fields ... MUST be treated
+    // as a connection error of type H3_FRAME_ERROR." §7.2.3 declares
+    // exactly one Push ID varint; any trailing payload bytes violate
+    // that. type=0x03, length=0x02, payload = varint Push ID (1 byte)
+    // + extra byte.
     const malformed = [_]u8{ 0x03, 0x02, 0x07, 0xff };
     try std.testing.expectError(
         frame_mod.Error.InvalidFramePayload,
@@ -349,9 +398,10 @@ test "MUST round-trip the Stream/Push ID carried by GOAWAY [RFC9114 §7.2.6 ¶1]
     }
 }
 
-test "MUST NOT accept a GOAWAY frame with trailing garbage after the ID [RFC9114 §7.2.6 ¶1]" {
-    // §7.2.6 grammar declares exactly one varint; any trailing bytes
-    // are malformed.
+test "MUST NOT accept a GOAWAY frame with trailing garbage after the ID [RFC9114 §7.1 ¶3]" {
+    // §7.1 ¶3: trailing bytes after the identified fields MUST be
+    // H3_FRAME_ERROR. §7.2.6 declares exactly one Stream/Push ID
+    // varint, so any extra payload byte is malformed.
     const malformed = [_]u8{ 0x07, 0x02, 0x00, 0xff };
     try std.testing.expectError(
         frame_mod.Error.InvalidFramePayload,
@@ -389,7 +439,9 @@ test "MUST round-trip the Push ID carried by MAX_PUSH_ID [RFC9114 §7.2.7 ¶1]" 
     }
 }
 
-test "MUST NOT accept a MAX_PUSH_ID frame with trailing garbage [RFC9114 §7.2.7 ¶1]" {
+test "MUST NOT accept a MAX_PUSH_ID frame with trailing garbage [RFC9114 §7.1 ¶3]" {
+    // §7.1 ¶3: trailing bytes after the identified fields MUST be
+    // H3_FRAME_ERROR. §7.2.7 declares exactly one Push ID varint.
     const malformed = [_]u8{ 0x0d, 0x02, 0x00, 0xff };
     try std.testing.expectError(
         frame_mod.Error.InvalidFramePayload,
@@ -407,9 +459,9 @@ test "MUST NOT accept a MAX_PUSH_ID frame with empty payload [RFC9114 §7.2.7 ¶
 
 // ---------------------------------------------------------------- §7.2.8 reserved / unknown frames
 
-test "MUST decode a frame with an unknown type as `unknown` [RFC9114 §9 ¶?]" {
-    // §9 (cross-cutting reserved-extension paragraph) and §7.2.8: a
-    // receiver "MUST ignore" unknown frame types. The codec's
+test "MUST decode a frame with an unknown type as `unknown` [RFC9114 §9 ¶3]" {
+    // §9 ¶3: "Implementations MUST ignore unknown or unsupported
+    // values in all extensible protocol elements." The codec's
     // contract is to surface them as the `unknown` variant — the
     // receive-side gating that triggers H3_FRAME_UNEXPECTED for
     // wrong-context frames lives in stream.zig and rfc9114_streams.zig.
@@ -430,8 +482,8 @@ test "MUST decode a frame with an unknown type as `unknown` [RFC9114 §9 ¶?]" {
     }
 }
 
-test "MUST decode a GREASE-formatted frame type as `unknown` [RFC9114 §7.2.8 ¶3]" {
-    // §7.2.8 ¶3: "Frame types of the format `0x1f * N + 0x21` for
+test "MUST decode a GREASE-formatted frame type as `unknown` [RFC9114 §7.2.8 ¶1]" {
+    // §7.2.8 ¶1: "Frame types of the format 0x1f * N + 0x21 for
     // non-negative integer values of N are reserved to exercise the
     // requirement that unknown types be ignored." The codec hands
     // these through the same `unknown` variant. N=1 → 0x40.
@@ -447,8 +499,8 @@ test "MUST decode a GREASE-formatted frame type as `unknown` [RFC9114 §7.2.8 ¶
     }
 }
 
-test "MUST decode a reserved HTTP/2 frame type (0x02 PRIORITY) as `unknown` at the codec layer [RFC9114 §7.2.8 ¶2]" {
-    // §7.2.8 ¶2: HTTP/2 IDs 0x02, 0x06, 0x08, 0x09 are reserved. The
+test "MUST decode a reserved HTTP/2 frame type (0x02 PRIORITY) as `unknown` at the codec layer [RFC9114 §7.2.8 ¶3]" {
+    // §7.2.8 ¶3: HTTP/2 IDs 0x02, 0x06, 0x08, 0x09 are reserved. The
     // wire codec surfaces them as `unknown`; the receive-side gate
     // that maps that to H3_FRAME_UNEXPECTED lives in stream.zig and
     // is exercised in rfc9114_streams.zig — keep that distinct.
@@ -463,10 +515,11 @@ test "MUST decode a reserved HTTP/2 frame type (0x02 PRIORITY) as `unknown` at t
     }
 }
 
-test "MUST round-trip an Unknown frame's payload bytes verbatim [RFC9114 §9 ¶?]" {
-    // The encoder offers an `unknown` constructor that mirrors
-    // decoded `unknown` frames — useful for forwarding GREASE on the
-    // sender side. Round-trip MUST preserve frame_type and payload.
+test "MUST round-trip an Unknown frame's payload bytes verbatim [RFC9114 §9 ¶3]" {
+    // §9 ¶3 motivates the `unknown` constructor: when a peer ignores
+    // unknown values, an encoder that wants to forward or generate
+    // GREASE-style frames must be able to emit arbitrary type +
+    // payload tuples. Round-trip MUST preserve frame_type and payload.
     const payload = "opaque-extension-bytes";
     var buf: [64]u8 = undefined;
     const n = try frame_mod.encode(&buf, .{

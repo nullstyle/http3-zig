@@ -20,9 +20,9 @@
 //!   RFC9114 §7.2.7 ¶1   MUST     MAX_PUSH_ID frame type ID is 0x0d
 //!   RFC9218 §7.2  ¶3    MUST     PRIORITY_UPDATE Request frame type ID is 0xF0700
 //!   RFC9218 §7.2  ¶3    MUST     PRIORITY_UPDATE Push frame type ID is 0xF0701
-//!   RFC9114 §7.2.8 ¶2   MUST NOT permit reserved HTTP/2 frame types 0x02/0x06/0x08/0x09 as defined H3 frames
+//!   RFC9114 §7.2.8 ¶3   MUST NOT permit reserved HTTP/2 frame types 0x02/0x06/0x08/0x09 as defined H3 frames
 //!   RFC9114 §6.2.1 ¶1   MUST     control stream type ID is 0x00
-//!   RFC9114 §7.1   ¶3   MUST     push stream type ID is 0x01
+//!   RFC9114 §6.2.2 ¶2   MUST     push stream type ID is 0x01
 //!   RFC9204 §4.2   ¶1   MUST     QPACK encoder stream type ID is 0x02
 //!   RFC9204 §4.2   ¶1   MUST     QPACK decoder stream type ID is 0x03
 //!   RFC9114 §7.2.4.1¶3  MUST     SETTINGS_QPACK_MAX_TABLE_CAPACITY ID is 0x01
@@ -53,7 +53,7 @@
 //!   RFC9204 §6     ¶1   MUST     QPACK_DECODER_STREAM_ERROR error code is 0x0202
 //!   RFC9297 §5.2   ¶1   MUST     H3_DATAGRAM_ERROR error code is 0x33
 //!   RFC9114 §7.2.8 ¶1   MUST     reserve `0x1f * N + 0x21` values as GREASE in every registry
-//!   RFC9114 §6.1   ¶6   MUST     ALPN identifier is "h3"
+//!   RFC9114 §3.1   ¶3   MUST     ALPN identifier is "h3"
 //!
 //! Visible debt:
 //!   none — every constant the public API exposes has an audit test here.
@@ -144,26 +144,28 @@ test "MUST register the PRIORITY_UPDATE Push frame type at value 0xF0701 [RFC921
 
 // ---------------------------------------------------------------- §7.2.8 reserved HTTP/2 frame types
 
-test "MUST treat HTTP/2 PRIORITY (0x02) as a reserved frame type [RFC9114 §7.2.8 ¶2]" {
-    // §7.2.8 ¶2: "Frame types 0x02 (PRIORITY), 0x06 (PING), 0x08
-    // (WINDOW_UPDATE), and 0x09 (CONTINUATION) defined by HTTP/2
-    // [HTTP/2] are reserved and MUST NOT be sent in HTTP/3."
+test "MUST treat HTTP/2 PRIORITY (0x02) as a reserved frame type [RFC9114 §7.2.8 ¶3]" {
+    // §7.2.8 ¶3: "Frame types that were used in HTTP/2 where there is
+    // no corresponding HTTP/3 frame have also been reserved (Section
+    // 11.2.1). These frame types MUST NOT be sent, and their receipt
+    // MUST be treated as a connection error of type
+    // H3_FRAME_UNEXPECTED." 0x02 is HTTP/2 PRIORITY.
     try std.testing.expect(protocol.isReservedHttp2FrameType(0x02));
 }
 
-test "MUST treat HTTP/2 PING (0x06) as a reserved frame type [RFC9114 §7.2.8 ¶2]" {
+test "MUST treat HTTP/2 PING (0x06) as a reserved frame type [RFC9114 §7.2.8 ¶3]" {
     try std.testing.expect(protocol.isReservedHttp2FrameType(0x06));
 }
 
-test "MUST treat HTTP/2 WINDOW_UPDATE (0x08) as a reserved frame type [RFC9114 §7.2.8 ¶2]" {
+test "MUST treat HTTP/2 WINDOW_UPDATE (0x08) as a reserved frame type [RFC9114 §7.2.8 ¶3]" {
     try std.testing.expect(protocol.isReservedHttp2FrameType(0x08));
 }
 
-test "MUST treat HTTP/2 CONTINUATION (0x09) as a reserved frame type [RFC9114 §7.2.8 ¶2]" {
+test "MUST treat HTTP/2 CONTINUATION (0x09) as a reserved frame type [RFC9114 §7.2.8 ¶3]" {
     try std.testing.expect(protocol.isReservedHttp2FrameType(0x09));
 }
 
-test "MUST NOT classify defined HTTP/3 frame types as reserved HTTP/2 types [RFC9114 §7.2.8 ¶2]" {
+test "MUST NOT classify defined HTTP/3 frame types as reserved HTTP/2 types [RFC9114 §7.2.8 ¶3]" {
     // The defined HTTP/3 frame types (DATA, HEADERS, CANCEL_PUSH, ...)
     // are categorically distinct from the §7.2.8 reservation set.
     try std.testing.expect(!protocol.isReservedHttp2FrameType(protocol.FrameType.data));
@@ -191,8 +193,8 @@ test "MUST classify all defined HTTP/3 frame types as known [RFC9114 §7.2 ¶1]"
     try std.testing.expect(protocol.isKnownFrameType(protocol.FrameType.priority_update_push));
 }
 
-test "MUST NOT classify reserved HTTP/2 frame types as known HTTP/3 frame types [RFC9114 §7.2.8 ¶2]" {
-    // §7.2.8 ¶2 reserves these IDs; they have no HTTP/3 semantics so
+test "MUST NOT classify reserved HTTP/2 frame types as known HTTP/3 frame types [RFC9114 §7.2.8 ¶3]" {
+    // §7.2.8 ¶3 reserves these IDs; they have no HTTP/3 semantics so
     // `isKnownFrameType` MUST return false. (The receive-side rule —
     // close the connection if such a frame arrives — is exercised in
     // rfc9114_streams.zig / rfc9114_errors.zig.)
@@ -218,9 +220,10 @@ test "MUST register the control stream type at value 0x00 [RFC9114 §6.2.1 ¶1]"
     try std.testing.expectEqual(@as(u64, 0x00), protocol.StreamType.control);
 }
 
-test "MUST register the push stream type at value 0x01 [RFC9114 §7.1 ¶3]" {
-    // §7.1 ¶3 (and §6.2.2 ¶1): "Server push uses push streams; a push
-    // stream is indicated by a stream type of 0x01."
+test "MUST register the push stream type at value 0x01 [RFC9114 §6.2.2 ¶2]" {
+    // §6.2.2 ¶2: "A push stream is indicated by a stream type of 0x01,
+    // followed by the push ID of the promise that it fulfills, encoded
+    // as a variable-length integer."
     try std.testing.expectEqual(@as(u64, 0x01), protocol.StreamType.push);
 }
 
