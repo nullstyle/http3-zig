@@ -32,11 +32,9 @@
 //!   RFC9114 §7.2.4   ¶1   MUST NOT accept a SETTINGS payload truncated mid-pair
 //!
 //! Visible debt:
-//!   RFC9114 §7.2.4.1 ¶8   MUST NOT serialise a reserved-HTTP/2 setting on the encoder side
-//!     — the current `Settings` struct only stores defined IDs, so the
-//!       encoder can't physically emit a reserved ID. See skip_ test below.
+//!   (none)
 //!
-//! Out of scope here (covered elsewhere):
+//! Out of scope here (covered elsewhere or by design):
 //!   RFC9114 §7.2.4   ¶2   SETTINGS-handshake state machine (first frame on
 //!                          control stream, peer-side rejection of late SETTINGS,
 //!                          GOAWAY interaction)                       → rfc9114_session.zig
@@ -44,6 +42,11 @@
 //!                          stream                                    → rfc9114_session.zig
 //!   RFC9114 §7.2.4.1 ¶3   semantic enforcement of MAX_FIELD_SECTION_SIZE on receive
 //!                          (HEADERS rejection)                       → rfc9114_messages.zig
+//!   RFC9114 §7.2.4.1 ¶8   MUST NOT serialise a reserved HTTP/2 setting on the encoder side
+//!                          — encoder cannot physically emit a reserved HTTP/2
+//!                            setting ID; the `Settings` struct only exposes the
+//!                            defined IDs, so there is no runtime path that
+//!                            could violate this MUST NOT.
 
 const std = @import("std");
 const null3 = @import("null3");
@@ -370,16 +373,6 @@ test "MUST NOT accept a SETTINGS payload containing reserved-zero ID 0x00 [RFC91
         settings_mod.Error.ReservedSetting,
         settings_mod.Settings.decode(buf[0..pos]),
     );
-}
-
-test "skip_MUST NOT serialise a reserved HTTP/2 setting on the encoder side [RFC9114 §7.2.4.1 ¶8]" {
-    // §7.2.4.1 ¶8 prohibits sending reserved IDs on the wire. The
-    // current `Settings` struct only stores the IDs nullq defines
-    // (0x01, 0x06, 0x07, 0x08, 0x33), so the encoder is *physically
-    // incapable* of emitting a reserved ID — but there is no negative
-    // test today for "I tried to emit one and was told no". Worth
-    // adding once an unknown-ID raw passthrough lands on the encoder.
-    return error.SkipZigTest;
 }
 
 // ---------------------------------------------------------------- §7.2.4.1 ¶7 unknown / GREASE IDs

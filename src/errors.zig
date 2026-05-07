@@ -139,12 +139,17 @@ pub fn classify(err: anyerror) LocalError {
 pub fn codeForError(err: anyerror) u64 {
     return switch (err) {
         error.MissingSettings => protocol.ErrorCode.missing_settings,
-        error.DuplicateSettings,
         error.DuplicateSetting,
         error.ReservedSetting,
         error.InvalidSettingValue,
         => protocol.ErrorCode.settings_error,
-        error.FrameUnexpected => protocol.ErrorCode.frame_unexpected,
+        // RFC 9114 §7.2.4 ¶3: a second SETTINGS frame on the control
+        // stream is a connection error of type H3_FRAME_UNEXPECTED. The
+        // in-frame duplicate-identifier case is `DuplicateSetting`
+        // (singular) above and stays H3_SETTINGS_ERROR per §7.2.4 ¶5.
+        error.DuplicateSettings,
+        error.FrameUnexpected,
+        => protocol.ErrorCode.frame_unexpected,
         error.InvalidFramePayload,
         error.InsufficientBytes,
         error.ValueTooLarge,
@@ -366,6 +371,13 @@ test "local causes map to close codes and cause categories" {
     try std.testing.expectEqual(protocol.ErrorCode.settings_error, settings.application.code);
     try std.testing.expectEqual(Category.settings, settings.category);
     try std.testing.expectEqual(Scope.connection, settings.scope);
+
+    // RFC 9114 §7.2.4 ¶3: duplicate SETTINGS *frame* on the control
+    // stream maps to H3_FRAME_UNEXPECTED, not H3_SETTINGS_ERROR.
+    const dup_frame = classify(error.DuplicateSettings);
+    try std.testing.expectEqual(protocol.ErrorCode.frame_unexpected, dup_frame.application.code);
+    try std.testing.expectEqual(Category.frame, dup_frame.category);
+    try std.testing.expectEqual(Scope.connection, dup_frame.scope);
 
     const headers = classify(error.ConnectionSpecificField);
     try std.testing.expectEqual(protocol.ErrorCode.message_error, headers.application.code);

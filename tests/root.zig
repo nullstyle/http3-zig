@@ -2591,7 +2591,8 @@ test "session rejects duplicate peer SETTINGS" {
 
     try expectPairH3Error(allocator, &pair, error.DuplicateSettings);
     try std.testing.expectEqual(null3.session.ShutdownState.closed, pair.server_h3.shutdownState());
-    try expectLastCloseCode(&pair.server_h3, null3.protocol.ErrorCode.settings_error);
+    // RFC 9114 §7.2.4 ¶3: a second SETTINGS frame is H3_FRAME_UNEXPECTED.
+    try expectLastCloseCode(&pair.server_h3, null3.protocol.ErrorCode.frame_unexpected);
 }
 
 test "session rejects DATA on control streams" {
@@ -2862,7 +2863,7 @@ test "session exposes send buffer state and enforces configured cap" {
     try std.testing.expect(before.has_pending);
     try std.testing.expect(!before.overLimit(256));
 
-    var body = [_]u8{'x'} ** 512;
+    var body: [512]u8 = @splat('x');
     try std.testing.expect(!try writer.canWrite(body.len));
     try std.testing.expectError(error.SendBufferFull, writer.write(&body));
 
@@ -2982,7 +2983,7 @@ test "session rejects oversized DATAGRAM sends" {
     defer pair.deinit();
     try exchangePairSettings(allocator, &pair);
 
-    var payload = [_]u8{'x'} ** 1200;
+    var payload: [1200]u8 = @splat('x');
     try std.testing.expectError(error.DatagramTooLarge, pair.client_h3.sendDatagram(0, &payload));
 }
 

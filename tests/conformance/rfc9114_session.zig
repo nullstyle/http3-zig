@@ -28,6 +28,7 @@
 //!   RFC9114 §6.2.1 ¶7  MUST     duplicate peer control-stream attempt closes with H3_STREAM_CREATION_ERROR
 //!   RFC9114 §7.2.4 ¶2  MUST     applied peer SETTINGS surface as Session.peer_settings
 //!   RFC9114 §7.2.4 ¶3  MUST     each side sends SETTINGS exactly once (Session.start is idempotent)
+//!   RFC9114 §7.2.4 ¶3  MUST     close with H3_FRAME_UNEXPECTED on a duplicate peer SETTINGS frame
 //!   RFC9114 §7.2.6 ¶1  MUST     server GOAWAY id is a 4-divisible client-bidi stream id
 //!   RFC9114 §7.2.6 ¶?  MUST     client GOAWAY id is a server-initiated push id (any varint allowed)
 //!   RFC9114 §7.2.6 ¶?  MUST     server rejects a GOAWAY whose id is non-bidi or server-initiated
@@ -39,7 +40,6 @@
 //!   RFC9114 §10.5   ¶?  NORMATIVE Session classifies inbound CONNECTION_CLOSE error space and code
 //!
 //! Visible debt:
-//!   RFC9114 §7.2.4 ¶3  MUST     close with H3_FRAME_UNEXPECTED on duplicate SETTINGS (null3 currently closes with H3_SETTINGS_ERROR)
 //!   RFC9114 §6.2.1 ¶6  MUST     close with H3_MISSING_SETTINGS on a non-SETTINGS first control-stream frame end-to-end (Session.openControlStream is private; covered by `rfc9114_streams.zig` validator-level test)
 //!   RFC9114 §5.2   ¶?  MUST     a sender that issues GOAWAY MUST treat any subsequent inbound stream above the limit as ignored (only enforceable with a request-stream-above-goaway path test)
 //!
@@ -182,16 +182,29 @@ test "MUST keep peer SETTINGS unset until the peer has sent SETTINGS [RFC9114 §
 
 // ---------------------------------------------------------------- §7.2.4 ¶3 duplicate SETTINGS handling
 
-test "skip_MUST close with H3_FRAME_UNEXPECTED on a duplicate peer SETTINGS frame [RFC9114 §7.2.4 ¶3]" {
+test "MUST close with H3_FRAME_UNEXPECTED on a duplicate peer SETTINGS frame [RFC9114 §7.2.4 ¶3]" {
     // §7.2.4 ¶3: "If an endpoint receives a second SETTINGS frame on the
     // control stream, the endpoint MUST respond with a connection error
     // of type H3_FRAME_UNEXPECTED."
     //
-    // null3 currently maps DuplicateSettings to H3_SETTINGS_ERROR
-    // (0x0109) instead of H3_FRAME_UNEXPECTED (0x0105). Tracked as a
-    // visible debt — see `errors.codeForError` mapping for
-    // `error.DuplicateSettings`.
-    return error.SkipZigTest;
+    // The frame-level duplicate (a second SETTINGS frame) is distinct
+    // from the in-frame duplicate-identifier case (§7.2.4 ¶5), which
+    // remains H3_SETTINGS_ERROR.
+    const allocator = std.testing.allocator;
+
+    var pair: fixture.H3Pair = undefined;
+    try pair.initStarted(allocator, .{}, .{});
+    defer pair.deinit();
+
+    try fixture.writeFrame(
+        &pair.client,
+        pair.client_h3.control_stream_id.?,
+        .{ .settings = .{} },
+    );
+
+    try fixture.expectPairH3Error(allocator, &pair, error.DuplicateSettings);
+    try std.testing.expectEqual(null3.session.ShutdownState.closed, pair.server_h3.shutdownState());
+    try fixture.expectLastCloseCode(&pair.server_h3, ErrorCode.frame_unexpected);
 }
 
 test "MUST close on a duplicate peer SETTINGS frame [RFC9114 §7.2.4 ¶3]" {

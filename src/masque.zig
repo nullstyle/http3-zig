@@ -721,10 +721,14 @@ pub fn parseConnectUdpTarget(
     rest = rest[host_end + 1 ..];
     if (encoded_host.len == 0 or rest.len == 0) return Error.InvalidConnectUdpPath;
 
-    const port_end = std.mem.indexOfScalar(u8, rest, '/') orelse rest.len;
+    // RFC 9298 §3.1 URI template: "/.well-known/masque/udp/{target_host}/{target_port}/"
+    // — the trailing '/' after {target_port} is part of the template, not
+    // optional. Reject paths that omit it so the parser is symmetric with
+    // the encoder (which always emits the trailing '/').
+    const port_end = std.mem.indexOfScalar(u8, rest, '/') orelse return Error.InvalidConnectUdpPath;
     const port_text = rest[0..port_end];
     if (port_text.len == 0) return Error.InvalidConnectUdpPath;
-    if (port_end < rest.len and rest[port_end + 1 ..].len != 0) return Error.InvalidConnectUdpPath;
+    if (rest[port_end + 1 ..].len != 0) return Error.InvalidConnectUdpPath;
 
     const port = std.fmt.parseUnsigned(u16, port_text, 10) catch return Error.InvalidConnectUdpPath;
     if (port == 0) return Error.InvalidConnectUdpTarget;

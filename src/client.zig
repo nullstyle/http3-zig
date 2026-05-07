@@ -1230,6 +1230,18 @@ pub const Client = struct {
         allocator: std.mem.Allocator,
         options: WebSocketConnectOptions,
     ) session_mod.Error!WebSocketClientStream {
+        // RFC 6455 §4.1 / RFC 9220 §4.2: the client MUST include
+        // `Sec-WebSocket-Version: 13` in the bootstrap CONNECT request.
+        // Inject it ahead of caller-supplied headers; `startRequest`
+        // deep-copies headers, so a stack-local slice is fine.
+        const combined = try allocator.alloc(qpack.FieldLine, options.headers.len + 1);
+        defer allocator.free(combined);
+        combined[0] = .{
+            .name = websocket_mod.version_header_name,
+            .value = websocket_mod.version_token,
+        };
+        for (options.headers, 0..) |header, i| combined[i + 1] = header;
+
         return .{
             .writer = try self.startRequest(allocator, .{
                 .method = "CONNECT",
@@ -1237,7 +1249,7 @@ pub const Client = struct {
                 .authority = options.authority,
                 .path = options.path,
                 .connect_protocol = websocket_mod.protocol_token,
-                .headers = options.headers,
+                .headers = combined,
             }),
         };
     }

@@ -46,7 +46,10 @@
 //!   RFC9114 §4.3.2 ¶?   MUST NOT   accept :protocol when :method != CONNECT
 //!   RFC9114 §4.3.2 ¶?   MUST NOT   accept duplicate :protocol
 //!   RFC9114 §4.3.2 ¶?   MUST NOT   accept :protocol with empty value
+//!   RFC9114 §4.3.1 ¶?   MUST       :authority must not contain userinfo or fragment
+//!   RFC9114 §4.3.1 ¶?   MUST       :path is non-empty for http/https requests
 //!   RFC9114 §4.4   ¶?   MUST       response carries :status
+//!   RFC9114 §4.4   ¶?   MUST       :status is exactly three ASCII digits
 //!   RFC9114 §4.4   ¶?   MUST NOT   accept a response without :status
 //!   RFC9114 §4.4   ¶?   MUST NOT   accept duplicate :status
 //!   RFC9114 §4.5   ¶?   NORMATIVE  trailer field section permitted after request body
@@ -61,14 +64,7 @@
 //!   RFC9114 §4.6   ¶?   MUST       reject malformed messages — decoder side refuses bad inbound
 //!
 //! Visible debt:
-//!   RFC9114 §4.3.1 ¶?  MUST   :authority host syntactic validation (no userinfo, no fragment)
-//!                      → headers.zig only checks presence/uniqueness; URI-syntax
-//!                        validation is not yet implemented.
-//!   RFC9114 §4.3.1 ¶?  MUST   :path non-empty for non-OPTIONS / non-CONNECT
-//!                      → headers.zig accepts an empty :path; the RFC mandates non-empty
-//!                        for "http"/"https" requests.
-//!   RFC9114 §4.4   ¶?  MUST   :status three-ASCII-digit syntactic validation
-//!                      → headers.zig only enforces presence; numeric format unchecked.
+//!   (none)
 //!
 //! Out of scope here (covered elsewhere):
 //!   RFC9114 §7.2.2  HEADERS frame *wire* (length, type, varint)         → rfc9114_frames.zig
@@ -808,24 +804,86 @@ test "MUST reject encoding trailers containing a pseudo-header [RFC9114 §4.6 ¶
     );
 }
 
-// ---------------------------------------------------------------- §4.3.1 deferred URI-syntax checks
+// ---------------------------------------------------------------- §4.3.1 / §4.4 URI-syntax checks
 
-test "skip_MUST validate :authority host syntax (no userinfo, no fragment) [RFC9114 §4.3.1 ¶?]" {
-    // TODO: headers.zig only checks presence/uniqueness of :authority. The
-    // RFC mandates the value parse as a URI authority component (no
-    // userinfo, no fragment).
-    return error.SkipZigTest;
+test "MUST validate :authority host syntax (no userinfo, no fragment) [RFC9114 §4.3.1 ¶?]" {
+    // §4.3.1 / RFC 3986 §3.2: the ":authority" pseudo-header carries
+    // only host[:port]. A "user@host" form embeds a userinfo segment;
+    // "host#frag" embeds a fragment. Both are illegal in the URI
+    // authority component.
+    const with_userinfo = [_]FieldLine{
+        .{ .name = ":method", .value = "GET" },
+        .{ .name = ":scheme", .value = "https" },
+        .{ .name = ":path", .value = "/" },
+        .{ .name = ":authority", .value = "user@example.com" },
+    };
+    try std.testing.expectError(
+        headers.Error.InvalidPseudoHeader,
+        headers.validateRequest(&with_userinfo),
+    );
+
+    const with_fragment = [_]FieldLine{
+        .{ .name = ":method", .value = "GET" },
+        .{ .name = ":scheme", .value = "https" },
+        .{ .name = ":path", .value = "/" },
+        .{ .name = ":authority", .value = "example.com#frag" },
+    };
+    try std.testing.expectError(
+        headers.Error.InvalidPseudoHeader,
+        headers.validateRequest(&with_fragment),
+    );
 }
 
-test "skip_MUST validate :path is non-empty for http/https requests [RFC9114 §4.3.1 ¶?]" {
-    // TODO: headers.zig accepts a zero-length :path. RFC 9114 §4.3.1 says
-    // for "http" or "https" requests, :path MUST NOT be empty unless the
-    // request is OPTIONS or CONNECT.
-    return error.SkipZigTest;
+test "MUST validate :path is non-empty for http/https requests [RFC9114 §4.3.1 ¶?]" {
+    // §4.3.1: for "http" / "https" the request-target's path-absolute
+    // form requires at least "/". CONNECT (§4.4) is exempt because it
+    // omits ":path" entirely, which the validator surfaces as
+    // MissingPseudoHeader instead.
+    const empty_https = [_]FieldLine{
+        .{ .name = ":method", .value = "GET" },
+        .{ .name = ":scheme", .value = "https" },
+        .{ .name = ":path", .value = "" },
+        .{ .name = ":authority", .value = "example.com" },
+    };
+    try std.testing.expectError(
+        headers.Error.InvalidPseudoHeader,
+        headers.validateRequest(&empty_https),
+    );
+
+    const empty_http = [_]FieldLine{
+        .{ .name = ":method", .value = "POST" },
+        .{ .name = ":scheme", .value = "http" },
+        .{ .name = ":path", .value = "" },
+        .{ .name = ":authority", .value = "example.com" },
+    };
+    try std.testing.expectError(
+        headers.Error.InvalidPseudoHeader,
+        headers.validateRequest(&empty_http),
+    );
 }
 
-test "skip_MUST validate :status is exactly three ASCII digits [RFC9114 §4.4 ¶?]" {
-    // TODO: headers.zig only enforces presence/uniqueness of :status; it
-    // does not check that the value is three ASCII digits in [100..999].
-    return error.SkipZigTest;
+test "MUST validate :status is exactly three ASCII digits [RFC9114 §4.4 ¶?]" {
+    // §4.4 / RFC 9110 §15: the response status code is a three-digit
+    // integer. The receiver treats anything else as malformed (§4.6 →
+    // H3_MESSAGE_ERROR), which the validator surfaces as
+    // InvalidPseudoHeader.
+    const too_short = [_]FieldLine{
+        .{ .name = ":status", .value = "20" },
+    };
+    try std.testing.expectError(headers.Error.InvalidPseudoHeader, headers.validateResponse(&too_short));
+
+    const too_long = [_]FieldLine{
+        .{ .name = ":status", .value = "2000" },
+    };
+    try std.testing.expectError(headers.Error.InvalidPseudoHeader, headers.validateResponse(&too_long));
+
+    const non_digit = [_]FieldLine{
+        .{ .name = ":status", .value = "20a" },
+    };
+    try std.testing.expectError(headers.Error.InvalidPseudoHeader, headers.validateResponse(&non_digit));
+
+    const empty = [_]FieldLine{
+        .{ .name = ":status", .value = "" },
+    };
+    try std.testing.expectError(headers.Error.InvalidPseudoHeader, headers.validateResponse(&empty));
 }

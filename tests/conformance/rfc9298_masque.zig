@@ -23,8 +23,9 @@
 //!   RFC9298 §3.1 ¶?   MUST       :path uses the /.well-known/masque/udp/<host>/<port>/ template
 //!   RFC9298 §3.1 ¶?   MUST       host segment is percent-encoded per RFC 3986
 //!   RFC9298 §3.1 ¶?   MUST       port segment is the decimal target port
-//!   RFC9298 §3.1 ¶?   MUST       trailing '/' terminates the path (encode-side only)
+//!   RFC9298 §3.1 ¶?   MUST       trailing '/' terminates the path (encode and parse)
 //!   RFC9298 §3.1 ¶?   MUST NOT   accept a path that does not match the URI template prefix
+//!   RFC9298 §3.1 ¶?   MUST NOT   accept a path lacking the trailing slash on receive
 //!   RFC9298 §3.1 ¶?   MUST NOT   accept a path with empty host segment
 //!   RFC9298 §3.1 ¶?   MUST NOT   accept a path with empty port segment
 //!   RFC9298 §3.1 ¶?   MUST NOT   accept a path with port 0
@@ -55,8 +56,6 @@
 //!   RFC9298 §3.1 ¶?   MUST     host segment encoded as IP-literal must use '[' / ']' delimiters when
 //!                              an IPv6 address is given verbatim — null3 currently round-trips
 //!                              the percent-encoded form only.
-//!   RFC9298 §3.1 ¶?   MUST NOT accept a path lacking the trailing slash on receive
-//!                              (null3's parser is currently lenient).
 //!
 //! Out of scope here (covered elsewhere):
 //!   RFC9114 §7.2.4   SETTINGS_ENABLE_CONNECT_PROTOCOL codec (id 0x08)               → rfc9114_settings.zig
@@ -232,11 +231,18 @@ test "MUST NOT accept a path missing the URI template prefix [RFC9298 §3.1 ¶?]
     );
 }
 
-test "skip_MUST NOT accept a path lacking the trailing slash [RFC9298 §3.1 ¶?]" {
-    // §3.1 URI template ends with the slash after {target_port}. null3
-    // accepts paths without the trailing slash today (lenient receiver),
-    // which is more permissive than the URI template grammar.
-    return error.SkipZigTest;
+test "MUST NOT accept a path lacking the trailing slash [RFC9298 §3.1 ¶?]" {
+    // §3.1 URI template ends with the slash after {target_port}. The
+    // parser rejects paths missing the trailing '/' — the encoder always
+    // emits one, so the parser must be symmetric.
+    try std.testing.expectError(
+        masque.Error.InvalidConnectUdpPath,
+        masque.parseConnectUdpTarget(
+            allocator,
+            "/.well-known/masque/udp/example.com/443",
+            masque.default_connect_udp_path_prefix,
+        ),
+    );
 }
 
 test "MUST NOT accept a path missing the host segment [RFC9298 §3.1 ¶?]" {

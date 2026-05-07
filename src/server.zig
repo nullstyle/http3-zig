@@ -866,6 +866,7 @@ pub const Server = struct {
         options: WebSocketAcceptOptions,
     ) (session_mod.Error || websocket_mod.Error)!WebSocketServerStream {
         if (!request.isWebSocket()) return error.NotWebSocket;
+        try websocket_mod.validateClientRequestVersion(request.headers());
         if (!websocket_mod.isAcceptedStatus(options.status)) return error.InvalidAcceptStatus;
         return .{
             .writer = try self.startResponse(allocator, request.streamId(), .{

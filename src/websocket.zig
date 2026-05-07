@@ -13,9 +13,17 @@ pub const message = @import("websocket_message.zig");
 
 pub const protocol_token = "websocket";
 
+/// RFC 6455 §4.1 / §11.6: 13 is the only currently-defined
+/// `Sec-WebSocket-Version`, and RFC 9220 §4.2 inherits the requirement.
+pub const version_token = "13";
+
+/// Field name (lowercased per RFC 9114 §4.2) for `Sec-WebSocket-Version`.
+pub const version_header_name = "sec-websocket-version";
+
 pub const Error = error{
     NotWebSocket,
     InvalidAcceptStatus,
+    UnsupportedWebSocketVersion,
 };
 
 pub const ConnectOptions = struct {
@@ -52,6 +60,24 @@ pub fn isAcceptedStatus(status: []const u8) bool {
 pub fn responseAccepted(fields: []const qpack.FieldLine) bool {
     const status = fieldValue(fields, ":status") orelse return false;
     return isAcceptedStatus(status);
+}
+
+/// Returns the value of the `sec-websocket-version` request header (case-
+/// folded by RFC 9114 §4.2 to lowercase) if present, else null.
+pub fn requestVersion(fields: []const qpack.FieldLine) ?[]const u8 {
+    return fieldValue(fields, version_header_name);
+}
+
+/// Validates RFC 9220 §4.2 / RFC 6455 §4.1: an inbound WebSocket bootstrap
+/// request MUST carry `Sec-WebSocket-Version: 13`. The header is required —
+/// a missing header is a protocol error. The value comparison is exact after
+/// trimming optional surrounding whitespace per RFC 6455 §4.1; comma-
+/// separated lists (technically permitted by HTTP field syntax) are not
+/// accepted because RFC 6455 §11.6 reserves `13` as the sole defined value.
+pub fn validateClientRequestVersion(fields: []const qpack.FieldLine) Error!void {
+    const raw = requestVersion(fields) orelse return error.UnsupportedWebSocketVersion;
+    const trimmed = std.mem.trim(u8, raw, " \t");
+    if (!std.mem.eql(u8, trimmed, version_token)) return error.UnsupportedWebSocketVersion;
 }
 
 fn fieldValue(fields: []const qpack.FieldLine, name: []const u8) ?[]const u8 {

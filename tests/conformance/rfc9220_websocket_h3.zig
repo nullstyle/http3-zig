@@ -31,6 +31,7 @@
 //!   RFC9220 §4.1 ¶?   MAY        startWebSocket carries application headers (e.g. sec-websocket-protocol)
 //!   RFC9220 §4.2 ¶?   MAY        request includes Sec-WebSocket-Protocol when offering subprotocols
 //!   RFC9220 §4.2 ¶?   MAY        request includes Sec-WebSocket-Extensions when offering extensions
+//!   RFC9220 §4.2 ¶?   MUST       receive-side validates Sec-WebSocket-Version = 13 (RFC 6455 §4.1)
 //!   RFC9220 §4.3 ¶?   MUST       a 2xx response indicates the WebSocket was accepted
 //!   RFC9220 §4.3 ¶?   MUST NOT   classify a 1xx response as accepted (no 101 in HTTP/3)
 //!   RFC9220 §4.3 ¶?   MUST NOT   classify a 3xx redirect as accepted
@@ -38,9 +39,6 @@
 //!   RFC9220 §4.3 ¶?   MUST NOT   classify a 5xx response as accepted
 //!   RFC9220 §4.4 ¶?   MUST       acceptWebSocket refuses a non-2xx :status (failure path)
 //!   RFC9220 §4.4 ¶?   MUST       acceptWebSocket refuses a non-WebSocket request
-//!
-//! Visible debt:
-//!   RFC9220 §4   ¶?   MUST       Sec-WebSocket-Version semantics on receive (no validator yet)
 //!
 //! Out of scope here (covered elsewhere):
 //!   RFC9114 §7.2.4         SETTINGS frame *codec* (any setting-id including 0x08)  → rfc9114_settings.zig
@@ -318,14 +316,80 @@ test "MAY pass Sec-WebSocket-Protocol through WebSocketConnectOptions.headers [R
     try std.testing.expectEqualStrings("chat", options.headers[0].value);
 }
 
-test "skip_MUST validate Sec-WebSocket-Version = 13 on incoming WebSocket request [RFC9220 §4.2 ¶?]" {
-    // TODO: null3 does not currently parse / validate Sec-WebSocket-Version
-    // on the receive side. RFC 9220 §4.2 inherits RFC 6455 §4.2.1 ¶6 which
-    // says clients MUST send Sec-WebSocket-Version: 13 (although the
-    // version negotiation is moot because HTTP/3-bound clients negotiated
-    // via :protocol=websocket which is implicitly RFC 6455 v13). Tracked
-    // as visible debt.
-    return error.SkipZigTest;
+test "MUST validate Sec-WebSocket-Version = 13 on incoming WebSocket request [RFC9220 §4.2 ¶?]" {
+    // RFC 9220 §4.2 inherits RFC 6455 §4.1: the client `Sec-WebSocket-
+    // Version` header field MUST be `13`. null3 exposes a receive-side
+    // validator at `null3.websocket.validateClientRequestVersion` that
+    // `Server.acceptWebSocket` calls before producing the 2xx response.
+    // The exact-match value of "13" is accepted; anything else (including
+    // a missing header) is rejected with `error.UnsupportedWebSocketVersion`.
+
+    // Positive: the canonical "13" value is accepted.
+    const ok = [_]FieldLine{
+        .{ .name = ":method", .value = "CONNECT" },
+        .{ .name = ":scheme", .value = "https" },
+        .{ .name = ":authority", .value = "example.com" },
+        .{ .name = ":path", .value = "/" },
+        .{ .name = ":protocol", .value = "websocket" },
+        .{ .name = "sec-websocket-version", .value = "13" },
+    };
+    try websocket.validateClientRequestVersion(&ok);
+
+    // Optional surrounding whitespace is trimmed per RFC 6455 §4.1.
+    const padded = [_]FieldLine{
+        .{ .name = ":method", .value = "CONNECT" },
+        .{ .name = ":scheme", .value = "https" },
+        .{ .name = ":authority", .value = "example.com" },
+        .{ .name = ":path", .value = "/" },
+        .{ .name = ":protocol", .value = "websocket" },
+        .{ .name = "sec-websocket-version", .value = " 13 " },
+    };
+    try websocket.validateClientRequestVersion(&padded);
+
+    // Negative: a missing header is a protocol error — every WebSocket
+    // bootstrap request MUST carry it.
+    const missing = [_]FieldLine{
+        .{ .name = ":method", .value = "CONNECT" },
+        .{ .name = ":scheme", .value = "https" },
+        .{ .name = ":authority", .value = "example.com" },
+        .{ .name = ":path", .value = "/" },
+        .{ .name = ":protocol", .value = "websocket" },
+    };
+    try std.testing.expectError(
+        websocket.Error.UnsupportedWebSocketVersion,
+        websocket.validateClientRequestVersion(&missing),
+    );
+
+    // Negative: any other version string is rejected. RFC 6455 §11.6
+    // reserves 13 as the sole defined value.
+    const wrong = [_]FieldLine{
+        .{ .name = ":method", .value = "CONNECT" },
+        .{ .name = ":scheme", .value = "https" },
+        .{ .name = ":authority", .value = "example.com" },
+        .{ .name = ":path", .value = "/" },
+        .{ .name = ":protocol", .value = "websocket" },
+        .{ .name = "sec-websocket-version", .value = "8" },
+    };
+    try std.testing.expectError(
+        websocket.Error.UnsupportedWebSocketVersion,
+        websocket.validateClientRequestVersion(&wrong),
+    );
+
+    // Negative: a comma-separated list (HTTP field syntax allows this,
+    // but RFC 6455 §11.6 makes 13 the sole defined value, so null3
+    // requires an exact "13") is rejected.
+    const list = [_]FieldLine{
+        .{ .name = ":method", .value = "CONNECT" },
+        .{ .name = ":scheme", .value = "https" },
+        .{ .name = ":authority", .value = "example.com" },
+        .{ .name = ":path", .value = "/" },
+        .{ .name = ":protocol", .value = "websocket" },
+        .{ .name = "sec-websocket-version", .value = "13, 8" },
+    };
+    try std.testing.expectError(
+        websocket.Error.UnsupportedWebSocketVersion,
+        websocket.validateClientRequestVersion(&list),
+    );
 }
 
 // ---------------------------------------------------------------- §4.3 success response
