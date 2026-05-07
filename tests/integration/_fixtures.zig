@@ -46,6 +46,13 @@ pub fn initConnectedQuic(
     server.* = try nullq.Connection.initServer(allocator, server_tls);
     errdefer server.deinit();
 
+    // Surface CONNECTION_CLOSE reason phrases in the integration tests
+    // so close-event assertions can verify them. nullq's hardening
+    // default redacts the reason on the wire (hardening guide §9 / §12);
+    // tests opt in to the visible form.
+    client.reveal_close_reason_on_wire = true;
+    server.reveal_close_reason_on_wire = true;
+
     try client.bind();
     try server.bind();
     client.peer = server;
