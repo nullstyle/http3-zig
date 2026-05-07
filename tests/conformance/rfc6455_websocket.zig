@@ -52,10 +52,10 @@
 //!   RFC6455 §5.5.3 ¶?  NORMATIVE Pong carries optional <=125-byte payload
 //!   RFC6455 §5.6   ¶?  MUST     text frames carry valid UTF-8 (data-message reassembly)
 //!   RFC6455 §5.6   ¶?  NORMATIVE message-layer Kind maps to text/binary opcodes
-//!   RFC7.4         ¶?  MUST     close codes 1000-1011 are reserved by IANA
-//!   RFC7.4         ¶?  MUST NOT use code 1015 on the wire (reserved for TLS handshake failure)
-//!   RFC7.4         ¶?  MAY      use codes 3000-3999 (registered apps) or 4000-4999 (private)
-//!   RFC8.1         ¶?  MUST     close with 1007 on invalid UTF-8 (handled at message decoder)
+//!   RFC6455 §7.4   ¶?  MUST     close codes 1000-1011 are reserved by IANA
+//!   RFC6455 §7.4   ¶?  MUST NOT use code 1015 on the wire (reserved for TLS handshake failure)
+//!   RFC6455 §7.4   ¶?  MAY      use codes 3000-3999 (registered apps) or 4000-4999 (private)
+//!   RFC6455 §8.1   ¶?  MUST     close with 1007 on invalid UTF-8 (handled at message decoder)
 //!
 //! Visible debt:
 //!   none — every BCP 14 requirement against the codec has a test below.
