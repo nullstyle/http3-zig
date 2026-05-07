@@ -668,8 +668,14 @@ pub fn connectUdpPathEncodedLen(prefix: []const u8, target: ConnectUdpTarget) Er
     try validatePathPrefix(prefix);
     try validateTarget(target);
     const separator_len: usize = if (std.mem.endsWith(u8, prefix, "/")) 0 else 1;
+    // RFC 9298 §3.1 cites RFC 3986 §3.2.2 for the host grammar: an IPv6
+    // literal MUST be wrapped in '[' / ']' (the IP-literal form). The
+    // brackets are reserved in a path segment, so they contribute three
+    // bytes each once percent-encoded.
+    const bracket_overhead: usize = if (needsIpLiteralBrackets(target.host)) 6 else 0;
     return prefix.len +
         separator_len +
+        bracket_overhead +
         percentEncodedLen(target.host) +
         1 +
         std.fmt.count("{d}", .{target.port}) +
@@ -691,7 +697,18 @@ pub fn encodeConnectUdpPath(
         dst[pos] = '/';
         pos += 1;
     }
-    pos += percentEncodeSegment(dst[pos..], target.host);
+    // RFC 9298 §3.1 / RFC 3986 §3.2.2: IPv6 literals are encoded as
+    // IP-literal "[" IPv6address "]". A caller passing an unbracketed
+    // IPv6 address gets the brackets added here so the wire form is
+    // always RFC 3986-compliant; both `2001:db8::1` and `[2001:db8::1]`
+    // produce the same encoded path.
+    if (needsIpLiteralBrackets(target.host)) {
+        pos += percentEncodeSegment(dst[pos..], "[");
+        pos += percentEncodeSegment(dst[pos..], target.host);
+        pos += percentEncodeSegment(dst[pos..], "]");
+    } else {
+        pos += percentEncodeSegment(dst[pos..], target.host);
+    }
     dst[pos] = '/';
     pos += 1;
     const port = std.fmt.bufPrint(dst[pos..], "{d}", .{target.port}) catch return Error.BufferTooSmall;
@@ -736,6 +753,20 @@ pub fn parseConnectUdpTarget(
     const host = try percentDecodeSegment(allocator, encoded_host);
     errdefer allocator.free(host);
     if (host.len == 0) return Error.InvalidConnectUdpTarget;
+    // RFC 9298 §3.1 / RFC 3986 §3.2.2: IPv6 hosts are carried on the
+    // wire as IP-literal "[" IPv6address "]". The brackets are an
+    // encoding convenience; the host name itself is the bracketless
+    // form, so callers receive `2001:db8::1`, not `[2001:db8::1]`.
+    if (host.len >= 2 and host[0] == '[' and host[host.len - 1] == ']') {
+        const inner = host[1 .. host.len - 1];
+        if (inner.len == 0) return Error.InvalidConnectUdpTarget;
+        const stripped = try allocator.dupe(u8, inner);
+        allocator.free(host);
+        return .{
+            .host = stripped,
+            .port = port,
+        };
+    }
     return .{
         .host = host,
         .port = port,
@@ -777,6 +808,21 @@ fn validatePathPrefix(prefix: []const u8) Error!void {
 
 fn validateTarget(target: ConnectUdpTarget) Error!void {
     if (target.host.len == 0 or target.port == 0) return Error.InvalidConnectUdpTarget;
+}
+
+/// RFC 9298 §3.1 cites RFC 3986 §3.2.2 for the host grammar; an IPv6
+/// address MUST be wrapped in '[' / ']' (the IP-literal form) when
+/// embedded in a URI. Detect the unbracketed form so the encoder can
+/// add the brackets transparently. A bracket on either end means the
+/// caller already supplied an IP-literal — leave their input alone.
+/// Any other host that contains ':' is unambiguously an IPv6 literal:
+/// `target_host` is the host field only (port is a separate field on
+/// `ConnectUdpTarget`), so a `:` cannot be a port separator here, and
+/// reg-name (RFC 3986 §3.2.2) does not permit ':'.
+fn needsIpLiteralBrackets(host: []const u8) bool {
+    if (host.len == 0) return false;
+    if (host[0] == '[' or host[host.len - 1] == ']') return false;
+    return std.mem.indexOfScalar(u8, host, ':') != null;
 }
 
 fn percentEncodedLen(input: []const u8) usize {
@@ -859,10 +905,16 @@ test "CONNECT-UDP path helpers percent-encode and parse targets" {
     };
     const path = try allocConnectUdpPath(allocator, options);
     defer allocator.free(path);
-    try std.testing.expectEqualStrings("/.well-known/masque/udp/2001%3Adb8%3A%3A1/443/", path);
+    // RFC 9298 §3.1 / RFC 3986 §3.2.2: an IPv6 host is carried as an
+    // IP-literal "[...]"; the brackets are reserved in the path segment
+    // and so are emitted as %5B / %5D.
+    try std.testing.expectEqualStrings("/.well-known/masque/udp/%5B2001%3Adb8%3A%3A1%5D/443/", path);
 
     const target = try parseConnectUdpTarget(allocator, path, default_connect_udp_path_prefix);
     defer target.deinit(allocator);
+    // The parser strips the IP-literal brackets so the bracketless form
+    // round-trips back through `target.host` (RFC 3986: brackets are
+    // encoding, not part of the host name).
     try std.testing.expectEqualStrings("2001:db8::1", target.host);
     try std.testing.expectEqual(@as(u16, 443), target.port);
 

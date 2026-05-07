@@ -30,6 +30,9 @@
 //!   RFC9298 §3.1 ¶?   MUST NOT   accept a path with empty port segment
 //!   RFC9298 §3.1 ¶?   MUST NOT   accept a path with port 0
 //!   RFC9298 §3.1 ¶?   MUST       parse percent-encoded IPv6 host (zero-compression)
+//!   RFC9298 §3.1 ¶?   MUST       encode an unbracketed IPv6 target_host as a bracketed IP-literal
+//!   RFC9298 §3.1 ¶?   MUST       parse a bracketed IP-literal back to a bracketless host
+//!   RFC9298 §3.1 ¶?   MUST       round-trip bracketed and unbracketed IPv6 to identical paths
 //!   RFC9298 §3.1 ¶?   MUST       connectUdpPathEncodedLen matches encodeConnectUdpPath byte count
 //!   RFC9298 §3.1 ¶?   MUST       round-trip a path with prefix that already ends with '/'
 //!   RFC9298 §3.1 ¶?   MUST       round-trip the boundary port 65535
@@ -64,9 +67,7 @@
 //!   RFC9298 §8   ¶?   MUST       acceptConnectUdp refuses a malformed :status
 //!
 //! Visible debt:
-//!   RFC9298 §3.1 ¶?   MUST     host segment encoded as IP-literal must use '[' / ']' delimiters when
-//!                              an IPv6 address is given verbatim — null3 currently round-trips
-//!                              the percent-encoded form only.
+//!   (none)
 //!
 //! Out of scope here (covered elsewhere):
 //!   RFC9114 §7.2.4   SETTINGS_ENABLE_CONNECT_PROTOCOL codec (id 0x08)               → rfc9114_settings.zig
@@ -169,26 +170,31 @@ test "MUST construct the path as <prefix>/<host>/<port>/ [RFC9298 §3.1 ¶?]" {
 
 test "MUST percent-encode the host segment per RFC 3986 [RFC9298 §3.1 ¶?]" {
     // §3.1: "{target_host} ... is the host of the target". An IPv6
-    // literal contains ':' (a sub-delim that must be percent-encoded
-    // when embedded in the path segment).
+    // literal is wrapped in IP-literal brackets per RFC 3986 §3.2.2;
+    // both ':' and '[' / ']' are reserved in a path segment and so
+    // emerge as '%3A', '%5B', '%5D' on the wire.
     const path = try masque.allocConnectUdpPath(allocator, .{
         .target_host = "2001:db8::1",
         .target_port = 443,
     });
     defer allocator.free(path);
-    try std.testing.expectEqualStrings("/.well-known/masque/udp/2001%3Adb8%3A%3A1/443/", path);
+    try std.testing.expectEqualStrings(
+        "/.well-known/masque/udp/%5B2001%3Adb8%3A%3A1%5D/443/",
+        path,
+    );
 }
 
 test "MUST percent-encode reserved characters in the host segment [RFC9298 §3.1 ¶?]" {
-    // §3.1: any reserved character must be percent-encoded. We use a
-    // host containing characters that null3 explicitly rejects from the
-    // unreserved set: ':' (sub-delim), '/' (path-delim).
+    // §3.1: any reserved character must be percent-encoded. ':' is the
+    // IPv6 marker (covered separately by the IP-literal tests), so we
+    // exercise the generic encoder with a path-delim ('/') and a
+    // sub-delim ('?') in a non-IPv6 host.
     const path = try masque.allocConnectUdpPath(allocator, .{
-        .target_host = "a/b:c",
+        .target_host = "a/b?c",
         .target_port = 65535,
     });
     defer allocator.free(path);
-    try std.testing.expectEqualStrings("/.well-known/masque/udp/a%2Fb%3Ac/65535/", path);
+    try std.testing.expectEqualStrings("/.well-known/masque/udp/a%2Fb%3Fc/65535/", path);
 }
 
 test "MUST keep unreserved host characters unencoded [RFC9298 §3.1 ¶?]" {
@@ -218,6 +224,8 @@ test "MUST round-trip the path through parse [RFC9298 §3.1 ¶?]" {
 }
 
 test "MUST decode percent-encoded IPv6 host on parse [RFC9298 §3.1 ¶?]" {
+    // The parser still accepts the legacy bracketless wire form (older
+    // peers may emit it), surfacing the bracketless host bytes verbatim.
     const target = try masque.parseConnectUdpTarget(
         allocator,
         "/.well-known/masque/udp/2001%3Adb8%3A%3A1/443/",
@@ -226,6 +234,54 @@ test "MUST decode percent-encoded IPv6 host on parse [RFC9298 §3.1 ¶?]" {
     defer target.deinit(allocator);
     try std.testing.expectEqualStrings("2001:db8::1", target.host);
     try std.testing.expectEqual(@as(u16, 443), target.port);
+}
+
+test "MUST encode an unbracketed IPv6 target_host as a bracketed IP-literal [RFC9298 §3.1 ¶?]" {
+    // RFC 9298 §3.1 cites RFC 3986 §3.2.2: an IPv6 address embedded in
+    // a URI MUST be wrapped in IP-literal brackets. Callers may pass
+    // either form; the encoder normalises to the bracketed wire shape
+    // and percent-encodes the brackets ('[' = 0x5B, ']' = 0x5D) since
+    // they are reserved in path segments.
+    const path = try masque.allocConnectUdpPath(allocator, .{
+        .target_host = "2001:db8::1",
+        .target_port = 443,
+    });
+    defer allocator.free(path);
+    try std.testing.expectEqualStrings(
+        "/.well-known/masque/udp/%5B2001%3Adb8%3A%3A1%5D/443/",
+        path,
+    );
+}
+
+test "MUST parse a bracketed IP-literal in the encoded path back to a bracketless host [RFC9298 §3.1 ¶?]" {
+    // RFC 3986 §3.2.2 treats the brackets as encoding markers, not part
+    // of the host name itself, so `OwnedConnectUdpTarget.host` exposes
+    // the bracketless form.
+    const target = try masque.parseConnectUdpTarget(
+        allocator,
+        "/.well-known/masque/udp/%5B2001%3Adb8%3A%3A1%5D/443/",
+        masque.default_connect_udp_path_prefix,
+    );
+    defer target.deinit(allocator);
+    try std.testing.expectEqualStrings("2001:db8::1", target.host);
+    try std.testing.expectEqual(@as(u16, 443), target.port);
+}
+
+test "MUST round-trip a bracketed and unbracketed IPv6 target to identical encoded paths [RFC9298 §3.1 ¶?]" {
+    // The encoder is idempotent over IP-literal bracketing: a caller
+    // that already supplies `[2001:db8::1]` produces the same bytes as
+    // one that passes `2001:db8::1`, so both sides of the wire interop.
+    const unbracketed = try masque.allocConnectUdpPath(allocator, .{
+        .target_host = "2001:db8::1",
+        .target_port = 443,
+    });
+    defer allocator.free(unbracketed);
+    const bracketed = try masque.allocConnectUdpPath(allocator, .{
+        .target_host = "[2001:db8::1]",
+        .target_port = 443,
+    });
+    defer allocator.free(bracketed);
+    try std.testing.expectEqualStrings(unbracketed, bracketed);
 }
 
 test "MUST NOT accept a path missing the URI template prefix [RFC9298 §3.1 ¶?]" {
