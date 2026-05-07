@@ -5,10 +5,12 @@
     .minimum_zig_version = "0.16.0",
     .dependencies = .{
         .nullq = .{
-            .path = "../nullq",
+            .url = "https://github.com/nullstyle/nullq/archive/3426ae28f0538befeab3f9346b9785f61fd58c9b.tar.gz",
+            .hash = "nullq-0.2.0-FWe2SW8bGgDAegWZYJhSSdGlIESoljm654DCi7Ppb4Ze",
         },
         .boringssl_zig = .{
-            .path = "../boringssl-zig",
+            .url = "https://github.com/nullstyle/boringssl-zig/archive/c2218dd.tar.gz",
+            .hash = "boringssl_zig-0.5.0-4iEdPIOsAQAybg1mpSD2AAohBH9e54NXjrrnsiKHXauB",
         },
     },
     .paths = .{
