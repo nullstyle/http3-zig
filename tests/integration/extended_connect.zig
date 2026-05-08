@@ -1,6 +1,6 @@
 const std = @import("std");
-const null3 = @import("null3");
-const nullq = @import("nullq");
+const http3_zig = @import("http3_zig");
+const quic_zig = @import("quic_zig");
 const fixt = @import("_fixtures.zig");
 
 // Aliases — pulls in only the helpers this file's tests reference. It's
@@ -33,37 +33,37 @@ const sendRawH3Datagram = fixt.sendRawH3Datagram;
 test "session negotiates and surfaces extended CONNECT requests" {
     const allocator = std.testing.allocator;
 
-    var client_tls = try null3.client.initTlsContext(.{ .verify = .none });
+    var client_tls = try http3_zig.client.initTlsContext(.{ .verify = .none });
     defer client_tls.deinit();
-    var server_tls = try null3.server.initTlsContext(
+    var server_tls = try http3_zig.server.initTlsContext(
         .{},
         test_cert_pem,
         test_key_pem,
     );
     defer server_tls.deinit();
 
-    var client: nullq.Connection = undefined;
-    var server: nullq.Connection = undefined;
+    var client: quic_zig.Connection = undefined;
+    var server: quic_zig.Connection = undefined;
     try initConnectedQuic(allocator, client_tls, server_tls, &client, &server);
     defer client.deinit();
     defer server.deinit();
 
-    const h3_settings: null3.Settings = .{ .enable_connect_protocol = true };
-    var client_h3 = null3.Session.init(allocator, .client, &client, .{
+    const h3_settings: http3_zig.Settings = .{ .enable_connect_protocol = true };
+    var client_h3 = http3_zig.Session.init(allocator, .client, &client, .{
         .settings = h3_settings,
     });
     defer client_h3.deinit();
-    var server_h3 = null3.Session.init(allocator, .server, &server, .{
+    var server_h3 = http3_zig.Session.init(allocator, .server, &server, .{
         .settings = h3_settings,
     });
     defer server_h3.deinit();
 
     try client_h3.start();
     try server_h3.start();
-    var h3_client = null3.Client.init(&client_h3);
+    var h3_client = http3_zig.Client.init(&client_h3);
 
     try std.testing.expectError(
-        null3.session.Error.MissingSettings,
+        http3_zig.session.Error.MissingSettings,
         h3_client.startRequest(allocator, .{
             .method = "CONNECT",
             .authority = "localhost",
@@ -72,12 +72,12 @@ test "session negotiates and surfaces extended CONNECT requests" {
         }),
     );
 
-    var client_events: std.ArrayList(null3.session.Event) = .empty;
+    var client_events: std.ArrayList(http3_zig.session.Event) = .empty;
     defer {
         clearSessionEvents(allocator, &client_events);
         client_events.deinit(allocator);
     }
-    var server_events: std.ArrayList(null3.session.Event) = .empty;
+    var server_events: std.ArrayList(http3_zig.session.Event) = .empty;
     defer {
         clearSessionEvents(allocator, &server_events);
         server_events.deinit(allocator);
@@ -121,9 +121,9 @@ test "session negotiates and surfaces extended CONNECT requests" {
     const stream_id = writer.stream_id;
     try writer.finish();
 
-    var server_runner = null3.ServerRunner.init(allocator);
+    var server_runner = http3_zig.ServerRunner.init(allocator);
     defer server_runner.deinit();
-    var completed: std.ArrayList(*null3.RequestState) = .empty;
+    var completed: std.ArrayList(*http3_zig.RequestState) = .empty;
     defer completed.deinit(allocator);
 
     iters = 0;
@@ -162,7 +162,7 @@ test "WebSocket helper requires negotiated Extended CONNECT support" {
 
     try exchangePairSettings(allocator, &pair);
 
-    var h3_client = null3.Client.init(&pair.client_h3);
+    var h3_client = http3_zig.Client.init(&pair.client_h3);
     try std.testing.expectError(
         error.ExtendedConnectNotEnabled,
         h3_client.startWebSocket(allocator, .{
@@ -174,7 +174,7 @@ test "WebSocket helper requires negotiated Extended CONNECT support" {
 
 test "WebSocket over HTTP/3 helper opens tunnel and streams bytes" {
     const allocator = std.testing.allocator;
-    const h3_settings: null3.Settings = .{ .enable_connect_protocol = true };
+    const h3_settings: http3_zig.Settings = .{ .enable_connect_protocol = true };
 
     var pair: H3Pair = undefined;
     try pair.initStarted(allocator, .{ .settings = h3_settings }, .{ .settings = h3_settings });
@@ -182,8 +182,8 @@ test "WebSocket over HTTP/3 helper opens tunnel and streams bytes" {
 
     try exchangePairSettings(allocator, &pair);
 
-    var h3_client = null3.Client.init(&pair.client_h3);
-    var h3_server = null3.Server.init(&pair.server_h3);
+    var h3_client = http3_zig.Client.init(&pair.client_h3);
+    var h3_server = http3_zig.Server.init(&pair.server_h3);
 
     var client_ws = try h3_client.startWebSocket(allocator, .{
         .authority = "localhost",
@@ -193,17 +193,17 @@ test "WebSocket over HTTP/3 helper opens tunnel and streams bytes" {
     try client_ws.writeMessage(.text, "ping", .{ 1, 2, 3, 4 });
     try client_ws.finishSend();
 
-    var client_runner = null3.ClientRunner.init(allocator);
+    var client_runner = http3_zig.ClientRunner.init(allocator);
     defer client_runner.deinit();
-    var server_runner = null3.ServerRunner.init(allocator);
+    var server_runner = http3_zig.ServerRunner.init(allocator);
     defer server_runner.deinit();
 
-    var client_events: std.ArrayList(null3.session.Event) = .empty;
+    var client_events: std.ArrayList(http3_zig.session.Event) = .empty;
     defer {
         clearSessionEvents(allocator, &client_events);
         client_events.deinit(allocator);
     }
-    var server_events: std.ArrayList(null3.session.Event) = .empty;
+    var server_events: std.ArrayList(http3_zig.session.Event) = .empty;
     defer {
         clearSessionEvents(allocator, &server_events);
         server_events.deinit(allocator);
@@ -236,7 +236,7 @@ test "WebSocket over HTTP/3 helper opens tunnel and streams bytes" {
                         try std.testing.expect(request.isWebSocket());
                         try std.testing.expectEqualStrings("CONNECT", request.method().?);
                         try std.testing.expectEqualStrings("/chat", request.path().?);
-                        try std.testing.expectEqualStrings(null3.websocket.protocol_token, request.protocol().?);
+                        try std.testing.expectEqualStrings(http3_zig.websocket.protocol_token, request.protocol().?);
 
                         var server_ws = try h3_server.acceptWebSocket(allocator, request, .{});
                         try server_ws.writeMessage(.text, "pong");
@@ -245,7 +245,7 @@ test "WebSocket over HTTP/3 helper opens tunnel and streams bytes" {
                     }
 
                     if (!server_complete and request.complete()) {
-                        var decoder = null3.websocket.message.Decoder.init(allocator, .{
+                        var decoder = http3_zig.websocket.message.Decoder.init(allocator, .{
                             .frame = .{ .mask_policy = .required },
                         });
                         defer decoder.deinit();
@@ -275,7 +275,7 @@ test "WebSocket over HTTP/3 helper opens tunnel and streams bytes" {
                     }
 
                     if (!client_complete and response.complete()) {
-                        var decoder = null3.websocket.message.Decoder.init(allocator, .{
+                        var decoder = http3_zig.websocket.message.Decoder.init(allocator, .{
                             .frame = .{ .mask_policy = .forbidden },
                         });
                         defer decoder.deinit();
@@ -299,7 +299,7 @@ test "WebSocket over HTTP/3 helper opens tunnel and streams bytes" {
 
 test "CONNECT-UDP helper opens MASQUE tunnel and exchanges UDP payloads" {
     const allocator = std.testing.allocator;
-    const h3_settings: null3.Settings = .{
+    const h3_settings: http3_zig.Settings = .{
         .enable_connect_protocol = true,
         .h3_datagram = true,
     };
@@ -310,8 +310,8 @@ test "CONNECT-UDP helper opens MASQUE tunnel and exchanges UDP payloads" {
 
     try exchangePairSettings(allocator, &pair);
 
-    var h3_client = null3.Client.init(&pair.client_h3);
-    var h3_server = null3.Server.init(&pair.server_h3);
+    var h3_client = http3_zig.Client.init(&pair.client_h3);
+    var h3_server = http3_zig.Server.init(&pair.server_h3);
 
     var client_udp = try h3_client.startConnectUdp(allocator, .{
         .authority = "proxy.example",
@@ -320,25 +320,25 @@ test "CONNECT-UDP helper opens MASQUE tunnel and exchanges UDP payloads" {
     });
     const stream_id = client_udp.streamId();
 
-    var client_runner = null3.ClientRunner.init(allocator);
+    var client_runner = http3_zig.ClientRunner.init(allocator);
     defer client_runner.deinit();
-    var server_runner = null3.ServerRunner.init(allocator);
+    var server_runner = http3_zig.ServerRunner.init(allocator);
     defer server_runner.deinit();
 
-    var client_events: std.ArrayList(null3.session.Event) = .empty;
+    var client_events: std.ArrayList(http3_zig.session.Event) = .empty;
     defer {
         clearSessionEvents(allocator, &client_events);
         client_events.deinit(allocator);
     }
-    var server_events: std.ArrayList(null3.session.Event) = .empty;
+    var server_events: std.ArrayList(http3_zig.session.Event) = .empty;
     defer {
         clearSessionEvents(allocator, &server_events);
         server_events.deinit(allocator);
     }
 
-    var server_udp: ?null3.ConnectUdpServerStream = null;
-    var client_udp_receiver = null3.MasqueConnectUdpReceiver.init();
-    var server_udp_receiver = null3.MasqueConnectUdpReceiver.init();
+    var server_udp: ?http3_zig.ConnectUdpServerStream = null;
+    var client_udp_receiver = http3_zig.MasqueConnectUdpReceiver.init();
+    var server_udp_receiver = http3_zig.MasqueConnectUdpReceiver.init();
     var accepted = false;
     var client_saw_response = false;
     var now_us: u64 = 1_000_000;
@@ -365,7 +365,7 @@ test "CONNECT-UDP helper opens MASQUE tunnel and exchanges UDP payloads" {
                         try std.testing.expect(request.isConnectUdp());
                         try std.testing.expect(request.capsuleProtocolEnabled());
                         try std.testing.expectEqualStrings("CONNECT", request.method().?);
-                        try std.testing.expectEqualStrings(null3.masque.connect_udp_protocol, request.protocol().?);
+                        try std.testing.expectEqualStrings(http3_zig.masque.connect_udp_protocol, request.protocol().?);
 
                         const target = try request.connectUdpTarget(allocator);
                         defer target.deinit(allocator);
@@ -439,7 +439,7 @@ test "CONNECT-UDP helper opens MASQUE tunnel and exchanges UDP payloads" {
                     const request = request_state.reader();
                     if (request.body().len > 0) {
                         server_saw_capsule = true;
-                        const decoded_capsule = try null3.capsule.decode(request.body());
+                        const decoded_capsule = try http3_zig.capsule.decode(request.body());
                         try std.testing.expect(decoded_capsule.capsule.isDatagram());
                         switch (server_udp_receiver.classifyCapsule(decoded_capsule.capsule)) {
                             .udp_payload => |payload| try std.testing.expectEqualStrings("client-capsule", payload),
@@ -469,7 +469,7 @@ test "CONNECT-UDP helper opens MASQUE tunnel and exchanges UDP payloads" {
                     const response = response_state.reader();
                     if (response.body().len > 0) {
                         client_saw_capsule = true;
-                        const decoded_capsule = try null3.capsule.decode(response.body());
+                        const decoded_capsule = try http3_zig.capsule.decode(response.body());
                         try std.testing.expect(decoded_capsule.capsule.isDatagram());
                         switch (client_udp_receiver.classifyCapsule(decoded_capsule.capsule)) {
                             .udp_payload => |payload| try std.testing.expectEqualStrings("server-capsule", payload),

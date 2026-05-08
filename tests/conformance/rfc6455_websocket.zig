@@ -1,15 +1,15 @@
 //! RFC 6455 — The WebSocket Protocol, framing layer.
 //!
-//! null3 implements the RFC 6455 codec in two layers:
-//!   - `null3.websocket.frame` (`src/websocket_frame.zig`) — single-frame
+//! http3_zig implements the RFC 6455 codec in two layers:
+//!   - `http3_zig.websocket.frame` (`src/websocket_frame.zig`) — single-frame
 //!     encode/decode and the incremental `Decoder` that enforces the
 //!     fragmentation invariants on a stream of bytes.
-//!   - `null3.websocket.message` (`src/websocket_message.zig`) — message
+//!   - `http3_zig.websocket.message` (`src/websocket_message.zig`) — message
 //!     reassembly, UTF-8 validation on text + close-reason, and aggregate
 //!     size limits.
 //!
 //! RFC 9220 §4.5 ¶? notes that masking is "not necessary" over HTTP/3
-//! because the QUIC transport already provides reliable framing. null3's
+//! because the QUIC transport already provides reliable framing. http3_zig's
 //! codec still implements the RFC 6455 wire shape (so an HTTP/3 endpoint
 //! can interop with an RFC 6455 over TCP peer through a translating
 //! intermediary, and so the codec can be used for testing and tooling).
@@ -71,9 +71,9 @@
 //!   RFC6455 §11      Extension/subprotocol registries                        → IANA, not a codec test.
 
 const std = @import("std");
-const null3 = @import("null3");
+const http3_zig = @import("http3_zig");
 
-const ws = null3.websocket;
+const ws = http3_zig.websocket;
 const frame = ws.frame;
 const message = ws.message;
 
@@ -107,7 +107,7 @@ test "MUST NOT mask any server-to-client frame [RFC6455 §5.1 ¶?]" {
 
 test "MUST NOT accept an unmasked client-to-server frame on the server's decoder [RFC6455 §5.1 ¶?]" {
     // §5.1: "The server MUST close the connection upon receiving a frame
-    // that is not masked." null3 uses `mask_policy = .required` for the
+    // that is not masked." http3_zig uses `mask_policy = .required` for the
     // server's incoming-frame decoder; the codec returns MaskRequired.
     const unmasked = [_]u8{ 0x81, 0x02, 'h', 'i' }; // text, len=2, no MASK bit
     try std.testing.expectError(
@@ -118,7 +118,7 @@ test "MUST NOT accept an unmasked client-to-server frame on the server's decoder
 
 test "MUST NOT accept a masked server-to-client frame on the client's decoder [RFC6455 §5.1 ¶?]" {
     // The complement of the previous test — clients reject masked frames
-    // from servers. null3 uses `mask_policy = .forbidden`.
+    // from servers. http3_zig uses `mask_policy = .forbidden`.
     const masked = [_]u8{ 0x81, 0x82, 0, 0, 0, 0, 'h', 'i' };
     try std.testing.expectError(
         frame.Error.MaskForbidden,
@@ -128,7 +128,7 @@ test "MUST NOT accept a masked server-to-client frame on the client's decoder [R
 
 test "MAY skip masking on a WebSocket-over-HTTP/3 client frame [RFC9220 §4.5 ¶?]" {
     // RFC 9220 §4.5: over HTTP/3, the QUIC stream provides reliable
-    // framing, so client-to-server masking is "not necessary". null3's
+    // framing, so client-to-server masking is "not necessary". http3_zig's
     // codec supports unmasked frames in either direction when the
     // policy is `.any` (the default).
     var buf: [16]u8 = undefined;
@@ -182,7 +182,7 @@ test "MUST NOT set the FIN bit on a non-final fragment [RFC6455 §5.2 ¶?]" {
 
 test "NORMATIVE Opcode classifier distinguishes data vs. control [RFC6455 §5.2 ¶?]" {
     // §5.2: opcodes < 0x8 are data frames; opcodes >= 0x8 are control
-    // frames. null3 exposes the distinction via `Opcode.isControl` and
+    // frames. http3_zig exposes the distinction via `Opcode.isControl` and
     // `Opcode.isData` — used by the codec's fragmentation and size gates.
     // Continuation (0x0) is neither data nor control: it's the carrier of
     // a fragmented data message.
@@ -228,7 +228,7 @@ test "MUST encode the opcode in the low 4 bits of byte 0 [RFC6455 §5.2 ¶?]" {
 test "MUST NOT accept a frame with RSV1 set [RFC6455 §5.2 ¶?]" {
     // §5.2: "RSV1, RSV2, RSV3: 1 bit each ... MUST be 0 unless an
     // extension is negotiated that defines meanings for non-zero values."
-    // null3 has not negotiated any extension; receivers MUST reject
+    // http3_zig has not negotiated any extension; receivers MUST reject
     // any non-zero RSV bit.
     const rsv1 = [_]u8{ 0xc1, 0x00 }; // FIN + RSV1 + text
     try std.testing.expectError(frame.Error.InvalidRsv, frame.decode(allocator, &rsv1, .{}));
@@ -341,7 +341,7 @@ test "MUST NOT accept an unknown opcode value [RFC6455 §5.2 ¶?]" {
 test "NORMATIVE decoder reports InsufficientBytes on a truncated 7+16 length [RFC6455 §5.2 ¶?]" {
     // §5.2 doesn't use a BCP 14 keyword for "MUST wait for the rest of
     // the frame", but the wire format is a contiguous header — a stream
-    // decoder MUST not act on a truncated header. null3's incremental
+    // decoder MUST not act on a truncated header. http3_zig's incremental
     // decoder reports `InsufficientBytes`, distinct from a protocol
     // error, so the caller can resume.
     // 0x82 = FIN + binary; len marker 126 but no 16-bit length follows.
@@ -383,7 +383,7 @@ test "NORMATIVE decoder reports InsufficientBytes when payload is truncated [RFC
 
 test "MUST use a 4-octet masking key [RFC6455 §5.3 ¶?]" {
     // §5.3: "The masking key is a 32-bit value chosen at random by the
-    // client." The wire format reserves exactly 4 bytes; null3's
+    // client." The wire format reserves exactly 4 bytes; http3_zig's
     // EncodeOptions.masking_key is `[4]u8`.
     const opts: frame.EncodeOptions = .{ .mask = true, .masking_key = .{ 0xa1, 0xa2, 0xa3, 0xa4 } };
     try std.testing.expectEqual(@as(usize, 4), opts.masking_key.len);
@@ -397,7 +397,7 @@ test "MUST use a 4-octet masking key [RFC6455 §5.3 ¶?]" {
 
 test "MUST XOR each payload octet with masking_key[i % 4] [RFC6455 §5.3 ¶?]" {
     // §5.3 algorithm: "j = i MOD 4 ; transformed-octet-i = original-octet-i
-    // XOR masking-key-octet-j". null3 applies the mask in-place on the
+    // XOR masking-key-octet-j". http3_zig applies the mask in-place on the
     // wire bytes; we verify by encoding then comparing the wire bytes
     // against the expected XOR pattern.
     const key = [4]u8{ 0x37, 0xfa, 0x21, 0x3d };
@@ -457,7 +457,7 @@ test "MUST NOT interleave a new data frame inside an open fragmented message [RF
     // §5.4: "Control frames (see Section 5.5) MAY be injected in the
     // middle of a fragmented message. ... However, a fragmented message
     // MUST NOT be interleaved between fragments of another message."
-    // null3's incremental Decoder enforces that.
+    // http3_zig's incremental Decoder enforces that.
     var buf: [16]u8 = undefined;
     var pos: usize = 0;
     pos += try frame.encode(buf[pos..], .{ .fin = false, .opcode = .text, .payload = "ab" }, .{});
@@ -604,7 +604,7 @@ test "MUST track FIN through a fragmented message [RFC6455 §5.4 ¶?]" {
 
 test "MUST NOT send a control frame larger than 125 bytes [RFC6455 §5.5 ¶?]" {
     // §5.5: "All control frames MUST have a payload length of 125 bytes
-    // or less and MUST NOT be fragmented." Encode-side: null3's
+    // or less and MUST NOT be fragmented." Encode-side: http3_zig's
     // `encodedLen` / `encode` raise ControlPayloadTooLarge.
     var oversized: [126]u8 = undefined;
     @memset(&oversized, 'x');
@@ -640,7 +640,7 @@ test "MUST NOT fragment a control frame [RFC6455 §5.5 ¶?]" {
 }
 
 test "MUST NOT encode a control frame with FIN clear [RFC6455 §5.5 ¶?]" {
-    // Encode-side complement: null3's encoder also refuses to emit a
+    // Encode-side complement: http3_zig's encoder also refuses to emit a
     // fragmented control frame.
     var buf: [16]u8 = undefined;
     try std.testing.expectError(
@@ -752,7 +752,7 @@ test "MUST NOT use status code 1006 on the wire [RFC6455 §7.4 ¶?]" {
 
 test "MUST NOT use status code 1015 on the wire [RFC6455 §7.4 ¶?]" {
     // §7.4: 1015 = "TLS handshake" — reserved, MUST NOT be on the wire.
-    // null3 rejects everything outside 1000-1014 (excluding 1004/1005/
+    // http3_zig rejects everything outside 1000-1014 (excluding 1004/1005/
     // 1006) and 3000-4999, which catches 1015.
     var buf: [16]u8 = undefined;
     try std.testing.expectError(frame.Error.InvalidCloseCode, frame.encodeClose(&buf, 1015, "", .{}));
@@ -763,7 +763,7 @@ test "MUST NOT use status code 1015 on the wire [RFC6455 §7.4 ¶?]" {
 
 test "MUST accept the standard close codes 1000-1003 [RFC6455 §7.4 ¶?]" {
     // §7.4 IANA registry — these are the codes a conformant peer
-    // emits; null3 accepts them.
+    // emits; http3_zig accepts them.
     var buf: [16]u8 = undefined;
     const codes = [_]u16{ 1000, 1001, 1002, 1003 };
     for (codes) |code| {
@@ -881,7 +881,7 @@ test "MUST round-trip a pong payload through the codec [RFC6455 §5.5.3 ¶?]" {
 
 test "MUST validate UTF-8 in a text data frame [RFC6455 §5.6 ¶?]" {
     // §5.6: "The 'Payload data' is text data ... The text MUST be encoded
-    // in UTF-8." null3 enforces this at the message-decoder boundary
+    // in UTF-8." http3_zig enforces this at the message-decoder boundary
     // (where fragmented text frames have been reassembled).
     var buf: [16]u8 = undefined;
     const n = try frame.encodeText(&buf, "\xff", .{});
@@ -908,7 +908,7 @@ test "MUST accept valid UTF-8 in a text data frame [RFC6455 §5.6 ¶?]" {
 test "MUST validate UTF-8 in a close-frame reason [RFC6455 §8.1 ¶?]" {
     // §8.1: "If an endpoint receives a Close control frame containing
     // a Payload Data section with content that is not valid UTF-8, the
-    // endpoint MUST _Fail the WebSocket Connection_." null3 surfaces
+    // endpoint MUST _Fail the WebSocket Connection_." http3_zig surfaces
     // InvalidUtf8 from the message decoder.
     var close_payload = [_]u8{ 0x03, 0xe8, 0xff }; // 1000 + invalid byte
     var buf: [16]u8 = undefined;
@@ -1020,7 +1020,7 @@ test "MUST report the exact bytes consumed by a single decoded frame [RFC6455 §
 // ---------------------------------------------------------------- §5.5.2 incremental decoder buffering
 
 test "MUST buffer a partially-received frame and emit it once complete [RFC6455 §5.2 ¶?]" {
-    // null3's incremental Decoder accepts a sliding byte stream and
+    // http3_zig's incremental Decoder accepts a sliding byte stream and
     // emits a frame only when its bytes have arrived in full. This
     // replicates the conditions a real wire-side reader experiences.
     var buf: [16]u8 = undefined;
@@ -1062,7 +1062,7 @@ test "MUST emit two consecutive frames from a single buffer [RFC6455 §5.2 ¶?]"
 test "MUST cap aggregate message size when configured [RFC6455 §5.4 ¶?]" {
     // §5.4 doesn't impose a specific size limit, but RFC 6455 implies
     // implementations are responsible for bounding allocation. The
-    // null3 message decoder honours a configured `max_message_len`.
+    // http3_zig message decoder honours a configured `max_message_len`.
     var buf: [32]u8 = undefined;
     var pos: usize = 0;
     pos += try frame.encode(buf[pos..], .{ .fin = false, .opcode = .text, .payload = "abc" }, .{});
@@ -1079,7 +1079,7 @@ test "MUST cap aggregate message size when configured [RFC6455 §5.4 ¶?]" {
 
 test "NORMATIVE message-layer Kind maps to RFC 6455 data opcodes [RFC6455 §5.6 ¶?]" {
     // §5.6 defines the data opcodes as text=0x1 and binary=0x2. The
-    // null3 message-layer `Kind` enum projects onto exactly those two
+    // http3_zig message-layer `Kind` enum projects onto exactly those two
     // opcodes via `opcodeForKind` — there is no third data opcode.
     try std.testing.expectEqual(frame.Opcode.text, message.opcodeForKind(.text));
     try std.testing.expectEqual(frame.Opcode.binary, message.opcodeForKind(.binary));
@@ -1123,7 +1123,7 @@ test "MUST emit a close event with code and reason after decoding a close frame 
 
 test "MUST emit a close event with no code when the close payload is empty [RFC6455 §5.5.1 ¶?]" {
     // §5.5.1: "If there is no such status code, the closing connection
-    // MUST be considered to be 1005." null3 reports `code = null`,
+    // MUST be considered to be 1005." http3_zig reports `code = null`,
     // letting the application substitute 1005 if it wants to mirror
     // the §5.5.1 / §7.4 mapping.
     var buf: [4]u8 = undefined;

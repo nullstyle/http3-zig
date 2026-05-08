@@ -1,9 +1,9 @@
-# null3 Roadmap
+# http3-zig Roadmap
 
-Target: a production-ready HTTP/3 stack over `nullq` and `boringssl-zig`.
+Target: a production-ready HTTP/3 stack over `quic-zig` and `boringssl-zig`.
 Normative core: RFC 9114 (HTTP/3), RFC 9204 (QPACK), RFC 9218
 (Extensible Priorities), RFC 9220 (extended CONNECT), RFC 9297 (HTTP
-Datagrams / capsules), and the QUIC RFCs already tracked by `nullq`.
+Datagrams / capsules), and the QUIC RFCs already tracked by `quic-zig`.
 
 ## Phase 0: Scaffold and Codecs
 
@@ -16,7 +16,7 @@ Datagrams / capsules), and the QUIC RFCs already tracked by `nullq`.
 - HTTP/3 stream-context frame validation.
 - Transport-free message encoder/decoder for request/response HEADERS, DATA,
   and trailers.
-- `nullq.Connection` adapter for control stream and optional QPACK streams.
+- `quic-zig.Connection` adapter for control stream and optional QPACK streams.
 
 ## Phase 1: HTTP/3 State Machine
 
@@ -26,7 +26,7 @@ Datagrams / capsules), and the QUIC RFCs already tracked by `nullq`.
   for decoded HTTP/3/QPACK/message errors.
 - Done: request/response stream parser and writer for HEADERS/DATA/trailers,
   including deep-owned application events.
-- Done: in-process `nullq` integration test with `h3` ALPN, request body,
+- Done: in-process `quic-zig` integration test with `h3` ALPN, request body,
   response body, stream FIN validation, and GOAWAY delivery.
 - Done: incoming RESET_STREAM observability via session reset events, plus
   STOP_SENDING helpers for request rejection/cancellation.
@@ -35,16 +35,16 @@ Datagrams / capsules), and the QUIC RFCs already tracked by `nullq`.
   GOAWAY limit.
 - Done: opt-in dynamic QPACK encoder/decoder stream processing in
   `session.Session`, including dynamic response field-section references and
-  decoder feedback over the in-process `nullq` exchange.
-- Done: send-side RESET_STREAM convenience over `nullq.streamReset`, including
+  decoder feedback over the in-process `quic-zig` exchange.
+- Done: send-side RESET_STREAM convenience over `quic-zig.streamReset`, including
   client request aborts, server response aborts, and QPACK blocked-stream
   cancellation cleanup.
-- Done: `nullq` connection-close events are surfaced through the typed
+- Done: `quic-zig` connection-close events are surfaced through the typed
   session/client/server event model with copied reasons and HTTP/3 application
   error metadata when available.
-- Done: `nullq` flow-control blocked events are surfaced through the typed
+- Done: `quic-zig` flow-control blocked events are surfaced through the typed
   session/client/server event model and runner batch summaries.
-- Done: `nullq` connection-ID replenishment events are surfaced through the
+- Done: `quic-zig` connection-ID replenishment events are surfaced through the
   typed session/client/server event model and runner batch summaries.
 - Done: higher-level client/server event runners over session events and
   lifecycle trackers.
@@ -124,7 +124,7 @@ Datagrams / capsules), and the QUIC RFCs already tracked by `nullq`.
   decoded-QPACK, event-queue, capsule, datagram, and send-buffer limits without
   changing compatibility defaults.
 - Done: first external HTTP/3 client interop harness over ordinary
-  `nullq.Connection` APIs, using the public `Client`, `ClientRunner`, and
+  `quic-zig.Connection` APIs, using the public `Client`, `ClientRunner`, and
   transport driver endpoint helpers against IP-literal UDP peers.
 - Done: optional external-peer matrix runner for quic-go, ngtcp2, lsquic, and
   aioquic style servers, with skip-friendly peer wrappers and caller-provided
@@ -139,7 +139,7 @@ Datagrams / capsules), and the QUIC RFCs already tracked by `nullq`.
   scheduling hooks, including client request/push send APIs, server receive
   events, latest-priority state, runner observations, metrics, and invalid
   target/value hardening. Remaining application policy: use that state to
-  order queued response writes once nullq exposes the right scheduling knobs.
+  order queued response writes once quic-zig exposes the right scheduling knobs.
 - Done: first server push API slice with client `MAX_PUSH_ID` opt-in,
   server-side `PUSH_PROMISE` emission, server-initiated push streams, typed
   pushed response events, and in-process coverage.
@@ -153,7 +153,7 @@ Datagrams / capsules), and the QUIC RFCs already tracked by `nullq`.
 - Done: server push completion polish with same-origin/cacheable promise
   helpers, request-derived push convenience APIs, `PushedResponseTracker`, and
   `ClientRunner` pushed-response lifecycle observations.
-- Done: HTTP/3 DATAGRAM groundwork over `nullq` DATAGRAM frames, including
+- Done: HTTP/3 DATAGRAM groundwork over `quic-zig` DATAGRAM frames, including
   RFC 9297 quarter-stream-id payload codec, SETTINGS/transport negotiation
   checks, typed session/client/server datagram events, tracked send outcome
   propagation, and bidirectional in-process coverage.

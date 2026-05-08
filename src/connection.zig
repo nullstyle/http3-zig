@@ -1,13 +1,13 @@
-//! HTTP/3 connection adapter over nullq.Connection.
+//! HTTP/3 connection adapter over quic_zig.Connection.
 
-const nullq = @import("nullq");
+const quic_zig = @import("quic_zig");
 const protocol = @import("protocol.zig");
 const settings_mod = @import("settings.zig");
 const frame_mod = @import("frame.zig");
 
-const varint = nullq.wire.varint;
+const varint = quic_zig.wire.varint;
 
-pub const Error = nullq.conn.state.Error || frame_mod.Error || varint.Error || error{
+pub const Error = quic_zig.conn.state.Error || frame_mod.Error || varint.Error || error{
     CriticalStreamAlreadyOpen,
     QpackStreamsAlreadyOpen,
     InvalidRole,
@@ -23,13 +23,13 @@ pub const Config = struct {
 
 pub const Connection = struct {
     role: protocol.Role,
-    quic: *nullq.Connection,
+    quic: *quic_zig.Connection,
     local_settings: settings_mod.Settings,
     control_stream_id: ?u64 = null,
     qpack_encoder_stream_id: ?u64 = null,
     qpack_decoder_stream_id: ?u64 = null,
 
-    pub fn init(role: protocol.Role, quic: *nullq.Connection, config: Config) Connection {
+    pub fn init(role: protocol.Role, quic: *quic_zig.Connection, config: Config) Connection {
         return .{
             .role = role,
             .quic = quic,

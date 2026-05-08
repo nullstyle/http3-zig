@@ -89,13 +89,13 @@
 //!                    `quic-go` cross-implementation block fixtures
 //!                    inside `src/qpack/root.zig`'s inline tests).
 //!
-//! Every non-skipped test in this file routes through a `null3.qpack.*`
+//! Every non-skipped test in this file routes through a `http3_zig.qpack.*`
 //! public function.
 
 const std = @import("std");
-const null3 = @import("null3");
+const http3_zig = @import("http3_zig");
 
-const qpack = null3.qpack;
+const qpack = http3_zig.qpack;
 const integer = qpack.integer;
 const huffman = qpack.huffman;
 const static_table = qpack.static_table;

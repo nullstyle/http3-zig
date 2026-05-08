@@ -4,7 +4,7 @@
 //! values are listed in RFC 9114 §8.1 and registered in §11.2.3, with QPACK
 //! extensions defined in RFC 9204 §6 (registered in §8.3) and the
 //! H3_DATAGRAM_ERROR addition in RFC 9297 §5.2 (referenced by §2 and §2.1).
-//! null3 hosts the constants in `src/protocol.zig` (`protocol.ErrorCode.*`)
+//! http3_zig hosts the constants in `src/protocol.zig` (`protocol.ErrorCode.*`)
 //! and the classification helpers (`Scope`, `Source`, `Category`,
 //! `applicationError`, `classify`, …) in `src/errors.zig`.
 //!
@@ -91,14 +91,14 @@
 //! Out of scope here (covered elsewhere):
 //!   RFC9114 §5.2    GOAWAY semantics                  → rfc9114_session.zig
 //!   RFC9114 §6.2.1  closed-critical-stream detection  → rfc9114_streams.zig
-//!   RFC9000 §20.2   QUIC application error encoding   → nullq conformance suites
+//!   RFC9000 §20.2   QUIC application error encoding   → quic_zig conformance suites
 
 const std = @import("std");
-const null3 = @import("null3");
+const http3_zig = @import("http3_zig");
 
-const protocol = null3.protocol;
+const protocol = http3_zig.protocol;
 const ErrorCode = protocol.ErrorCode;
-const errors = null3.errors;
+const errors = http3_zig.errors;
 
 // ---------------------------------------------------------------- §11.2.3 numeric values
 

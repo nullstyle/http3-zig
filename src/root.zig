@@ -1,8 +1,8 @@
-//! null3 — HTTP/3 for Zig, layered above nullq and boringssl-zig.
+//! http3_zig — HTTP/3 for Zig, layered above quic_zig and boringssl-zig.
 
 const std = @import("std");
 const boringssl = @import("boringssl");
-const nullq = @import("nullq");
+const quic_zig = @import("quic_zig");
 
 pub const protocol = @import("protocol.zig");
 pub const settings = @import("settings.zig");
@@ -161,7 +161,7 @@ pub fn version() []const u8 {
 
 test {
     _ = boringssl;
-    _ = nullq;
+    _ = quic_zig;
     _ = protocol;
     _ = settings;
     _ = frame;

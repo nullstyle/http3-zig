@@ -4,11 +4,11 @@
 //! mechanism, swaps the SETTINGS_ENABLE_CONNECT_PROTOCOL identifier from the
 //! HTTP/2 spelling to the HTTP/3 SETTINGS frame at id 0x08, and otherwise
 //! delegates wire framing to RFC 6455 (covered in `rfc6455_websocket.zig`).
-//! null3's surface is `null3.websocket` (request/response classification),
-//! `null3.client.startWebSocket` / `null3.WebSocketConnectOptions`, and
-//! `null3.server.acceptWebSocket` / `null3.WebSocketAcceptOptions`. The
+//! http3_zig's surface is `http3_zig.websocket` (request/response classification),
+//! `http3_zig.client.startWebSocket` / `http3_zig.WebSocketConnectOptions`, and
+//! `http3_zig.server.acceptWebSocket` / `http3_zig.WebSocketAcceptOptions`. The
 //! Extended CONNECT plumbing reuses the HTTP/3 message validator in
-//! `null3.headers` and the per-session SETTINGS gate in `null3.session`.
+//! `http3_zig.headers` and the per-session SETTINGS gate in `http3_zig.session`.
 //!
 //! ## Coverage
 //!
@@ -55,13 +55,13 @@
 //!   RFC9220 §4.5           "client-side masking is not necessary"                    → rfc6455_websocket.zig
 
 const std = @import("std");
-const null3 = @import("null3");
+const http3_zig = @import("http3_zig");
 
-const websocket = null3.websocket;
-const headers = null3.headers;
-const settings_mod = null3.settings;
-const protocol_mod = null3.protocol;
-const FieldLine = null3.FieldLine;
+const websocket = http3_zig.websocket;
+const headers = http3_zig.headers;
+const settings_mod = http3_zig.settings;
+const protocol_mod = http3_zig.protocol;
+const FieldLine = http3_zig.FieldLine;
 
 // ---------------------------------------------------------------- §3 SETTINGS_ENABLE_CONNECT_PROTOCOL
 
@@ -69,16 +69,16 @@ test "MUST identify SETTINGS_ENABLE_CONNECT_PROTOCOL with the SETTINGS identifie
     // RFC 9220 §3 ¶1 redefines the HTTP/2 SETTINGS_ENABLE_CONNECT_PROTOCOL
     // identifier as the HTTP/3 SETTINGS identifier 0x08 (RFC 8441 §3 used
     // the same numeric value in HTTP/2). The on-wire identifier is the
-    // load-bearing requirement; null3's protocol constant table fixes it
+    // load-bearing requirement; http3_zig's protocol constant table fixes it
     // for the encoder.
     try std.testing.expectEqual(@as(u64, 0x08), protocol_mod.SettingId.enable_connect_protocol);
 }
 
 test "MUST advertise SETTINGS_ENABLE_CONNECT_PROTOCOL = 1 to enable Extended CONNECT [RFC9220 §3 ¶1]" {
     // Encode-side: when the local session opts in, the SETTINGS payload
-    // emitted by null3 contains a (0x08, 1) pair. We don't hand-decode
+    // emitted by http3_zig contains a (0x08, 1) pair. We don't hand-decode
     // the on-wire bytes here; we feed `Settings.encode` then use the
-    // null3 SETTINGS decoder as the oracle (which round-trips
+    // http3_zig SETTINGS decoder as the oracle (which round-trips
     // identifier 0x08).
     const enabled: settings_mod.Settings = .{ .enable_connect_protocol = true };
     var buf: [32]u8 = undefined;
@@ -106,7 +106,7 @@ test "MUST default SETTINGS_ENABLE_CONNECT_PROTOCOL to 0 (Extended CONNECT disab
 
 test "MUST reject a SETTINGS_ENABLE_CONNECT_PROTOCOL value other than 0 or 1 [RFC9220 §3 ¶1]" {
     // RFC 9220 §3 narrows the value to the boolean 0/1; receivers
-    // treat any other value as a SETTINGS_ERROR. null3's settings
+    // treat any other value as a SETTINGS_ERROR. http3_zig's settings
     // decoder emits InvalidSettingValue for any value > 1.
     // (0x08, 2) — varint(0x08)=0x08, varint(2)=0x02.
     const buf = [_]u8{ 0x08, 0x02 };
@@ -176,7 +176,7 @@ test "MUST encode the SETTINGS_ENABLE_CONNECT_PROTOCOL identifier 0x08 with the 
 
 test "MUST use the literal token \"websocket\" as the :protocol value for a WebSocket bootstrap [RFC9220 §4.1 ¶?]" {
     // RFC 9220 §4.1: "the :protocol pseudo-header field is set to
-    // 'websocket'". null3 fixes this token in `websocket.protocol_token`.
+    // 'websocket'". http3_zig fixes this token in `websocket.protocol_token`.
     try std.testing.expectEqualStrings("websocket", websocket.protocol_token);
     try std.testing.expect(websocket.isProtocolToken("websocket"));
     try std.testing.expect(!websocket.isProtocolToken("WebSocket"));
@@ -233,10 +233,10 @@ test "MUST expose :protocol value through requestProtocol accessor [RFC9220 §4.
 
 test "NORMATIVE WebSocketConnectOptions defaults to scheme=https and path=/ [RFC9220 §4.1 ¶?]" {
     // §4.1 inherits RFC 8441 §4: requests bound for a WebSocket resource
-    // carry :scheme and :path. null3's `WebSocketConnectOptions` provides
+    // carry :scheme and :path. http3_zig's `WebSocketConnectOptions` provides
     // sensible defaults so the caller only needs to supply :authority.
     // The defaults match RFC 6455 §3 / RFC 8441 §5: "https" for "wss".
-    const defaults: null3.client.WebSocketConnectOptions = .{};
+    const defaults: http3_zig.client.WebSocketConnectOptions = .{};
     try std.testing.expectEqualStrings("https", defaults.scheme);
     try std.testing.expectEqualStrings("/", defaults.path);
     try std.testing.expectEqualStrings("", defaults.authority);
@@ -297,12 +297,12 @@ test "MUST NOT classify CONNECT + :protocol = some-other-token as a WebSocket bo
 
 test "NORMATIVE startWebSocket-style options carry :scheme, :authority, :path verbatim [RFC9220 §4.1 ¶?]" {
     // §4.1: the CONNECT pseudo-header section MUST carry :scheme,
-    // :authority, and :path. null3's `WebSocketConnectOptions` lets
+    // :authority, and :path. http3_zig's `WebSocketConnectOptions` lets
     // callers set each independently; the helper that classifies the
     // request reads each pseudo-header back. This is the encode-side
     // mirror of `isRequest`, exercised through the public option
     // struct that `startWebSocket` consumes.
-    const options: null3.client.WebSocketConnectOptions = .{
+    const options: http3_zig.client.WebSocketConnectOptions = .{
         .scheme = "https",
         .authority = "chat.example",
         .path = "/v1/socket",
@@ -325,7 +325,7 @@ test "NORMATIVE startWebSocket-style options carry :scheme, :authority, :path ve
 test "MUST emit :method = CONNECT on the bootstrap request [RFC9220 §4.1 ¶?]" {
     // §4.1 inherits RFC 8441 §4: "On requests bound for a WebSocket
     // resource, ... :method ... is set to CONNECT". We assert the
-    // null3 classifier round-trips this exact spelling (case-sensitive).
+    // http3_zig classifier round-trips this exact spelling (case-sensitive).
     const lowercase_method = [_]FieldLine{
         .{ .name = ":method", .value = "connect" },
         .{ .name = ":scheme", .value = "https" },
@@ -352,7 +352,7 @@ test "MUST emit :method = CONNECT on the bootstrap request [RFC9220 §4.1 ¶?]" 
 test "MAY include Sec-WebSocket-Protocol on a WebSocket bootstrap request [RFC9220 §4.2 ¶?]" {
     // §4.2 references RFC 6455 §11.3: Sec-WebSocket-Protocol is a list
     // of sub-protocols offered by the client. It is OPTIONAL. The
-    // null3 helper MUST classify the request whether or not it is
+    // http3_zig helper MUST classify the request whether or not it is
     // present (and MUST NOT impose its own canonicalization).
     const without_subprotocol = [_]FieldLine{
         .{ .name = ":method", .value = "CONNECT" },
@@ -397,7 +397,7 @@ test "MAY pass Sec-WebSocket-Protocol through WebSocketConnectOptions.headers [R
     const sub_protocols: [1]FieldLine = .{
         .{ .name = "sec-websocket-protocol", .value = "chat" },
     };
-    const options: null3.client.WebSocketConnectOptions = .{
+    const options: http3_zig.client.WebSocketConnectOptions = .{
         .scheme = "https",
         .authority = "example.com",
         .path = "/",
@@ -410,7 +410,7 @@ test "MAY pass Sec-WebSocket-Protocol through WebSocketConnectOptions.headers [R
 
 test "MUST fix Sec-WebSocket-Version token at the literal \"13\" [RFC9220 §4.2 ¶?]" {
     // §4.2 inherits RFC 6455 §11.6: "Sec-WebSocket-Version" — registered
-    // values include only "13"; null3 pins the value at the constant
+    // values include only "13"; http3_zig pins the value at the constant
     // `websocket.version_token`. The header field name is fixed to the
     // canonical lowercase HTTP/3 spelling (RFC 9114 §4.2).
     try std.testing.expectEqualStrings("13", websocket.version_token);
@@ -460,8 +460,8 @@ test "MUST reject an empty Sec-WebSocket-Version value [RFC9220 §4.2 ¶?]" {
 
 test "MUST validate Sec-WebSocket-Version = 13 on incoming WebSocket request [RFC9220 §4.2 ¶?]" {
     // RFC 9220 §4.2 inherits RFC 6455 §4.1: the client `Sec-WebSocket-
-    // Version` header field MUST be `13`. null3 exposes a receive-side
-    // validator at `null3.websocket.validateClientRequestVersion` that
+    // Version` header field MUST be `13`. http3_zig exposes a receive-side
+    // validator at `http3_zig.websocket.validateClientRequestVersion` that
     // `Server.acceptWebSocket` calls before producing the 2xx response.
     // The exact-match value of "13" is accepted; anything else (including
     // a missing header) is rejected with `error.UnsupportedWebSocketVersion`.
@@ -518,7 +518,7 @@ test "MUST validate Sec-WebSocket-Version = 13 on incoming WebSocket request [RF
     );
 
     // Negative: a comma-separated list (HTTP field syntax allows this,
-    // but RFC 6455 §11.6 makes 13 the sole defined value, so null3
+    // but RFC 6455 §11.6 makes 13 the sole defined value, so http3_zig
     // requires an exact "13") is rejected.
     const list = [_]FieldLine{
         .{ .name = ":method", .value = "CONNECT" },
@@ -538,7 +538,7 @@ test "MUST validate Sec-WebSocket-Version = 13 on incoming WebSocket request [RF
 
 test "MUST treat a 2xx response as a successful WebSocket handshake [RFC9220 §4.3 ¶?]" {
     // §4.3: "If the server accepts the connection, it MUST reply
-    // with a 2xx series status code." The null3 helper accepts any
+    // with a 2xx series status code." The http3_zig helper accepts any
     // 2xx status (200, 204, 299) as the WebSocket-accepted state.
     try std.testing.expect(websocket.isAcceptedStatus("200"));
     try std.testing.expect(websocket.isAcceptedStatus("204"));
@@ -551,7 +551,7 @@ test "MUST treat a 2xx response as a successful WebSocket handshake [RFC9220 §4
 test "MUST NOT treat a 1xx response as a successful WebSocket handshake [RFC9220 §4.3 ¶?]" {
     // RFC 9114 §4.4 ¶? forbids 1xx informational responses other than
     // 100-continue, and there is no 101 Switching Protocols in HTTP/3
-    // (the whole point of RFC 9220 §3 / §4 is to skip 101). The null3
+    // (the whole point of RFC 9220 §3 / §4 is to skip 101). The http3_zig
     // helper MUST NOT classify the legacy "101" code as accepted.
     try std.testing.expect(!websocket.isAcceptedStatus("101"));
     try std.testing.expect(!websocket.isAcceptedStatus("100"));
@@ -587,7 +587,7 @@ test "MUST NOT treat a 5xx response as a successful WebSocket handshake [RFC9220
 }
 
 test "MUST NOT classify a malformed :status string as accepted [RFC9220 §4.3 ¶?]" {
-    // null3 accepts only 3-digit ASCII numerics that begin with '2'.
+    // http3_zig accepts only 3-digit ASCII numerics that begin with '2'.
     try std.testing.expect(!websocket.isAcceptedStatus(""));
     try std.testing.expect(!websocket.isAcceptedStatus("2"));
     try std.testing.expect(!websocket.isAcceptedStatus("2000"));
@@ -611,20 +611,20 @@ test "MUST refuse to accept the WebSocket with a non-2xx status code at the serv
     // `isAcceptedStatus` helper since `acceptWebSocket` requires a
     // live Server fixture; the gate is the same code path used by
     // `Server.acceptWebSocket`).
-    const failure_options: null3.WebSocketAcceptOptions = .{ .status = "404" };
+    const failure_options: http3_zig.WebSocketAcceptOptions = .{ .status = "404" };
     try std.testing.expect(!websocket.isAcceptedStatus(failure_options.status));
 }
 
 test "MUST treat WebSocketAcceptOptions.status default as a 2xx success [RFC9220 §4.3 ¶?]" {
     // The default `WebSocketAcceptOptions.status` is "200" — the
     // canonical success code per §4.3.
-    const default_options: null3.WebSocketAcceptOptions = .{};
+    const default_options: http3_zig.WebSocketAcceptOptions = .{};
     try std.testing.expectEqualStrings("200", default_options.status);
     try std.testing.expect(websocket.isAcceptedStatus(default_options.status));
 }
 
 test "MUST reject a Server.acceptWebSocket call whose request is not a WebSocket bootstrap [RFC9220 §4.1 ¶?]" {
-    // `null3.server.acceptWebSocket` returns `error.NotWebSocket` if
+    // `http3_zig.server.acceptWebSocket` returns `error.NotWebSocket` if
     // `request.isWebSocket()` is false. We exercise that gate at the
     // module level by constructing a non-WebSocket field section and
     // letting the helper classify it.
@@ -644,7 +644,7 @@ test "MUST reject a Server.acceptWebSocket call whose request is not a WebSocket
 fn simulateNotWebSocket(fields: []const FieldLine) websocket.Error!void {
     // Reproduces the gate inside `Server.acceptWebSocket`: the public
     // helper is what the server uses, so this stays in-bounds for the
-    // "test exercises a null3 surface" rule.
+    // "test exercises a http3_zig surface" rule.
     if (!websocket.isRequest(fields)) return error.NotWebSocket;
 }
 
@@ -652,7 +652,7 @@ test "MUST reject WebSocketAcceptOptions whose :status is malformed [RFC9220 §4
     // The `acceptWebSocket` helper raises `error.InvalidAcceptStatus`
     // when `isAcceptedStatus` is false. We exercise the gate via the
     // public helper used by the server:
-    const bad_status: null3.WebSocketAcceptOptions = .{ .status = "abc" };
+    const bad_status: http3_zig.WebSocketAcceptOptions = .{ .status = "abc" };
     try std.testing.expect(!websocket.isAcceptedStatus(bad_status.status));
     try std.testing.expectError(error.InvalidAcceptStatus, simulateInvalidAcceptStatus(bad_status.status));
 }
@@ -662,7 +662,7 @@ fn simulateInvalidAcceptStatus(status: []const u8) websocket.Error!void {
 }
 
 test "MUST treat any 2xx status (not just 200) as success [RFC9220 §4.3 ¶?]" {
-    // RFC 9220 §4.3 says "2xx series", not "200". null3's helper
+    // RFC 9220 §4.3 says "2xx series", not "200". http3_zig's helper
     // accepts the full 200-299 range — auditor-relevant because some
     // implementations reject anything other than 200 (which would be
     // a violation).
@@ -685,14 +685,14 @@ test "MUST classify a server response with a 2xx :status as accepted [RFC9220 §
 test "NORMATIVE WebSocket request remains a valid HTTP/3 message after Extended-CONNECT validation [RFC9220 §4.1 ¶?]" {
     // Round-trip: build the WebSocket-shape pseudo-header section,
     // run it through the Extended-CONNECT-aware HTTP/3 validator, and
-    // confirm `null3.websocket.isRequest` agrees on classification.
+    // confirm `http3_zig.websocket.isRequest` agrees on classification.
     const fields = [_]FieldLine{
         .{ .name = ":method", .value = "CONNECT" },
         .{ .name = ":scheme", .value = "https" },
         .{ .name = ":authority", .value = "chat.example.com" },
         .{ .name = ":path", .value = "/socket" },
         .{ .name = ":protocol", .value = websocket.protocol_token },
-        .{ .name = "user-agent", .value = "null3-conformance/0" },
+        .{ .name = "user-agent", .value = "http3-zig-conformance/0" },
     };
     try headers.validateRequestWithOptions(&fields, .{ .enable_connect_protocol = true });
     try std.testing.expect(websocket.isRequest(&fields));

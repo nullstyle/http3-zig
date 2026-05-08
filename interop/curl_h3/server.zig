@@ -1,7 +1,7 @@
 const std = @import("std");
 const boringssl = @import("boringssl");
-const nullq = @import("nullq");
-const null3 = @import("null3");
+const quic_zig = @import("quic_zig");
+const http3_zig = @import("http3_zig");
 
 const Net = std.Io.net;
 
@@ -18,7 +18,7 @@ const Options = struct {
 
 const App = struct {
     allocator: std.mem.Allocator,
-    runner: null3.ServerRunner,
+    runner: http3_zig.ServerRunner,
     responded: std.AutoHashMapUnmanaged(u64, void) = .empty,
     responses_sent: u64 = 0,
     close_after_poll: bool = false,
@@ -26,7 +26,7 @@ const App = struct {
     fn init(allocator: std.mem.Allocator) App {
         return .{
             .allocator = allocator,
-            .runner = null3.ServerRunner.init(allocator),
+            .runner = http3_zig.ServerRunner.init(allocator),
         };
     }
 
@@ -35,7 +35,7 @@ const App = struct {
         self.responded.deinit(self.allocator);
     }
 
-    fn observe(self: *App, server: *null3.Server, event: null3.session.Event) !void {
+    fn observe(self: *App, server: *http3_zig.Server, event: http3_zig.session.Event) !void {
         switch (try self.runner.observe(event)) {
             .request_complete => |request| {
                 if (request.reset) |reset| {
@@ -69,7 +69,7 @@ const App = struct {
         }
     }
 
-    fn respondOnce(self: *App, server: *null3.Server, request: *const null3.RequestState) !void {
+    fn respondOnce(self: *App, server: *http3_zig.Server, request: *const http3_zig.RequestState) !void {
         if (!request.complete or request.headers == null) return;
         if (self.responded.contains(request.stream_id)) return;
 
@@ -78,13 +78,13 @@ const App = struct {
         self.responses_sent += 1;
     }
 
-    fn afterPoll(self: *App, session: *null3.Session) void {
+    fn afterPoll(self: *App, session: *http3_zig.Session) void {
         if (!self.close_after_poll) return;
         self.close_after_poll = false;
-        session.close(null3.protocol.ErrorCode.no_error, "curl close");
+        session.close(http3_zig.protocol.ErrorCode.no_error, "curl close");
     }
 
-    fn respond(self: *App, server: *null3.Server, request: *const null3.RequestState) !void {
+    fn respond(self: *App, server: *http3_zig.Server, request: *const http3_zig.RequestState) !void {
         const path = request.path() orelse "/";
         if (std.mem.startsWith(u8, path, "/hello")) {
             try self.respondText(server, request.stream_id, "200", "hello\n");
@@ -97,7 +97,7 @@ const App = struct {
         } else if (std.mem.startsWith(u8, path, "/cancel-upload")) {
             try self.respondText(server, request.stream_id, "200", "unexpected complete\n");
         } else if (std.mem.startsWith(u8, path, "/reset")) {
-            try server.reset(request.stream_id, null3.protocol.ErrorCode.internal_error);
+            try server.reset(request.stream_id, http3_zig.protocol.ErrorCode.internal_error);
         } else if (std.mem.startsWith(u8, path, "/close")) {
             try self.respondText(server, request.stream_id, "200", "closing\n");
             self.close_after_poll = true;
@@ -109,11 +109,11 @@ const App = struct {
         }
     }
 
-    fn respondInspect(self: *App, server: *null3.Server, request: *const null3.RequestState) !void {
-        const x_test = fieldValue(request.headerFields(), "x-null3-test") orelse "";
+    fn respondInspect(self: *App, server: *http3_zig.Server, request: *const http3_zig.RequestState) !void {
+        const x_test = fieldValue(request.headerFields(), "x-http3-zig-test") orelse "";
         const body = try std.fmt.allocPrint(
             self.allocator,
-            "method={s}\npath={s}\nauthority={s}\nx-null3-test={s}\n",
+            "method={s}\npath={s}\nauthority={s}\nx-http3-zig-test={s}\n",
             .{
                 request.method() orelse "",
                 request.path() orelse "",
@@ -127,14 +127,14 @@ const App = struct {
 
     fn respondText(
         self: *App,
-        server: *null3.Server,
+        server: *http3_zig.Server,
         stream_id: u64,
         status: []const u8,
         body: []const u8,
     ) !void {
-        const headers = [_]null3.FieldLine{
+        const headers = [_]http3_zig.FieldLine{
             .{ .name = "content-type", .value = "text/plain" },
-            .{ .name = "x-null3-interop", .value = "curl-h3" },
+            .{ .name = "x-http3-zig-interop", .value = "curl-h3" },
         };
         _ = try server.respond(self.allocator, stream_id, .{
             .status = status,
@@ -145,14 +145,14 @@ const App = struct {
 
     fn respondBytes(
         self: *App,
-        server: *null3.Server,
+        server: *http3_zig.Server,
         stream_id: u64,
         status: []const u8,
         body: []const u8,
     ) !void {
-        const headers = [_]null3.FieldLine{
+        const headers = [_]http3_zig.FieldLine{
             .{ .name = "content-type", .value = "application/octet-stream" },
-            .{ .name = "x-null3-interop", .value = "curl-h3" },
+            .{ .name = "x-http3-zig-interop", .value = "curl-h3" },
         };
         _ = try server.respond(self.allocator, stream_id, .{
             .status = status,
@@ -161,10 +161,10 @@ const App = struct {
         });
     }
 
-    fn respondLarge(self: *App, server: *null3.Server, stream_id: u64, size: usize) !void {
-        const headers = [_]null3.FieldLine{
+    fn respondLarge(self: *App, server: *http3_zig.Server, stream_id: u64, size: usize) !void {
+        const headers = [_]http3_zig.FieldLine{
             .{ .name = "content-type", .value = "application/octet-stream" },
-            .{ .name = "x-null3-interop", .value = "curl-h3" },
+            .{ .name = "x-http3-zig-interop", .value = "curl-h3" },
         };
         var writer = try server.startResponse(self.allocator, stream_id, .{
             .status = "200",
@@ -200,27 +200,27 @@ pub fn main(init: std.process.Init) !void {
     const cert_pem = try std.Io.Dir.cwd().readFile(io, options.cert, &cert_buf);
     const key_pem = try std.Io.Dir.cwd().readFile(io, options.key, &key_buf);
 
-    var server_tls = try null3.server.initTlsContext(.{}, cert_pem, key_pem);
+    var server_tls = try http3_zig.server.initTlsContext(.{}, cert_pem, key_pem);
     defer server_tls.deinit();
 
-    var conn = try nullq.Connection.initServer(allocator, server_tls);
+    var conn = try quic_zig.Connection.initServer(allocator, server_tls);
     defer conn.deinit();
     try conn.bind();
     try conn.setLocalScid(&server_cid);
 
-    var h3 = null3.Session.init(allocator, .server, &conn, .{
+    var h3 = http3_zig.Session.init(allocator, .server, &conn, .{
         .settings = .{
             .qpack_max_table_capacity = 256,
             .qpack_blocked_streams = 4,
             .max_field_section_size = 16 * 1024 * 1024,
         },
         .qpack_encoder_table_capacity = 256,
-        .qpack_indexing = null3.QpackIndexingPolicy.aggressive,
+        .qpack_indexing = http3_zig.QpackIndexingPolicy.aggressive,
         .max_field_section_size = 16 * 1024 * 1024,
         .max_data_frame_payload = 16 * 1024,
     });
     defer h3.deinit();
-    var h3_server = null3.Server.init(&h3);
+    var h3_server = http3_zig.Server.init(&h3);
     var app = App.init(allocator);
     defer app.deinit();
 
@@ -236,12 +236,12 @@ pub fn main(init: std.process.Init) !void {
     var idle_after_done_ms: u64 = 0;
     var rx: [64 * 1024]u8 = undefined;
     var tx: [4096]u8 = undefined;
-    var events: std.ArrayList(null3.session.Event) = .empty;
+    var events: std.ArrayList(http3_zig.session.Event) = .empty;
     defer {
         for (events.items) |event| event.deinit(allocator);
         events.deinit(allocator);
     }
-    var driver = null3.TransportEndpoint.withSession(&conn, &h3, &events);
+    var driver = http3_zig.TransportEndpoint.withSession(&conn, &h3, &events);
 
     const UdpSink = struct {
         socket: @TypeOf(sock),
@@ -270,9 +270,9 @@ pub fn main(init: std.process.Init) !void {
             idle_after_done_ms = 0;
             if (!transport_params_set) {
                 const ids = peekInitialIds(msg.data) orelse continue;
-                const params: nullq.tls.TransportParams = .{
-                    .original_destination_connection_id = nullq.conn.path.ConnectionId.fromSlice(ids.dcid),
-                    .initial_source_connection_id = nullq.conn.path.ConnectionId.fromSlice(&server_cid),
+                const params: quic_zig.tls.TransportParams = .{
+                    .original_destination_connection_id = quic_zig.conn.path.ConnectionId.fromSlice(ids.dcid),
+                    .initial_source_connection_id = quic_zig.conn.path.ConnectionId.fromSlice(&server_cid),
                     .max_idle_timeout_ms = 30_000,
                     .initial_max_data = 16 * 1024 * 1024,
                     .initial_max_stream_data_bidi_local = 16 * 1024 * 1024,
@@ -300,7 +300,7 @@ pub fn main(init: std.process.Init) !void {
         }
         app.afterPoll(&h3);
         try driver.tick(now_us);
-        now_us += null3.driver.default_step_us;
+        now_us += http3_zig.driver.default_step_us;
 
         if (options.max_requests > 0 and app.responses_sent >= options.max_requests) {
             idle_after_done_ms += 5;
@@ -333,7 +333,7 @@ fn parseArgs(init: std.process.Init, allocator: std.mem.Allocator) !Options {
     return options;
 }
 
-fn clearEvents(allocator: std.mem.Allocator, events: *std.ArrayList(null3.session.Event)) void {
+fn clearEvents(allocator: std.mem.Allocator, events: *std.ArrayList(http3_zig.session.Event)) void {
     for (events.items) |event| event.deinit(allocator);
     events.clearRetainingCapacity();
 }
@@ -377,7 +377,7 @@ fn fillPattern(buf: []u8) void {
     for (buf, 0..) |*b, i| b.* = pattern[i % pattern.len];
 }
 
-fn fieldValue(fields: []const null3.FieldLine, name: []const u8) ?[]const u8 {
+fn fieldValue(fields: []const http3_zig.FieldLine, name: []const u8) ?[]const u8 {
     for (fields) |field| {
         if (std.mem.eql(u8, field.name, name)) return field.value;
     }

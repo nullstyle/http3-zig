@@ -10,15 +10,15 @@
 //!     streams and 0xF0701 for push streams — sent on the control stream
 //!     to revise a previously signalled priority.
 //!
-//! This suite locks down null3's three normative surfaces for those rules:
+//! This suite locks down http3_zig's three normative surfaces for those rules:
 //!
-//!   * `null3.priority.Priority.parse` / `.encode` — the Structured Fields
+//!   * `http3_zig.priority.Priority.parse` / `.encode` — the Structured Fields
 //!     dictionary parser, default values, and unknown-parameter ignore
 //!     behaviour (§4, §4.1, §4.2, §8 ¶unknown-parameter).
-//!   * `null3.priority.fromFieldLines` — extraction from a QPACK
+//!   * `http3_zig.priority.fromFieldLines` — extraction from a QPACK
 //!     field-section value list, case-insensitive (§4 ¶1; HTTP fields are
 //!     case-insensitive per RFC 9110 §5.1).
-//!   * `null3.session.Session.sendPriorityUpdateForRequest`
+//!   * `http3_zig.session.Session.sendPriorityUpdateForRequest`
 //!     / `.sendPriorityUpdateForPush` and the receive path
 //!     (`PriorityUpdateEvent`) — semantic validation of target
 //!     prioritized-element IDs (§7.1, §8) and the round-trip through a
@@ -78,7 +78,7 @@
 //!                request/push stream — exercised in rfc9114_streams.zig
 //!                via the FrameValidator suite.
 //!   RFC9218 §6   PRIORITY_UPDATE frame ack/observability — internal to
-//!                null3's tracing layer, not an interop requirement.
+//!                http3_zig's tracing layer, not an interop requirement.
 //!   RFC9218 §9   Scheduling policy — RFC explicitly leaves the policy
 //!                to the implementation; nothing to lock down here.
 //!   RFC9218 §12  "Priority signals MUST NOT leak application data" —
@@ -88,13 +88,13 @@
 //!                observable behavior at any single API surface.
 
 const std = @import("std");
-const null3 = @import("null3");
-const nullq = @import("nullq");
+const http3_zig = @import("http3_zig");
+const quic_zig = @import("quic_zig");
 const fixture = @import("_h3_fixture.zig");
 
-const priority = null3.priority;
-const Priority = null3.Priority;
-const protocol = null3.protocol;
+const priority = http3_zig.priority;
+const Priority = http3_zig.Priority;
+const protocol = http3_zig.protocol;
 const ErrorCode = protocol.ErrorCode;
 
 // ---------------------------------------------------------------- §4 — Priority field name
@@ -102,7 +102,7 @@ const ErrorCode = protocol.ErrorCode;
 test "MUST register the Priority HTTP field name as \"priority\" [RFC9218 §4 ¶3]" {
     // §4 ¶3: "The 'Priority' HTTP header field is used by clients ..."
     // RFC 9110 §5.1 makes HTTP field names case-insensitive; RFC 9114
-    // §4.2 narrows that further to "lowercase on the wire". null3
+    // §4.2 narrows that further to "lowercase on the wire". http3_zig
     // exposes the canonical lowercase token.
     try std.testing.expectEqualStrings("priority", priority.field_name);
 }
@@ -164,7 +164,7 @@ test "MUST silently ignore a wrong-type urgency value [RFC9218 §4 ¶7]" {
     // §4 ¶7 also covers "values of unexpected types" — anything that is
     // not a Structured Fields integer in 0..7 (a leading zero like "07"
     // is multi-digit; "abc" / "-1" / "" are not single-digit integers).
-    // null3 silently drops the bad value and applies the default.
+    // http3_zig silently drops the bad value and applies the default.
     const wrong_type = [_][]const u8{ "u=07", "u=abc", "u=-1", "u=" };
     for (wrong_type) |raw| {
         const p = try Priority.parse(raw);
@@ -185,7 +185,7 @@ test "MUST keep a previously-accepted urgency when a later out-of-range urgency 
 
 test "MUST accept bare \"i\" as incremental=true (SF boolean shorthand) [RFC9218 §4.2 ¶1]" {
     // §4.2 ¶1 + RFC 8941 §3.3.6: a parameter without a value defaults
-    // to the boolean `?1` (true). null3 implements that shorthand.
+    // to the boolean `?1` (true). http3_zig implements that shorthand.
     const p = try Priority.parse("i");
     try std.testing.expect(p.incremental);
 }
@@ -248,7 +248,7 @@ test "MUST tolerate optional whitespace between dictionary members [RFC9218 §4 
 test "MUST ignore unknown parameters when parsing the Priority field [RFC9218 §8 ¶unknown-param]" {
     // §8 ¶? "Receivers MUST ignore unknown parameters." A future
     // extension defining a new parameter must not break existing
-    // parsers — null3 extracts only `u` and `i` and silently drops the
+    // parsers — http3_zig extracts only `u` and `i` and silently drops the
     // rest.
     const p = try Priority.parse("u=1, future-param=42, i, x-vendor=foo");
     try std.testing.expectEqual(@as(u3, 1), p.urgency);
@@ -262,7 +262,7 @@ test "MUST ignore an unknown parameter that has no value [RFC9218 §8 ¶unknown-
 }
 
 test "MUST tolerate empty members produced by leading/trailing/consecutive commas [RFC9218 §4 ¶1]" {
-    // RFC 8941 §4.2.1 says empty members "MUST be ignored". null3 skips
+    // RFC 8941 §4.2.1 says empty members "MUST be ignored". http3_zig skips
     // members of length 0 — this protects the parser from peers that
     // emit ",,u=2".
     const p = try Priority.parse(",,u=2,");
@@ -270,7 +270,7 @@ test "MUST tolerate empty members produced by leading/trailing/consecutive comma
 }
 
 test "MUST NOT accept a member whose key is empty (\"=value\") [RFC9218 §4 ¶1]" {
-    // RFC 8941 §4.2.1 requires every member to have a key. null3
+    // RFC 8941 §4.2.1 requires every member to have a key. http3_zig
     // surfaces an empty key as `Error.InvalidParameter`.
     try std.testing.expectError(priority.Error.InvalidParameter, Priority.parse("=42"));
 }
@@ -279,10 +279,10 @@ test "MUST NOT accept a member whose key is empty (\"=value\") [RFC9218 §4 ¶1]
 
 test "MUST extract Priority from QPACK field lines case-insensitively [RFC9218 §4 ¶3]" {
     // RFC 9110 §5.1 + RFC 9114 §4.2: HTTP field names are
-    // case-insensitive. null3 must recognise both "priority" and
+    // case-insensitive. http3_zig must recognise both "priority" and
     // "Priority" as the same field so a HEADERS section sent with
     // mixed case is honoured.
-    const fields = [_]null3.FieldLine{
+    const fields = [_]http3_zig.FieldLine{
         .{ .name = ":method", .value = "GET" },
         .{ .name = "Priority", .value = "u=2, i" },
     };
@@ -293,9 +293,9 @@ test "MUST extract Priority from QPACK field lines case-insensitively [RFC9218 �
 
 test "NORMATIVE fromFieldLines returns null when no Priority field is present [RFC9218 §4 ¶3]" {
     // The caller can distinguish "no signal" (apply server defaults)
-    // from "explicit defaults" by null vs Priority.{}: null3
+    // from "explicit defaults" by null vs Priority.{}: http3_zig
     // returns null when the field is absent.
-    const fields = [_]null3.FieldLine{
+    const fields = [_]http3_zig.FieldLine{
         .{ .name = ":method", .value = "GET" },
         .{ .name = ":path", .value = "/" },
     };
@@ -304,10 +304,10 @@ test "NORMATIVE fromFieldLines returns null when no Priority field is present [R
 
 test "NORMATIVE fromFieldLines folds duplicate Priority headers (last wins) [RFC9218 §4 ¶3]" {
     // RFC 9110 §5.2 allows multiple field lines for the same field.
-    // null3 parses each into the same accumulator so the final state
+    // http3_zig parses each into the same accumulator so the final state
     // reflects the last occurrence — the caller can pre-fold if it
     // needs alternate semantics.
-    const fields = [_]null3.FieldLine{
+    const fields = [_]http3_zig.FieldLine{
         .{ .name = "priority", .value = "u=0" },
         .{ .name = "priority", .value = "u=4, i" },
     };
@@ -340,7 +340,7 @@ test "MUST encode urgency as \"u=N\" [RFC9218 §4.1 ¶1]" {
 
 test "MUST emit the bare \"i\" sentinel when incremental=true [RFC9218 §4.2 ¶1]" {
     // RFC 8941 §4.1.7 allows boolean parameters to be written without a
-    // value (interpreted as `?1`). null3 prefers the shorter form for
+    // value (interpreted as `?1`). http3_zig prefers the shorter form for
     // wire economy.
     const p: Priority = .{ .urgency = 1, .incremental = true };
     var buf: [16]u8 = undefined;
@@ -393,7 +393,7 @@ test "MUST NOT overrun the encode buffer [RFC9218 §4]" {
 test "MUST register PRIORITY_UPDATE frame type IDs as 0xF0700 / 0xF0701 [RFC9218 §11 ¶?]" {
     // IANA "HTTP/3 Frame Types" registry (RFC 9218 §11; §7.2 ¶1):
     // 0xF0700 → PRIORITY_UPDATE Request, 0xF0701 → PRIORITY_UPDATE Push.
-    // null3 mirrors these in `protocol.FrameType.priority_update_*`
+    // http3_zig mirrors these in `protocol.FrameType.priority_update_*`
     // and the codec dispatches on these values; pin them so an
     // accidental constant edit is caught at conformance time.
     try std.testing.expectEqual(@as(u64, 0xF0700), protocol.FrameType.priority_update_request);
@@ -407,15 +407,15 @@ test "MUST round-trip PRIORITY_UPDATE Request frame (Prioritized Element ID + Pr
     // Element ID (varint) + Priority Field Value (opaque bytes)". The
     // generic frame codec is exercised in rfc9114_frames.zig; here we
     // verify the Priority-specific pair encodes and decodes losslessly
-    // so callers of `null3.frame.encode` get back what they put in.
+    // so callers of `http3_zig.frame.encode` get back what they put in.
     var buf: [64]u8 = undefined;
-    const n = try null3.frame.encode(&buf, .{
+    const n = try http3_zig.frame.encode(&buf, .{
         .priority_update_request = .{
             .prioritized_element_id = 16,
             .priority_field_value = "u=2, i",
         },
     });
-    const d = try null3.frame.decode(buf[0..n]);
+    const d = try http3_zig.frame.decode(buf[0..n]);
     switch (d.frame) {
         .priority_update_request => |p| {
             try std.testing.expectEqual(@as(u64, 16), p.prioritized_element_id);
@@ -430,13 +430,13 @@ test "MUST round-trip PRIORITY_UPDATE Push frame (Prioritized Element ID + Prior
     // wire is the frame-type tag (0xF0701 vs 0xF0700). The semantic
     // payload shape is identical.
     var buf: [64]u8 = undefined;
-    const n = try null3.frame.encode(&buf, .{
+    const n = try http3_zig.frame.encode(&buf, .{
         .priority_update_push = .{
             .prioritized_element_id = 0,
             .priority_field_value = "u=0",
         },
     });
-    const d = try null3.frame.decode(buf[0..n]);
+    const d = try http3_zig.frame.decode(buf[0..n]);
     switch (d.frame) {
         .priority_update_push => |p| {
             try std.testing.expectEqual(@as(u64, 0), p.prioritized_element_id);
@@ -451,13 +451,13 @@ test "NORMATIVE PRIORITY_UPDATE may carry an empty Priority Field Value [RFC9218
     // non-empty: a sender that wants to "reset to defaults" can emit
     // an empty value. The codec must not refuse it.
     var buf: [16]u8 = undefined;
-    const n = try null3.frame.encode(&buf, .{
+    const n = try http3_zig.frame.encode(&buf, .{
         .priority_update_request = .{
             .prioritized_element_id = 0,
             .priority_field_value = "",
         },
     });
-    const d = try null3.frame.decode(buf[0..n]);
+    const d = try http3_zig.frame.decode(buf[0..n]);
     switch (d.frame) {
         .priority_update_request => |p| {
             try std.testing.expectEqual(@as(u64, 0), p.prioritized_element_id);
@@ -471,7 +471,7 @@ test "NORMATIVE PRIORITY_UPDATE may carry an empty Priority Field Value [RFC9218
 
 test "MUST NOT permit a server to send PRIORITY_UPDATE [RFC9218 §7.1 ¶?]" {
     // §7.1 ¶? "The PRIORITY_UPDATE frame MUST be sent by a client".
-    // null3 enforces this in `Session.sendPriorityUpdateForRequest`
+    // http3_zig enforces this in `Session.sendPriorityUpdateForRequest`
     // by returning `InvalidRole` for any non-client caller.
     const allocator = std.testing.allocator;
 
@@ -489,7 +489,7 @@ test "MUST NOT permit a server to send PRIORITY_UPDATE [RFC9218 §7.1 ¶?]" {
 test "MUST NOT send PRIORITY_UPDATE for a server-initiated bidirectional stream id [RFC9218 §7.1 ¶?]" {
     // §7.1 ¶? "The Prioritized Element ID ... MUST be a client-
     // initiated bidirectional stream ..." Stream ID 1 is
-    // server-initiated bidi (lowest 2 bits = 0b01). null3 surfaces
+    // server-initiated bidi (lowest 2 bits = 0b01). http3_zig surfaces
     // this as `InvalidPriorityTarget` before any frame is written.
     const allocator = std.testing.allocator;
 
@@ -540,7 +540,7 @@ test "MUST NOT send PRIORITY_UPDATE-Push when push is not enabled [RFC9218 §7.1
 
 test "MUST NOT send PRIORITY_UPDATE-Push for an unannounced push id [RFC9218 §7.1 ¶?]" {
     // §7.1: the push id MUST refer to a server push the client has
-    // already accepted (received PUSH_PROMISE for). null3 surfaces an
+    // already accepted (received PUSH_PROMISE for). http3_zig surfaces an
     // unknown push id as `InvalidPriorityTarget`.
     const allocator = std.testing.allocator;
 
@@ -620,11 +620,11 @@ test "MUST close with H3_ID_ERROR on PRIORITY_UPDATE for a server-initiated stre
 
 test "MUST close with H3_GENERAL_PROTOCOL_ERROR on PRIORITY_UPDATE with structurally malformed Priority value [RFC9218 §8 ¶?]" {
     // §8 ¶? A Priority field value that fails to parse as a Structured
-    // Fields dictionary cannot be applied; null3 surfaces the parse
+    // Fields dictionary cannot be applied; http3_zig surfaces the parse
     // error and closes the connection. ("=42" has an empty member key,
     // which RFC 8941 §4.2.1 forbids — distinct from §4 ¶7's "ignore
     // out-of-range" rule, which only covers individual parameter
-    // values.) null3 maps `Error.InvalidParameter` to
+    // values.) http3_zig maps `Error.InvalidParameter` to
     // H3_GENERAL_PROTOCOL_ERROR via `errors_mod.codeForError`.
     const allocator = std.testing.allocator;
 
@@ -737,14 +737,14 @@ test "MUST reflect a received PRIORITY_UPDATE in priorityForRequest [RFC9218 §7
     // doesn't reject the stream as unknown.
     const request_stream_id: u64 = 0;
     _ = try pair.client.openBidi(request_stream_id);
-    const request_fields = [_]null3.FieldLine{
+    const request_fields = [_]http3_zig.FieldLine{
         .{ .name = ":method", .value = "GET" },
         .{ .name = ":scheme", .value = "https" },
         .{ .name = ":path", .value = "/" },
         .{ .name = ":authority", .value = "example.com" },
     };
     var headers_buf: [256]u8 = undefined;
-    const headers_n = try null3.qpack.encodeFieldSection(&headers_buf, &request_fields);
+    const headers_n = try http3_zig.qpack.encodeFieldSection(&headers_buf, &request_fields);
     try fixture.writeFrame(&pair.client, request_stream_id, .{ .headers = headers_buf[0..headers_n] });
 
     // Send the PRIORITY_UPDATE through the public Session API and
@@ -774,7 +774,7 @@ test "NORMATIVE PRIORITY_UPDATE value overrides a Priority request header [RFC92
 
     const request_stream_id: u64 = 0;
     _ = try pair.client.openBidi(request_stream_id);
-    const request_fields = [_]null3.FieldLine{
+    const request_fields = [_]http3_zig.FieldLine{
         .{ .name = ":method", .value = "GET" },
         .{ .name = ":scheme", .value = "https" },
         .{ .name = ":path", .value = "/" },
@@ -782,7 +782,7 @@ test "NORMATIVE PRIORITY_UPDATE value overrides a Priority request header [RFC92
         .{ .name = "priority", .value = "u=6" },
     };
     var headers_buf: [256]u8 = undefined;
-    const headers_n = try null3.qpack.encodeFieldSection(&headers_buf, &request_fields);
+    const headers_n = try http3_zig.qpack.encodeFieldSection(&headers_buf, &request_fields);
     try fixture.writeFrame(&pair.client, request_stream_id, .{ .headers = headers_buf[0..headers_n] });
 
     try pair.client_h3.sendPriorityUpdateForRequest(request_stream_id, .{ .urgency = 2 });
@@ -795,7 +795,7 @@ test "NORMATIVE PRIORITY_UPDATE value overrides a Priority request header [RFC92
 test "NORMATIVE priorityForRequest returns null when no Priority signal has been seen [RFC9218 §4 ¶5]" {
     // §4 ¶5: "When receiving an HTTP request that does not carry these
     // priority parameters, a server SHOULD act as if their default
-    // values were specified." null3 lets the caller distinguish "no
+    // values were specified." http3_zig lets the caller distinguish "no
     // signal" from "explicit default" by returning null from
     // `priorityForRequest` when neither a Priority header nor a
     // PRIORITY_UPDATE has touched the stream id — the application
@@ -814,7 +814,7 @@ test "NORMATIVE server buffers PRIORITY_UPDATE received before the stream is ope
     // §7 ¶4: "A client MAY send a PRIORITY_UPDATE frame before the
     // stream that it references is open." §7.4 ¶2: "Servers SHOULD
     // buffer the most recently received PRIORITY_UPDATE frame and
-    // apply it once the referenced stream is opened." null3's
+    // apply it once the referenced stream is opened." http3_zig's
     // `request_priorities` map is keyed on stream id, so the priority
     // is recorded immediately and remains visible via
     // `priorityForRequest` regardless of whether the stream has

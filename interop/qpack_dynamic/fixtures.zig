@@ -3,10 +3,10 @@
 //! These vectors are transport-free and intentionally use exact bytes from
 //! RFC 9204 Appendix B. The Zig runner exercises them directly; external
 //! peers can mirror the same encoder stream, field section, and decoder
-//! feedback bytes without depending on null3 internals.
+//! feedback bytes without depending on http3_zig internals.
 
-const null3 = @import("null3");
-const qpack = null3.qpack;
+const http3_zig = @import("http3_zig");
+const qpack = http3_zig.qpack;
 
 pub const TableEntry = struct {
     absolute_index: u64,

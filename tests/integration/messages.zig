@@ -1,6 +1,6 @@
 const std = @import("std");
-const null3 = @import("null3");
-const nullq = @import("nullq");
+const http3_zig = @import("http3_zig");
+const quic_zig = @import("quic_zig");
 const fixt = @import("_fixtures.zig");
 
 // Aliases — pulls in only the helpers this file's tests reference. It's
@@ -31,23 +31,23 @@ const openGetAndAwaitServerHeaders = fixt.openGetAndAwaitServerHeaders;
 const sendRawH3Datagram = fixt.sendRawH3Datagram;
 
 test "message encoder and decoder handles response body and trailers" {
-    const fields = [_]null3.FieldLine{
+    const fields = [_]http3_zig.FieldLine{
         .{ .name = ":status", .value = "200" },
         .{ .name = "content-type", .value = "text/plain" },
     };
-    const trailers = [_]null3.FieldLine{
+    const trailers = [_]http3_zig.FieldLine{
         .{ .name = "server-timing", .value = "app;dur=1" },
     };
 
     var bytes: [512]u8 = undefined;
     var pos: usize = 0;
-    var enc = null3.MessageEncoder.init(.response, .{});
+    var enc = http3_zig.MessageEncoder.init(.response, .{});
     pos += try enc.encodeHeaders(bytes[pos..], &fields);
     pos += try enc.encodeData(bytes[pos..], "ok");
     pos += try enc.encodeTrailers(bytes[pos..], &trailers);
 
-    var dec = null3.MessageDecoder.init(.response, .{});
-    var events: std.ArrayList(null3.message.Event) = .empty;
+    var dec = http3_zig.MessageDecoder.init(.response, .{});
+    var events: std.ArrayList(http3_zig.message.Event) = .empty;
     defer {
         for (events.items) |event| event.deinit(std.testing.allocator);
         events.deinit(std.testing.allocator);
@@ -72,38 +72,38 @@ test "message encoder and decoder handles response body and trailers" {
 
 test "message decoder rejects DATA before HEADERS" {
     var buf: [32]u8 = undefined;
-    const n = try null3.frame.encode(&buf, .{ .data = "nope" });
-    const d = try null3.frame.decode(buf[0..n]);
-    var dec = null3.MessageDecoder.init(.request, .{});
+    const n = try http3_zig.frame.encode(&buf, .{ .data = "nope" });
+    const d = try http3_zig.frame.decode(buf[0..n]);
+    var dec = http3_zig.MessageDecoder.init(.request, .{});
     try std.testing.expectError(
-        null3.message.Error.DataBeforeHeaders,
+        http3_zig.message.Error.DataBeforeHeaders,
         dec.observe(std.testing.allocator, d.frame),
     );
 }
 
 test "message codec rejects oversized headers and DATA after trailers" {
-    var oversized = null3.MessageDecoder.init(.response, .{ .max_field_section_size = 1 });
+    var oversized = http3_zig.MessageDecoder.init(.response, .{ .max_field_section_size = 1 });
     try std.testing.expectError(
         error.HeaderSectionTooLarge,
         oversized.observe(std.testing.allocator, .{ .headers = "too-large" }),
     );
 
-    const headers = [_]null3.FieldLine{
+    const headers = [_]http3_zig.FieldLine{
         .{ .name = ":status", .value = "200" },
     };
-    const trailers = [_]null3.FieldLine{
+    const trailers = [_]http3_zig.FieldLine{
         .{ .name = "x-checksum", .value = "ok" },
     };
 
     var bytes: [256]u8 = undefined;
     var pos: usize = 0;
-    var enc = null3.MessageEncoder.init(.response, .{});
+    var enc = http3_zig.MessageEncoder.init(.response, .{});
     pos += try enc.encodeHeaders(bytes[pos..], &headers);
     pos += try enc.encodeTrailers(bytes[pos..], &trailers);
-    pos += try null3.frame.encode(bytes[pos..], .{ .data = "late" });
+    pos += try http3_zig.frame.encode(bytes[pos..], .{ .data = "late" });
 
-    var dec = null3.MessageDecoder.init(.response, .{});
-    var events: std.ArrayList(null3.message.Event) = .empty;
+    var dec = http3_zig.MessageDecoder.init(.response, .{});
+    var events: std.ArrayList(http3_zig.message.Event) = .empty;
     defer {
         for (events.items) |event| event.deinit(std.testing.allocator);
         events.deinit(std.testing.allocator);

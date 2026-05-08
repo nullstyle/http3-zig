@@ -1,10 +1,10 @@
 //! Dynamic QPACK fixture runner for exact-byte interop vectors.
 
 const std = @import("std");
-const null3 = @import("null3");
+const http3_zig = @import("http3_zig");
 const fixtures = @import("fixtures.zig");
 
-const qpack = null3.qpack;
+const qpack = http3_zig.qpack;
 
 test "dynamic QPACK encoder-stream fixtures reproduce exact bytes and table state" {
     for (fixtures.encoder_stream_vectors) |vector| {

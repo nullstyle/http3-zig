@@ -2,11 +2,11 @@
 //!
 //! The helpers intentionally do not own sockets or clocks. Embedders still
 //! decide how packets are received, where outgoing datagrams are sent, and how
-//! time advances; this module just keeps the repeated nullq/null3 step order in
+//! time advances; this module just keeps the repeated quic_zig/http3_zig step order in
 //! one place.
 
 const std = @import("std");
-const nullq = @import("nullq");
+const quic_zig = @import("quic_zig");
 const session_mod = @import("session.zig");
 
 pub const default_step_us: u64 = 1_000;
@@ -24,17 +24,17 @@ pub const StepStats = struct {
 };
 
 pub const Endpoint = struct {
-    quic: *nullq.Connection,
+    quic: *quic_zig.Connection,
     session: ?*session_mod.Session = null,
     events: ?*std.ArrayList(session_mod.Event) = null,
     auto_start_session: bool = true,
 
-    pub fn init(quic: *nullq.Connection) Endpoint {
+    pub fn init(quic: *quic_zig.Connection) Endpoint {
         return .{ .quic = quic };
     }
 
     pub fn withSession(
-        quic: *nullq.Connection,
+        quic: *quic_zig.Connection,
         session: *session_mod.Session,
         events: *std.ArrayList(session_mod.Event),
     ) Endpoint {
@@ -48,7 +48,7 @@ pub const Endpoint = struct {
     pub fn handle(
         self: *Endpoint,
         datagram: []u8,
-        from: ?nullq.conn.path.Address,
+        from: ?quic_zig.conn.path.Address,
         now_us: u64,
     ) Error!void {
         try self.quic.handle(datagram, from, now_us);

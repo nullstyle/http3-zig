@@ -6,7 +6,7 @@
 //! and parsing rules in §7.2.4 ¶5 require that a duplicate identifier
 //! be treated as H3_SETTINGS_ERROR. Identifiers in the HTTP/2
 //! reservation set (§7.2.4.1 ¶8) MUST NOT be sent and MUST be rejected
-//! when received. nullq surfaces the codec as `null3.settings.Settings`.
+//! when received. quic_zig surfaces the codec as `http3_zig.settings.Settings`.
 //!
 //! Cross-reference: RFC 9220 §3 (`SETTINGS_ENABLE_CONNECT_PROTOCOL`)
 //! and RFC 9297 §2.1 (`SETTINGS_H3_DATAGRAM`) define their own
@@ -50,12 +50,12 @@
 //!                            could violate this MUST NOT.
 
 const std = @import("std");
-const null3 = @import("null3");
-const nullq = @import("nullq");
+const http3_zig = @import("http3_zig");
+const quic_zig = @import("quic_zig");
 
-const settings_mod = null3.settings;
-const protocol = null3.protocol;
-const varint = nullq.wire.varint;
+const settings_mod = http3_zig.settings;
+const protocol = http3_zig.protocol;
+const varint = quic_zig.wire.varint;
 
 // ---------------------------------------------------------------- §7.2.4 default values
 
@@ -64,7 +64,7 @@ test "NORMATIVE default value of SETTINGS_QPACK_MAX_TABLE_CAPACITY is 0 [RFC9114
     // recipient SHOULD use if the SETTINGS frame is not received or
     // does not include that parameter." For QPACK_MAX_TABLE_CAPACITY,
     // RFC 9204 §5 fixes the default at 0 (encoder MUST NOT use the
-    // dynamic table). nullq's struct default reflects that.
+    // dynamic table). quic_zig's struct default reflects that.
     const s: settings_mod.Settings = .{};
     try std.testing.expectEqual(@as(u64, 0), s.qpack_max_table_capacity);
 }
@@ -79,7 +79,7 @@ test "NORMATIVE default value of SETTINGS_QPACK_BLOCKED_STREAMS is 0 [RFC9204 §
 
 test "NORMATIVE default of SETTINGS_MAX_FIELD_SECTION_SIZE is unlimited (absent on the wire) [RFC9114 §7.2.4.1 ¶3]" {
     // §7.2.4.1 ¶3: "SETTINGS_MAX_FIELD_SECTION_SIZE (0x06): The
-    // default value is unlimited." nullq encodes "unlimited" as a
+    // default value is unlimited." quic_zig encodes "unlimited" as a
     // missing entry (null optional in the struct), not as a sentinel
     // value, so the field is omitted from the wire.
     const s: settings_mod.Settings = .{};
@@ -232,7 +232,7 @@ test "MAY reject a SETTINGS payload that repeats the QPACK_MAX_TABLE_CAPACITY id
     // §7.2.4 ¶5 (sender): "The same setting identifier MUST NOT occur
     // more than once in the SETTINGS frame." (receiver): "A receiver
     // MAY treat the presence of duplicate setting identifiers as a
-    // connection error of type H3_SETTINGS_ERROR." nullq elects the
+    // connection error of type H3_SETTINGS_ERROR." quic_zig elects the
     // MAY-reject path and surfaces this as `DuplicateSetting`.
     var buf: [32]u8 = undefined;
     var pos: usize = 0;
@@ -402,7 +402,7 @@ test "NORMATIVE ignore an unknown identifier on receive (GREASE-style tolerance)
     // ... are reserved to exercise the requirement that unknown
     // identifiers be ignored." More generally, §7.2.4 ¶5 requires
     // "An implementation MUST ignore any parameter with an identifier
-    // it does not understand." nullq must skip the entry without
+    // it does not understand." quic_zig must skip the entry without
     // raising an error.
     var buf: [16]u8 = undefined;
     var pos: usize = 0;
@@ -456,7 +456,7 @@ test "NORMATIVE accept an unknown identifier carrying a varint value at every le
 
 test "MUST reject SETTINGS_ENABLE_CONNECT_PROTOCOL = 2 as out of domain [RFC9220 §3 ¶3]" {
     // RFC 9220 §3 ¶3: the setting carries a boolean (0 or 1). A value
-    // outside that domain is malformed; nullq raises
+    // outside that domain is malformed; quic_zig raises
     // `InvalidSettingValue`.
     var buf: [4]u8 = undefined;
     var pos: usize = 0;
@@ -554,7 +554,7 @@ test "MUST NOT accept a SETTINGS payload truncated mid-value [RFC9114 §7.2.4 ¶
 // ---------------------------------------------------------------- §7.2.4 round-trip
 
 test "NORMATIVE encode→decode preserves all five defined settings simultaneously [RFC9114 §7.2.4 ¶3]" {
-    // Encode all five identifiers nullq supports, decode, confirm
+    // Encode all five identifiers quic_zig supports, decode, confirm
     // identity. Belt-and-suspenders for the multi-identifier scan.
     const original: settings_mod.Settings = .{
         .qpack_max_table_capacity = 8192,
@@ -607,7 +607,7 @@ test "NORMATIVE accept SETTINGS payload containing only an unknown identifier [R
 test "NORMATIVE encode picks the minimum varint form for every emitted identifier [RFC9000 §16 ¶6]" {
     // RFC 9000 §16 ¶6 (cross-cutting): "The encoded form for an
     // integer can be larger than the minimum size required..."
-    // Convention is "encoder picks minimum"; nullq follows that.
+    // Convention is "encoder picks minimum"; quic_zig follows that.
     // The encoder always emits QPACK_MAX_TABLE_CAPACITY (id=0x01)
     // and QPACK_BLOCKED_STREAMS (id=0x07) plus any boolean settings
     // that are true; every identifier here fits in 1 varint byte.

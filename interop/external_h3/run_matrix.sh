@@ -1,17 +1,17 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-CLIENT_BIN="${CLIENT_BIN:-./zig-out/bin/null3-external-h3-client}"
+CLIENT_BIN="${CLIENT_BIN:-./zig-out/bin/http3-zig-external-h3-client}"
 CERT="${CERT:-tests/data/test_cert.pem}"
 KEY="${KEY:-tests/data/test_key.pem}"
 HOST="${HOST:-127.0.0.1}"
 BASE_PORT="${BASE_PORT:-44330}"
 SNI="${SNI:-localhost}"
 PATH_UNDER_TEST="${PATH_UNDER_TEST:-/hello.txt}"
-BODY_EXPECT="${BODY_EXPECT:-null3 external h3 interop}"
+BODY_EXPECT="${BODY_EXPECT:-http3-zig external h3 interop}"
 CLIENT_TIMEOUT_MS="${CLIENT_TIMEOUT_MS:-10000}"
 STARTUP_DELAY_MS="${STARTUP_DELAY_MS:-500}"
-WORK_DIR="${WORK_DIR:-$(mktemp -d "${TMPDIR:-/tmp}/null3-external-h3.XXXXXX")}"
+WORK_DIR="${WORK_DIR:-$(mktemp -d "${TMPDIR:-/tmp}/http3-zig-external-h3.XXXXXX")}"
 
 cleanup() {
     if [[ -n "${PEER_PID:-}" ]] && kill -0 "$PEER_PID" 2>/dev/null; then
@@ -123,7 +123,7 @@ run_peer() {
         --path "$PATH_UNDER_TEST" \
         --insecure \
         --max-time-ms "$CLIENT_TIMEOUT_MS" >"$out" 2>&1; then
-        echo "FAIL ${peer}: null3 external client failed" >&2
+        echo "FAIL ${peer}: http3-zig external client failed" >&2
         cat "$out" >&2 || true
         echo "server log:" >&2
         cat "$log" >&2 || true

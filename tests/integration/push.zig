@@ -1,6 +1,6 @@
 const std = @import("std");
-const null3 = @import("null3");
-const nullq = @import("nullq");
+const http3_zig = @import("http3_zig");
+const quic_zig = @import("quic_zig");
 const fixt = @import("_fixtures.zig");
 
 // Aliases — pulls in only the helpers this file's tests reference. It's
@@ -39,8 +39,8 @@ test "server push sends PUSH_PROMISE and push stream response" {
 
     try exchangePairSettings(allocator, &pair);
 
-    var h3_client = null3.Client.init(&pair.client_h3);
-    var h3_server = null3.Server.init(&pair.server_h3);
+    var h3_client = http3_zig.Client.init(&pair.client_h3);
+    var h3_server = http3_zig.Server.init(&pair.server_h3);
 
     var request = try h3_client.startRequest(allocator, .{
         .authority = "example.com",
@@ -49,21 +49,21 @@ test "server push sends PUSH_PROMISE and push stream response" {
     const request_stream_id = request.stream_id;
     try request.finish();
 
-    var server_runner = null3.ServerRunner.init(allocator);
+    var server_runner = http3_zig.ServerRunner.init(allocator);
     defer server_runner.deinit();
 
-    var client_events: std.ArrayList(null3.session.Event) = .empty;
+    var client_events: std.ArrayList(http3_zig.session.Event) = .empty;
     defer {
         clearSessionEvents(allocator, &client_events);
         client_events.deinit(allocator);
     }
-    var server_events: std.ArrayList(null3.session.Event) = .empty;
+    var server_events: std.ArrayList(http3_zig.session.Event) = .empty;
     defer {
         clearSessionEvents(allocator, &server_events);
         server_events.deinit(allocator);
     }
 
-    const promised_headers = [_]null3.FieldLine{
+    const promised_headers = [_]http3_zig.FieldLine{
         .{ .name = ":method", .value = "GET" },
         .{ .name = ":scheme", .value = "https" },
         .{ .name = ":path", .value = "/style.css" },
@@ -101,7 +101,7 @@ test "server push sends PUSH_PROMISE and push stream response" {
                             .promise_headers = &promised_headers,
                             .response = .{
                                 .status = "200",
-                                .headers = &[_]null3.FieldLine{
+                                .headers = &[_]http3_zig.FieldLine{
                                     .{ .name = "content-type", .value = "text/css" },
                                 },
                             },
@@ -155,21 +155,21 @@ test "server push sends PUSH_PROMISE and push stream response" {
 test "server push helpers build and validate same-authority cacheable promises" {
     const allocator = std.testing.allocator;
 
-    var request_headers = [_]null3.FieldLine{
+    var request_headers = [_]http3_zig.FieldLine{
         .{ .name = ":method", .value = "GET" },
         .{ .name = ":scheme", .value = "https" },
         .{ .name = ":path", .value = "/" },
         .{ .name = ":authority", .value = "example.com" },
     };
-    var request_state = null3.RequestState{
+    var request_state = http3_zig.RequestState{
         .stream_id = 0,
         .headers = &request_headers,
     };
     const request = request_state.reader();
 
-    const built = try null3.server.allocPushPromiseFields(allocator, request, .{
+    const built = try http3_zig.server.allocPushPromiseFields(allocator, request, .{
         .path = "/style.css",
-        .headers = &[_]null3.FieldLine{
+        .headers = &[_]http3_zig.FieldLine{
             .{ .name = "accept", .value = "text/css" },
         },
     });
@@ -178,9 +178,9 @@ test "server push helpers build and validate same-authority cacheable promises" 
     try std.testing.expectEqualStrings("https", fieldValue(built, ":scheme").?);
     try std.testing.expectEqualStrings("example.com", fieldValue(built, ":authority").?);
     try std.testing.expectEqualStrings("/style.css", fieldValue(built, ":path").?);
-    try null3.server.validatePushPromisePolicy(request, built, .{});
+    try http3_zig.server.validatePushPromisePolicy(request, built, .{});
 
-    const cross_authority = [_]null3.FieldLine{
+    const cross_authority = [_]http3_zig.FieldLine{
         .{ .name = ":method", .value = "GET" },
         .{ .name = ":scheme", .value = "https" },
         .{ .name = ":path", .value = "/style.css" },
@@ -188,13 +188,13 @@ test "server push helpers build and validate same-authority cacheable promises" 
     };
     try std.testing.expectError(
         error.CrossAuthorityPush,
-        null3.server.validatePushPromisePolicy(request, &cross_authority, .{}),
+        http3_zig.server.validatePushPromisePolicy(request, &cross_authority, .{}),
     );
-    try null3.server.validatePushPromisePolicy(request, &cross_authority, .{
+    try http3_zig.server.validatePushPromisePolicy(request, &cross_authority, .{
         .require_same_authority = false,
     });
 
-    const post_promise = [_]null3.FieldLine{
+    const post_promise = [_]http3_zig.FieldLine{
         .{ .name = ":method", .value = "POST" },
         .{ .name = ":scheme", .value = "https" },
         .{ .name = ":path", .value = "/mutate" },
@@ -202,10 +202,10 @@ test "server push helpers build and validate same-authority cacheable promises" 
     };
     try std.testing.expectError(
         error.UncacheablePushMethod,
-        null3.server.validatePushPromisePolicy(request, &post_promise, .{}),
+        http3_zig.server.validatePushPromisePolicy(request, &post_promise, .{}),
     );
 
-    const extended_connect = [_]null3.FieldLine{
+    const extended_connect = [_]http3_zig.FieldLine{
         .{ .name = ":method", .value = "CONNECT" },
         .{ .name = ":scheme", .value = "https" },
         .{ .name = ":path", .value = "/tunnel" },
@@ -214,7 +214,7 @@ test "server push helpers build and validate same-authority cacheable promises" 
     };
     try std.testing.expectError(
         error.ExtendedConnectPush,
-        null3.server.validatePushPromisePolicy(request, &extended_connect, .{
+        http3_zig.server.validatePushPromisePolicy(request, &extended_connect, .{
             .require_cacheable_method = false,
         }),
     );
@@ -223,23 +223,23 @@ test "server push helpers build and validate same-authority cacheable promises" 
 test "client pushed response tracker assembles promised response lifecycle" {
     const allocator = std.testing.allocator;
 
-    var promise_fields = [_]null3.FieldLine{
+    var promise_fields = [_]http3_zig.FieldLine{
         .{ .name = ":method", .value = "GET" },
         .{ .name = ":scheme", .value = "https" },
         .{ .name = ":path", .value = "/style.css" },
         .{ .name = ":authority", .value = "example.com" },
     };
     var promise_block: [128]u8 = undefined;
-    const promise_block_n = try null3.qpack.encodeFieldSection(&promise_block, &promise_fields);
-    var response_headers = [_]null3.FieldLine{
+    const promise_block_n = try http3_zig.qpack.encodeFieldSection(&promise_block, &promise_fields);
+    var response_headers = [_]http3_zig.FieldLine{
         .{ .name = ":status", .value = "200" },
         .{ .name = "content-type", .value = "text/css" },
     };
-    var response_trailers = [_]null3.FieldLine{
+    var response_trailers = [_]http3_zig.FieldLine{
         .{ .name = "x-push-complete", .value = "yes" },
     };
 
-    var tracker = null3.PushedResponseTracker.initWithConfig(allocator, .{
+    var tracker = http3_zig.PushedResponseTracker.initWithConfig(allocator, .{
         .max_body_bytes = 64,
         .max_promise_field_section_bytes = 128,
     });
@@ -273,7 +273,7 @@ test "client pushed response tracker assembles promised response lifecycle" {
     try std.testing.expect(reader.complete());
     try std.testing.expect(!reader.cancelled());
 
-    var runner = null3.ClientRunner.init(allocator);
+    var runner = http3_zig.ClientRunner.init(allocator);
     defer runner.deinit();
     _ = try runner.observeResponseEvent(.{ .push_promise = .{
         .stream_id = 0,
@@ -307,8 +307,8 @@ test "server push requires client MAX_PUSH_ID opt-in" {
 
     try exchangePairSettings(allocator, &pair);
 
-    var h3_server = null3.Server.init(&pair.server_h3);
-    const promised_headers = [_]null3.FieldLine{
+    var h3_server = http3_zig.Server.init(&pair.server_h3);
+    const promised_headers = [_]http3_zig.FieldLine{
         .{ .name = ":method", .value = "GET" },
         .{ .name = ":scheme", .value = "https" },
         .{ .name = ":path", .value = "/style.css" },
@@ -332,10 +332,10 @@ test "server push enforces advertised MAX_PUSH_ID limit" {
 
     try exchangePairSettings(allocator, &pair);
 
-    var h3_client = null3.Client.init(&pair.client_h3);
-    var h3_server = null3.Server.init(&pair.server_h3);
+    var h3_client = http3_zig.Client.init(&pair.client_h3);
+    var h3_server = http3_zig.Server.init(&pair.server_h3);
     const request_stream_id = try openGetAndAwaitServerHeaders(allocator, &pair, &h3_client);
-    const promised_headers = [_]null3.FieldLine{
+    const promised_headers = [_]http3_zig.FieldLine{
         .{ .name = ":method", .value = "GET" },
         .{ .name = ":scheme", .value = "https" },
         .{ .name = ":path", .value = "/style.css" },
@@ -364,10 +364,10 @@ test "client CANCEL_PUSH reaches server" {
 
     try exchangePairSettings(allocator, &pair);
 
-    var h3_client = null3.Client.init(&pair.client_h3);
-    var h3_server = null3.Server.init(&pair.server_h3);
+    var h3_client = http3_zig.Client.init(&pair.client_h3);
+    var h3_server = http3_zig.Server.init(&pair.server_h3);
     const request_stream_id = try openGetAndAwaitServerHeaders(allocator, &pair, &h3_client);
-    const promised_headers = [_]null3.FieldLine{
+    const promised_headers = [_]http3_zig.FieldLine{
         .{ .name = ":method", .value = "GET" },
         .{ .name = ":scheme", .value = "https" },
         .{ .name = ":path", .value = "/style.css" },
@@ -380,12 +380,12 @@ test "client CANCEL_PUSH reaches server" {
     });
     try h3_client.cancelPush(0);
 
-    var client_events: std.ArrayList(null3.session.Event) = .empty;
+    var client_events: std.ArrayList(http3_zig.session.Event) = .empty;
     defer {
         clearSessionEvents(allocator, &client_events);
         client_events.deinit(allocator);
     }
-    var server_events: std.ArrayList(null3.session.Event) = .empty;
+    var server_events: std.ArrayList(http3_zig.session.Event) = .empty;
     defer {
         clearSessionEvents(allocator, &server_events);
         server_events.deinit(allocator);
@@ -431,10 +431,10 @@ test "server CANCEL_PUSH reaches client" {
 
     try exchangePairSettings(allocator, &pair);
 
-    var h3_client = null3.Client.init(&pair.client_h3);
-    var h3_server = null3.Server.init(&pair.server_h3);
+    var h3_client = http3_zig.Client.init(&pair.client_h3);
+    var h3_server = http3_zig.Server.init(&pair.server_h3);
     const request_stream_id = try openGetAndAwaitServerHeaders(allocator, &pair, &h3_client);
-    const promised_headers = [_]null3.FieldLine{
+    const promised_headers = [_]http3_zig.FieldLine{
         .{ .name = ":method", .value = "GET" },
         .{ .name = ":scheme", .value = "https" },
         .{ .name = ":path", .value = "/style.css" },
@@ -447,12 +447,12 @@ test "server CANCEL_PUSH reaches client" {
     });
     try h3_server.cancelPush(0);
 
-    var client_events: std.ArrayList(null3.session.Event) = .empty;
+    var client_events: std.ArrayList(http3_zig.session.Event) = .empty;
     defer {
         clearSessionEvents(allocator, &client_events);
         client_events.deinit(allocator);
     }
-    var server_events: std.ArrayList(null3.session.Event) = .empty;
+    var server_events: std.ArrayList(http3_zig.session.Event) = .empty;
     defer {
         clearSessionEvents(allocator, &server_events);
         server_events.deinit(allocator);
@@ -499,8 +499,8 @@ test "session rejects CANCEL_PUSH for unpromised push IDs" {
     try writeFrame(&pair.client, pair.client_h3.control_stream_id.?, .{ .cancel_push = 0 });
 
     try expectPairH3Error(allocator, &pair, error.InvalidPushId);
-    try std.testing.expectEqual(null3.session.ShutdownState.closed, pair.server_h3.shutdownState());
-    try expectLastCloseCode(&pair.server_h3, null3.protocol.ErrorCode.id_error);
+    try std.testing.expectEqual(http3_zig.session.ShutdownState.closed, pair.server_h3.shutdownState());
+    try expectLastCloseCode(&pair.server_h3, http3_zig.protocol.ErrorCode.id_error);
 }
 
 test "session rejects CANCEL_PUSH above advertised MAX_PUSH_ID" {
@@ -514,8 +514,8 @@ test "session rejects CANCEL_PUSH above advertised MAX_PUSH_ID" {
     try writeFrame(&pair.client, pair.client_h3.control_stream_id.?, .{ .cancel_push = 1 });
 
     try expectPairH3Error(allocator, &pair, error.InvalidPushId);
-    try std.testing.expectEqual(null3.session.ShutdownState.closed, pair.server_h3.shutdownState());
-    try expectLastCloseCode(&pair.server_h3, null3.protocol.ErrorCode.id_error);
+    try std.testing.expectEqual(http3_zig.session.ShutdownState.closed, pair.server_h3.shutdownState());
+    try expectLastCloseCode(&pair.server_h3, http3_zig.protocol.ErrorCode.id_error);
 }
 
 test "session rejects push streams above advertised MAX_PUSH_ID" {
@@ -525,12 +525,12 @@ test "session rejects push streams above advertised MAX_PUSH_ID" {
     try pair.initStarted(allocator, .{ .max_push_id = 0 }, .{});
     defer pair.deinit();
 
-    try openUniWithType(&pair.server, 7, null3.protocol.StreamType.push);
+    try openUniWithType(&pair.server, 7, http3_zig.protocol.StreamType.push);
     try writeVarint(&pair.server, 7, 1);
 
     try expectPairH3Error(allocator, &pair, error.InvalidPushId);
-    try std.testing.expectEqual(null3.session.ShutdownState.closed, pair.client_h3.shutdownState());
-    try expectLastCloseCode(&pair.client_h3, null3.protocol.ErrorCode.id_error);
+    try std.testing.expectEqual(http3_zig.session.ShutdownState.closed, pair.client_h3.shutdownState());
+    try expectLastCloseCode(&pair.client_h3, http3_zig.protocol.ErrorCode.id_error);
 }
 
 test "session rejects duplicate push stream IDs" {
@@ -540,18 +540,18 @@ test "session rejects duplicate push stream IDs" {
     try pair.initStarted(allocator, .{ .max_push_id = 1 }, .{});
     defer pair.deinit();
 
-    var client_events: std.ArrayList(null3.session.Event) = .empty;
+    var client_events: std.ArrayList(http3_zig.session.Event) = .empty;
     defer {
         clearSessionEvents(allocator, &client_events);
         client_events.deinit(allocator);
     }
-    var server_events: std.ArrayList(null3.session.Event) = .empty;
+    var server_events: std.ArrayList(http3_zig.session.Event) = .empty;
     defer {
         clearSessionEvents(allocator, &server_events);
         server_events.deinit(allocator);
     }
 
-    try openUniWithType(&pair.server, 7, null3.protocol.StreamType.push);
+    try openUniWithType(&pair.server, 7, http3_zig.protocol.StreamType.push);
     try writeVarint(&pair.server, 7, 0);
 
     var now_us: u64 = 1_000_000;
@@ -581,7 +581,7 @@ test "session rejects duplicate push stream IDs" {
         clearSessionEvents(allocator, &client_events);
     }
 
-    try openUniWithType(&pair.server, 11, null3.protocol.StreamType.push);
+    try openUniWithType(&pair.server, 11, http3_zig.protocol.StreamType.push);
     try writeVarint(&pair.server, 11, 0);
 
     try pumpUntilH3Error(
@@ -595,8 +595,8 @@ test "session rejects duplicate push stream IDs" {
         &now_us,
         error.InvalidPushId,
     );
-    try std.testing.expectEqual(null3.session.ShutdownState.closed, pair.client_h3.shutdownState());
-    try expectLastCloseCode(&pair.client_h3, null3.protocol.ErrorCode.id_error);
+    try std.testing.expectEqual(http3_zig.session.ShutdownState.closed, pair.client_h3.shutdownState());
+    try expectLastCloseCode(&pair.client_h3, http3_zig.protocol.ErrorCode.id_error);
 }
 
 test "session accepts duplicate PUSH_PROMISE with identical fields" {
@@ -608,10 +608,10 @@ test "session accepts duplicate PUSH_PROMISE with identical fields" {
 
     try exchangePairSettings(allocator, &pair);
 
-    var h3_client = null3.Client.init(&pair.client_h3);
+    var h3_client = http3_zig.Client.init(&pair.client_h3);
     const first_stream_id = try openGetAndAwaitServerHeaders(allocator, &pair, &h3_client);
     const second_stream_id = try openGetAndAwaitServerHeaders(allocator, &pair, &h3_client);
-    const promised_headers = [_]null3.FieldLine{
+    const promised_headers = [_]http3_zig.FieldLine{
         .{ .name = ":method", .value = "GET" },
         .{ .name = ":scheme", .value = "https" },
         .{ .name = ":path", .value = "/style.css" },
@@ -621,12 +621,12 @@ test "session accepts duplicate PUSH_PROMISE with identical fields" {
     try writePushPromiseFrame(&pair.server, first_stream_id, 0, &promised_headers);
     try writePushPromiseFrame(&pair.server, second_stream_id, 0, &promised_headers);
 
-    var client_events: std.ArrayList(null3.session.Event) = .empty;
+    var client_events: std.ArrayList(http3_zig.session.Event) = .empty;
     defer {
         clearSessionEvents(allocator, &client_events);
         client_events.deinit(allocator);
     }
-    var server_events: std.ArrayList(null3.session.Event) = .empty;
+    var server_events: std.ArrayList(http3_zig.session.Event) = .empty;
     defer {
         clearSessionEvents(allocator, &server_events);
         server_events.deinit(allocator);
@@ -669,16 +669,16 @@ test "session rejects duplicate PUSH_PROMISE with inconsistent fields" {
 
     try exchangePairSettings(allocator, &pair);
 
-    var h3_client = null3.Client.init(&pair.client_h3);
+    var h3_client = http3_zig.Client.init(&pair.client_h3);
     const first_stream_id = try openGetAndAwaitServerHeaders(allocator, &pair, &h3_client);
     const second_stream_id = try openGetAndAwaitServerHeaders(allocator, &pair, &h3_client);
-    const promised_headers = [_]null3.FieldLine{
+    const promised_headers = [_]http3_zig.FieldLine{
         .{ .name = ":method", .value = "GET" },
         .{ .name = ":scheme", .value = "https" },
         .{ .name = ":path", .value = "/style.css" },
         .{ .name = ":authority", .value = "example.com" },
     };
-    const conflicting_headers = [_]null3.FieldLine{
+    const conflicting_headers = [_]http3_zig.FieldLine{
         .{ .name = ":method", .value = "GET" },
         .{ .name = ":scheme", .value = "https" },
         .{ .name = ":path", .value = "/script.js" },
@@ -689,8 +689,8 @@ test "session rejects duplicate PUSH_PROMISE with inconsistent fields" {
     try writePushPromiseFrame(&pair.server, second_stream_id, 0, &conflicting_headers);
 
     try expectPairH3Error(allocator, &pair, error.InconsistentPushPromise);
-    try std.testing.expectEqual(null3.session.ShutdownState.closed, pair.client_h3.shutdownState());
-    try expectLastCloseCode(&pair.client_h3, null3.protocol.ErrorCode.message_error);
+    try std.testing.expectEqual(http3_zig.session.ShutdownState.closed, pair.client_h3.shutdownState());
+    try expectLastCloseCode(&pair.client_h3, http3_zig.protocol.ErrorCode.message_error);
 }
 
 test "client push policy auto-cancels promised resources" {
@@ -705,10 +705,10 @@ test "client push policy auto-cancels promised resources" {
 
     try exchangePairSettings(allocator, &pair);
 
-    var h3_client = null3.Client.init(&pair.client_h3);
-    var h3_server = null3.Server.init(&pair.server_h3);
+    var h3_client = http3_zig.Client.init(&pair.client_h3);
+    var h3_server = http3_zig.Server.init(&pair.server_h3);
     const request_stream_id = try openGetAndAwaitServerHeaders(allocator, &pair, &h3_client);
-    const promised_headers = [_]null3.FieldLine{
+    const promised_headers = [_]http3_zig.FieldLine{
         .{ .name = ":method", .value = "GET" },
         .{ .name = ":scheme", .value = "https" },
         .{ .name = ":path", .value = "/style.css" },
@@ -720,12 +720,12 @@ test "client push policy auto-cancels promised resources" {
         .response = .{ .status = "200" },
     });
 
-    var client_events: std.ArrayList(null3.session.Event) = .empty;
+    var client_events: std.ArrayList(http3_zig.session.Event) = .empty;
     defer {
         clearSessionEvents(allocator, &client_events);
         client_events.deinit(allocator);
     }
-    var server_events: std.ArrayList(null3.session.Event) = .empty;
+    var server_events: std.ArrayList(http3_zig.session.Event) = .empty;
     defer {
         clearSessionEvents(allocator, &server_events);
         server_events.deinit(allocator);

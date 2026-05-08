@@ -101,12 +101,12 @@
 //!     0x03) → rfc9114_streams.zig.
 //!   RFC9204 Appx B exact-byte fixtures → interop/qpack_dynamic/runner.zig.
 //!
-//! Every non-skipped test routes through `null3.qpack.*` public API.
+//! Every non-skipped test routes through `http3_zig.qpack.*` public API.
 
 const std = @import("std");
-const null3 = @import("null3");
+const http3_zig = @import("http3_zig");
 
-const qpack = null3.qpack;
+const qpack = http3_zig.qpack;
 const integer = qpack.integer;
 const instructions_mod = qpack.instructions;
 const state_mod = qpack.state;

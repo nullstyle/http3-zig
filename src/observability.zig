@@ -1,19 +1,19 @@
 //! Observability surfaces for embedders.
 //!
-//! null3 does not write logs itself. Applications can install callbacks,
+//! http3_zig does not write logs itself. Applications can install callbacks,
 //! snapshot counters, and translate trace events into qlog JSON, metrics, or
 //! local diagnostics.
 
 const std = @import("std");
 const boringssl = @import("boringssl");
-const nullq = @import("nullq");
+const quic_zig = @import("quic_zig");
 
 const protocol = @import("protocol.zig");
 
 pub const KeylogCallback = boringssl.tls.KeylogCallback;
-pub const QuicQlogCallback = nullq.QlogCallback;
-pub const QuicQlogEvent = nullq.QlogEvent;
-pub const QuicQlogEventName = nullq.QlogEventName;
+pub const QuicQlogCallback = quic_zig.QlogCallback;
+pub const QuicQlogEvent = quic_zig.QlogEvent;
+pub const QuicQlogEventName = quic_zig.QlogEventName;
 
 pub const TraceEventName = enum {
     control_stream_opened,

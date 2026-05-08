@@ -1,9 +1,9 @@
 # External HTTP/3 Client Interop
 
-`null3-external-h3-client` is a small null3-as-client harness for external
+`http3-zig-external-h3-client` is a small http3-zig-as-client harness for external
 HTTP/3 peers. It intentionally keeps peer-specific logic out of `src/`: the
 binary owns UDP socket plumbing and CLI parsing, while request/response handling
-uses the public `null3.Client`, `ClientRunner`, and `TransportEndpoint` APIs.
+uses the public `http3-zig.Client`, `ClientRunner`, and `TransportEndpoint` APIs.
 
 Build it with:
 
@@ -14,7 +14,7 @@ zig build external-h3-client
 Example against an HTTP/3 server listening on a local UDP port:
 
 ```sh
-./zig-out/bin/null3-external-h3-client \
+./zig-out/bin/http3-zig-external-h3-client \
   --connect 127.0.0.1:4433 \
   --sni localhost \
   --authority localhost:4433 \
@@ -28,7 +28,7 @@ matrix scripts can layer above this harness.
 ## Optional Matrix Runner
 
 `run_matrix.sh` starts external peer servers from caller-provided commands, then
-drives each peer with `null3-external-h3-client`.
+drives each peer with `http3-zig-external-h3-client`.
 
 ```sh
 zig build external-h3-client

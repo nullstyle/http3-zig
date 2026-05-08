@@ -17,15 +17,15 @@
 //!     unavailable (§3.1). Receivers MUST ignore unknown capsule types
 //!     (§3.2).
 //!
-//! null3's normative surfaces:
+//! http3_zig's normative surfaces:
 //!
-//!   * `null3.datagram` (`src/datagram.zig`) — Quarter-Stream-ID codec,
+//!   * `http3_zig.datagram` (`src/datagram.zig`) — Quarter-Stream-ID codec,
 //!     Context-ID payload helpers, oversized-buffer rejection.
-//!   * `null3.capsule` (`src/capsule.zig`) — TLV encode/decode,
+//!   * `http3_zig.capsule` (`src/capsule.zig`) — TLV encode/decode,
 //!     unknown-type pass-through, iterator.
-//!   * `null3.protocol.SettingId.h3_datagram = 0x33`,
-//!     `null3.protocol.ErrorCode.datagram_error = 0x33`.
-//!   * `null3.Session.sendDatagram` / `sendDatagramWithContext` /
+//!   * `http3_zig.protocol.SettingId.h3_datagram = 0x33`,
+//!     `http3_zig.protocol.ErrorCode.datagram_error = 0x33`.
+//!   * `http3_zig.Session.sendDatagram` / `sendDatagramWithContext` /
 //!     `sendRequestDatagramCapsule` — drive the wire-side codecs after
 //!     a real handshake.
 //!
@@ -81,7 +81,7 @@
 //!                   rfc9114_settings.zig and the Settings round-trip
 //!                   test in tests/root.zig.
 //!   RFC9297 §2.2   QUIC DATAGRAM *frame* layout (RFC 9221 §4) → covered
-//!                   by nullq's RFC 9221 conformance suite.
+//!                   by quic_zig's RFC 9221 conformance suite.
 //!   RFC9298 §3     CONNECT-UDP Context ID 0 + UDP target/path encoding
 //!                   → covered by rfc9298_masque.zig. The generic
 //!                   Context ID payload codec lives here.
@@ -89,14 +89,14 @@
 //!                   scope for this suite.
 
 const std = @import("std");
-const null3 = @import("null3");
-const nullq = @import("nullq");
+const http3_zig = @import("http3_zig");
+const quic_zig = @import("quic_zig");
 const fixture = @import("_h3_fixture.zig");
 
-const datagram = null3.datagram;
-const capsule = null3.capsule;
-const protocol = null3.protocol;
-const settings_mod = null3.settings;
+const datagram = http3_zig.datagram;
+const capsule = http3_zig.capsule;
+const protocol = http3_zig.protocol;
+const settings_mod = http3_zig.settings;
 const ErrorCode = protocol.ErrorCode;
 
 // ---------------------------------------------------------------- §2.1 — SETTINGS_H3_DATAGRAM
@@ -119,7 +119,7 @@ test "MUST encode SETTINGS_H3_DATAGRAM=1 to advertise HTTP/3 datagram support [R
 
 test "MUST decode SETTINGS_H3_DATAGRAM=0 as datagrams disabled [RFC9297 §2.1 ¶1]" {
     // §2.1 ¶1: value 0 explicitly indicates the endpoint does not
-    // support HTTP/3 datagrams. nullq omits a default-false setting
+    // support HTTP/3 datagrams. quic_zig omits a default-false setting
     // from the encoded blob; an absent setting MUST decode to false.
     var buf: [4]u8 = undefined;
     const n = try (settings_mod.Settings{}).encode(&buf);
@@ -133,7 +133,7 @@ test "MUST NOT accept a SETTINGS_H3_DATAGRAM value greater than 1 [RFC9297 §2.1
     // `InvalidSettingValue`, which the session maps to
     // H3_SETTINGS_ERROR (covered in rfc9114_session.zig for the
     // end-to-end gate).
-    const varint = nullq.wire.varint;
+    const varint = quic_zig.wire.varint;
     var buf: [16]u8 = undefined;
     var pos: usize = 0;
     pos += try varint.encode(buf[pos..], protocol.SettingId.h3_datagram);
@@ -149,7 +149,7 @@ test "MUST NOT accept a SETTINGS_H3_DATAGRAM value greater than 1 [RFC9297 §2.1
 test "MUST refuse to send an HTTP/3 DATAGRAM before the peer advertises H3_DATAGRAM=1 [RFC9297 §2.1.1 ¶1]" {
     // §2.1.1 ¶1: "Both peers MUST advertise SETTINGS_H3_DATAGRAM with
     // value 1 ... before HTTP/3 Datagrams may be sent." When neither
-    // side advertises 1, the local sender MUST refuse — null3 returns
+    // side advertises 1, the local sender MUST refuse — http3_zig returns
     // `error.DatagramNotEnabled`.
     const allocator = std.testing.allocator;
 
@@ -206,7 +206,7 @@ test "MUST allow sending an HTTP/3 DATAGRAM after both peers advertise H3_DATAGR
 test "MUST close with H3_SETTINGS_ERROR on a received HTTP/3 DATAGRAM when the local setting is disabled [RFC9297 §2.1.1 ¶1]" {
     // The session-level negotiation gate: an endpoint that did not
     // advertise H3_DATAGRAM=1 MUST close the connection if it
-    // nonetheless receives a QUIC DATAGRAM frame. null3 maps the
+    // nonetheless receives a QUIC DATAGRAM frame. http3_zig maps the
     // error to H3_SETTINGS_ERROR (errors.zig:DatagramNotEnabled →
     // settings_error 0x0109).
     const allocator = std.testing.allocator;
@@ -256,7 +256,7 @@ test "MUST compute Quarter-Stream-ID = stream_id / 4 [RFC9297 §2.2 ¶1]" {
 test "MUST reject encoding an HTTP/3 DATAGRAM for a non-bidirectional stream id (1) [RFC9297 §2.2 ¶?]" {
     // RFC 9297 §2.2 implicitly requires the stream id to map to a
     // request stream (client-initiated bidirectional, low 2 bits =
-    // 00). null3 rejects ids whose low 2 bits != 0 with
+    // 00). http3_zig rejects ids whose low 2 bits != 0 with
     // `InvalidDatagramStream`. Stream id 1 is server-initiated bidi.
     var buf: [32]u8 = undefined;
     try std.testing.expectError(error.InvalidDatagramStream, datagram.encode(&buf, 1, "x"));
@@ -431,12 +431,12 @@ test "MUST dispatch a received HTTP/3 DATAGRAM to the right stream id [RFC9297 �
 
     // Step the loopback driver manually so we can inspect events
     // before they're cleared. (pumpQuiet would clear them mid-loop.)
-    var server_events: std.ArrayList(null3.session.Event) = .empty;
+    var server_events: std.ArrayList(http3_zig.session.Event) = .empty;
     defer {
         fixture.clearSessionEvents(allocator, &server_events);
         server_events.deinit(allocator);
     }
-    var client_events: std.ArrayList(null3.session.Event) = .empty;
+    var client_events: std.ArrayList(http3_zig.session.Event) = .empty;
     defer {
         fixture.clearSessionEvents(allocator, &client_events);
         client_events.deinit(allocator);
@@ -448,9 +448,9 @@ test "MUST dispatch a received HTTP/3 DATAGRAM to the right stream id [RFC9297 �
     while (!saw_datagram) : (iters += 1) {
         try std.testing.expect(iters < 20_000);
         var pkt: [2048]u8 = undefined;
-        var driver = null3.TransportLoopback.init(
-            null3.TransportEndpoint.withSession(&pair.client, &pair.client_h3, &client_events),
-            null3.TransportEndpoint.withSession(&pair.server, &pair.server_h3, &server_events),
+        var driver = http3_zig.TransportLoopback.init(
+            http3_zig.TransportEndpoint.withSession(&pair.client, &pair.client_h3, &client_events),
+            http3_zig.TransportEndpoint.withSession(&pair.server, &pair.server_h3, &server_events),
             .{ .now_us = now_us, .max_datagrams_per_direction = 1 },
         );
         _ = try driver.step(&pkt);
@@ -474,7 +474,7 @@ test "MUST dispatch a received HTTP/3 DATAGRAM to the right stream id [RFC9297 �
 test "MUST close with H3_DATAGRAM_ERROR on a malformed HTTP/3 DATAGRAM payload [RFC9297 §2 ¶?]" {
     // §2 ¶?: "A malformed HTTP Datagram is treated as a connection
     // error of type H3_DATAGRAM_ERROR." A QUIC DATAGRAM whose payload
-    // can't be parsed as `varint + body` triggers this — null3
+    // can't be parsed as `varint + body` triggers this — http3_zig
     // surfaces InsufficientBytes from `datagram.decode` and closes
     // with H3_DATAGRAM_ERROR.
     const allocator = std.testing.allocator;
@@ -528,7 +528,7 @@ test "MUST round-trip a DATAGRAM capsule through encode/decode [RFC9297 §3.1 ¶
 
 test "MUST surface a DATAGRAM capsule via the isDatagram predicate [RFC9297 §3.1 ¶1]" {
     // Distinguishes the well-known type 0x00 from any other capsule
-    // — used by `null3.session` to dispatch DATAGRAM-over-DATA-frame
+    // — used by `http3_zig.session` to dispatch DATAGRAM-over-DATA-frame
     // payloads to the same handler as QUIC-DATAGRAM-borne payloads.
     const c: capsule.Capsule = .{ .capsule_type = capsule.Type.datagram, .value = "x" };
     try std.testing.expect(c.isDatagram());
@@ -738,7 +738,7 @@ test "NORMATIVE Capsule rides inside an HTTP/3 DATA frame on the request stream 
     defer pair.deinit();
     try fixture.exchangePairSettings(allocator, &pair);
 
-    var h3_client = null3.Client.init(&pair.client_h3);
+    var h3_client = http3_zig.Client.init(&pair.client_h3);
     const request = try h3_client.startRequest(allocator, .{
         .authority = "example.com",
         .path = "/capsule",
@@ -786,7 +786,7 @@ test "MUST refuse to send an HTTP/3 DATAGRAM whose context-encoded length exceed
 test "MUST refuse to send an HTTP/3 DATAGRAM larger than the QUIC max_datagram_frame_size [RFC9297 §2 ¶?]" {
     // §2 ¶?: HTTP/3 DATAGRAMs ride inside QUIC DATAGRAM frames; the
     // QUIC layer caps frame size at the peer's
-    // `max_datagram_frame_size` transport parameter. null3 enforces
+    // `max_datagram_frame_size` transport parameter. http3_zig enforces
     // this in `validateDatagramSend` and surfaces `DatagramTooLarge`
     // before any frame hits the wire. Test fixture sets the cap at
     // 1200 bytes (in `_h3_fixture.zig`); a 1200-byte payload plus a

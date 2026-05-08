@@ -1,6 +1,6 @@
 const std = @import("std");
-const null3 = @import("null3");
-const nullq = @import("nullq");
+const http3_zig = @import("http3_zig");
+const quic_zig = @import("quic_zig");
 const fixt = @import("_fixtures.zig");
 
 // Aliases — pulls in only the helpers this file's tests reference. It's
@@ -30,17 +30,17 @@ const exchangePairSettings = fixt.exchangePairSettings;
 const openGetAndAwaitServerHeaders = fixt.openGetAndAwaitServerHeaders;
 const sendRawH3Datagram = fixt.sendRawH3Datagram;
 
-test "session exchanges HTTP/3 request and response over nullq streams" {
+test "session exchanges HTTP/3 request and response over quic_zig streams" {
     const allocator = std.testing.allocator;
 
-    var server_tls = try null3.server.initTlsContext(.{}, test_cert_pem, test_key_pem);
+    var server_tls = try http3_zig.server.initTlsContext(.{}, test_cert_pem, test_key_pem);
     defer server_tls.deinit();
-    var client_tls = try null3.client.initTlsContext(.{ .verify = .none });
+    var client_tls = try http3_zig.client.initTlsContext(.{ .verify = .none });
     defer client_tls.deinit();
 
-    var client = try nullq.Connection.initClient(allocator, client_tls, "localhost");
+    var client = try quic_zig.Connection.initClient(allocator, client_tls, "localhost");
     defer client.deinit();
-    var server = try nullq.Connection.initServer(allocator, server_tls);
+    var server = try quic_zig.Connection.initServer(allocator, server_tls);
     defer server.deinit();
 
     try client.bind();
@@ -48,7 +48,7 @@ test "session exchanges HTTP/3 request and response over nullq streams" {
     client.peer = &server;
     server.peer = &client;
 
-    const tp: nullq.tls.TransportParams = .{
+    const tp: quic_zig.tls.TransportParams = .{
         .initial_max_data = 1 << 22,
         .initial_max_stream_data_bidi_local = 1 << 20,
         .initial_max_stream_data_bidi_remote = 1 << 20,
@@ -69,36 +69,36 @@ test "session exchanges HTTP/3 request and response over nullq streams" {
     try server.setPeerDcid(&ClientCid);
     try server.setLocalScid(&ServerCid);
 
-    const h3_settings: null3.Settings = .{
+    const h3_settings: http3_zig.Settings = .{
         .qpack_max_table_capacity = 256,
         .qpack_blocked_streams = 4,
         .max_field_section_size = 1 << 20,
     };
-    var client_h3 = null3.Session.init(allocator, .client, &client, .{
+    var client_h3 = http3_zig.Session.init(allocator, .client, &client, .{
         .settings = h3_settings,
         .qpack_encoder_table_capacity = 256,
-        .qpack_indexing = null3.QpackIndexingPolicy.aggressive,
+        .qpack_indexing = http3_zig.QpackIndexingPolicy.aggressive,
         .max_field_section_size = 1 << 20,
     });
     defer client_h3.deinit();
-    var server_h3 = null3.Session.init(allocator, .server, &server, .{
+    var server_h3 = http3_zig.Session.init(allocator, .server, &server, .{
         .settings = h3_settings,
         .qpack_encoder_table_capacity = 256,
-        .qpack_indexing = null3.QpackIndexingPolicy.aggressive,
+        .qpack_indexing = http3_zig.QpackIndexingPolicy.aggressive,
         .max_field_section_size = 1 << 20,
     });
     defer server_h3.deinit();
 
     try client_h3.start();
     try server_h3.start();
-    var h3_client = null3.Client.init(&client_h3);
-    var h3_server = null3.Server.init(&server_h3);
-    var request_tracker = null3.RequestTracker.init(allocator);
+    var h3_client = http3_zig.Client.init(&client_h3);
+    var h3_server = http3_zig.Server.init(&server_h3);
+    var request_tracker = http3_zig.RequestTracker.init(allocator);
     defer request_tracker.deinit();
-    var response_tracker = null3.ResponseTracker.init(allocator);
+    var response_tracker = http3_zig.ResponseTracker.init(allocator);
     defer response_tracker.deinit();
 
-    const request_headers = [_]null3.FieldLine{
+    const request_headers = [_]http3_zig.FieldLine{
         .{ .name = "content-type", .value = "text/plain" },
     };
     var request_writer = try h3_client.startRequest(allocator, .{
@@ -112,12 +112,12 @@ test "session exchanges HTTP/3 request and response over nullq streams" {
     try request_writer.write("ng");
     try request_writer.finish();
 
-    var client_events: std.ArrayList(null3.session.Event) = .empty;
+    var client_events: std.ArrayList(http3_zig.session.Event) = .empty;
     defer {
         clearSessionEvents(allocator, &client_events);
         client_events.deinit(allocator);
     }
-    var server_events: std.ArrayList(null3.session.Event) = .empty;
+    var server_events: std.ArrayList(http3_zig.session.Event) = .empty;
     defer {
         clearSessionEvents(allocator, &server_events);
         server_events.deinit(allocator);
@@ -189,7 +189,7 @@ test "session exchanges HTTP/3 request and response over nullq streams" {
         clearSessionEvents(allocator, &server_events);
 
         if (!response_sent and server_saw_settings and server_saw_request_headers and server_saw_request_body and server_saw_request_finish) {
-            const response_fields = [_]null3.FieldLine{
+            const response_fields = [_]http3_zig.FieldLine{
                 .{ .name = "content-type", .value = "text/plain" },
                 .{ .name = "x-dyn", .value = "one" },
             };
@@ -256,11 +256,11 @@ test "session exchanges HTTP/3 request and response over nullq streams" {
     try std.testing.expect(client_saw_goaway);
     try std.testing.expect(client_applied_dynamic_qpack);
     try std.testing.expect(server_saw_qpack_ack);
-    try std.testing.expectEqual(null3.session.ShutdownState.draining, client_h3.shutdownState());
-    try std.testing.expectEqual(null3.session.ShutdownState.draining, server_h3.shutdownState());
+    try std.testing.expectEqual(http3_zig.session.ShutdownState.draining, client_h3.shutdownState());
+    try std.testing.expectEqual(http3_zig.session.ShutdownState.draining, server_h3.shutdownState());
 
     try std.testing.expectError(
-        null3.session.Error.RequestBlockedByGoaway,
+        http3_zig.session.Error.RequestBlockedByGoaway,
         h3_client.request(allocator, .{
             .method = "POST",
             .authority = "localhost",
@@ -271,8 +271,8 @@ test "session exchanges HTTP/3 request and response over nullq streams" {
 
     const ignored_stream_id = request_stream_id + 4;
     _ = try client.openBidi(ignored_stream_id);
-    var ignored_encoder = null3.MessageEncoder.init(.request, .{});
-    const ignored_request_fields = [_]null3.FieldLine{
+    var ignored_encoder = http3_zig.MessageEncoder.init(.request, .{});
+    const ignored_request_fields = [_]http3_zig.FieldLine{
         .{ .name = ":method", .value = "POST" },
         .{ .name = ":scheme", .value = "https" },
         .{ .name = ":path", .value = "/echo" },
@@ -306,11 +306,11 @@ test "session exchanges HTTP/3 request and response over nullq streams" {
                 .rejected => |rejected| {
                     server_saw_rejection = true;
                     try std.testing.expectEqual(ignored_stream_id, rejected.stream_id);
-                    try std.testing.expectEqual(null3.protocol.ErrorCode.request_rejected, rejected.error_code);
+                    try std.testing.expectEqual(http3_zig.protocol.ErrorCode.request_rejected, rejected.error_code);
                     const info = rejected.errorInfo();
-                    try std.testing.expectEqual(null3.ErrorSource.local, info.source);
-                    try std.testing.expectEqual(null3.ErrorCategory.request, info.application.category);
-                    try std.testing.expectEqual(null3.ErrorScope.stream, info.application.default_scope);
+                    try std.testing.expectEqual(http3_zig.ErrorSource.local, info.source);
+                    try std.testing.expectEqual(http3_zig.ErrorCategory.request, info.application.category);
+                    try std.testing.expectEqual(http3_zig.ErrorScope.stream, info.application.default_scope);
                 },
                 .headers => |headers| {
                     try std.testing.expect(headers.stream_id != ignored_stream_id);

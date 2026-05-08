@@ -1,9 +1,9 @@
 //! Capsule Protocol codec (RFC 9297).
 
 const std = @import("std");
-const nullq = @import("nullq");
+const quic_zig = @import("quic_zig");
 
-const varint = nullq.wire.varint;
+const varint = quic_zig.wire.varint;
 
 pub const Error = varint.Error || error{
     BufferTooSmall,

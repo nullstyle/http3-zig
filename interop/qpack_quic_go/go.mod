@@ -1,4 +1,4 @@
-module null3/interop/qpack_quic_go
+module http3-zig/interop/qpack_quic_go
 
 go 1.24
 

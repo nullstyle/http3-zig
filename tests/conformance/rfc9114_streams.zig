@@ -6,11 +6,11 @@
 //!
 //! These tests drive the public surface in two layers:
 //!
-//!   - `null3.stream.FrameValidator` (the pure stream-type → allowed-frames
+//!   - `http3_zig.stream.FrameValidator` (the pure stream-type → allowed-frames
 //!     state machine) for placement rules that the spec phrases as "MUST
 //!     treat as a connection error of type H3_FRAME_UNEXPECTED" — a
 //!     conformance test there proves the gate exists in the validator that
-//!     `null3.session` runs every received frame through.
+//!     `http3_zig.session` runs every received frame through.
 //!   - The full session loopback (`H3Pair` in `_h3_fixture.zig`) for the
 //!     end-to-end MUST: a malformed peer stream MUST trigger a
 //!     CONNECTION_CLOSE with the right error code (frame_unexpected,
@@ -74,7 +74,7 @@
 //!
 //! Out of scope here (covered elsewhere or by design):
 //!   RFC9114 §6.1   ¶?  HEADERS-DATA*-HEADERS? frame ordering at the request
-//!     stream — lives in `null3.message` and is exhaustively tested in
+//!     stream — lives in `http3_zig.message` and is exhaustively tested in
 //!     `rfc9114_messages.zig` (DataAfterTrailers, DuplicateHeaders,
 //!     DataBeforeHeaders, MissingHeaders, plus the duplicate-request-HEADERS
 //!     rule).
@@ -89,12 +89,12 @@
 //!   RFC9204 §4.2      QPACK encoder/decoder *instruction* semantics → rfc9204_qpack_dynamic.zig
 
 const std = @import("std");
-const null3 = @import("null3");
-const nullq = @import("nullq");
+const http3_zig = @import("http3_zig");
+const quic_zig = @import("quic_zig");
 const fixture = @import("_h3_fixture.zig");
 
-const stream = null3.stream;
-const protocol = null3.protocol;
+const stream = http3_zig.stream;
+const protocol = http3_zig.protocol;
 const FrameType = protocol.FrameType;
 const StreamType = protocol.StreamType;
 const ErrorCode = protocol.ErrorCode;
@@ -106,7 +106,7 @@ const FrameValidationError = stream.FrameValidationError;
 
 test "MUST treat the unidirectional stream-type prefix as a QUIC variable-length integer [RFC9114 §6.2 ¶3]" {
     // §6.2 ¶3: "Each side of the unidirectional stream is identified by a
-    // variable-length integer". Driving null3.stream.decodeType through the
+    // variable-length integer". Driving http3_zig.stream.decodeType through the
     // four single-byte (1-byte varint) types and a 2-byte varint of the
     // same logical value asserts that the prefix is parsed as a varint and
     // not, for instance, a fixed-width u8.
@@ -131,7 +131,7 @@ test "MUST classify unidirectional stream type 0x01 as push [RFC9114 §6.2.2 ¶1
 
 test "MUST classify unidirectional stream type 0x02 as QPACK encoder [RFC9114 §6.2 ¶?]" {
     // §6.2 ¶3 + RFC 9204 §4.2 reserve type 0x02 for the QPACK encoder
-    // stream. null3 owns this classification at the stream layer because
+    // stream. http3_zig owns this classification at the stream layer because
     // the kind drives whether the receiver routes the bytes to the
     // QPACK encoder-instruction parser.
     var buf = [_]u8{0x02};
@@ -147,7 +147,7 @@ test "MUST classify unidirectional stream type 0x03 as QPACK decoder [RFC9114 §
 
 test "NORMATIVE classify an unrecognized unidirectional stream type as unknown [RFC9114 §6.2 ¶3]" {
     // RFC 9114 §6.2 ¶3: "Unidirectional streams of unknown type MUST NOT
-    // be considered an error". null3.stream.decodeType surfaces unknown
+    // be considered an error". http3_zig.stream.decodeType surfaces unknown
     // types as `Kind.unknown` so the session can drop the stream — this
     // proves the parser doesn't reject the prefix outright.
     var buf = [_]u8{0x21}; // first GREASE id
@@ -489,7 +489,7 @@ test "MUST close with H3_FRAME_UNEXPECTED when DATA is observed on the control s
     );
 
     try fixture.expectPairH3Error(allocator, &pair, error.FrameUnexpected);
-    try std.testing.expectEqual(null3.session.ShutdownState.closed, pair.server_h3.shutdownState());
+    try std.testing.expectEqual(http3_zig.session.ShutdownState.closed, pair.server_h3.shutdownState());
     try fixture.expectLastCloseCode(&pair.server_h3, ErrorCode.frame_unexpected);
 }
 
@@ -577,7 +577,7 @@ test "MUST close with H3_STREAM_CREATION_ERROR when a peer opens a second contro
 
 test "MUST close with H3_STREAM_CREATION_ERROR when a peer opens a second QPACK encoder stream [RFC9114 §6.2.1 ¶7]" {
     // The same uniqueness rule extends to QPACK encoder/decoder streams
-    // (RFC 9204 §4.2). null3 maps both to CriticalStreamAlreadyOpen and
+    // (RFC 9204 §4.2). http3_zig maps both to CriticalStreamAlreadyOpen and
     // closes with H3_STREAM_CREATION_ERROR.
     const allocator = std.testing.allocator;
 
@@ -665,7 +665,7 @@ test "MUST close with H3_ID_ERROR on a push stream whose Push ID exceeds the adv
 
 test "MUST NOT treat an unrecognized unidirectional stream type as a connection error [RFC9114 §6.2.3 ¶?]" {
     // §6.2.3: "Endpoints MUST NOT consider these streams to have any
-    // meaning upon receipt." null3 should drop the bytes silently and
+    // meaning upon receipt." http3_zig should drop the bytes silently and
     // keep the connection healthy. Drive the loopback after sending a
     // stream of type 0x0123 (an unknown / non-GREASE id) and observe
     // that no close fires.
@@ -682,8 +682,8 @@ test "MUST NOT treat an unrecognized unidirectional stream type as a connection 
     try fixture.writeRawBytes(&pair.server, 7, "ignored-bytes-after-type");
 
     try fixture.pumpQuiet(allocator, &pair, 64);
-    try std.testing.expectEqual(null3.session.ShutdownState.active, pair.client_h3.shutdownState());
-    try std.testing.expectEqual(null3.session.ShutdownState.active, pair.server_h3.shutdownState());
+    try std.testing.expectEqual(http3_zig.session.ShutdownState.active, pair.client_h3.shutdownState());
+    try std.testing.expectEqual(http3_zig.session.ShutdownState.active, pair.server_h3.shutdownState());
 }
 
 test "MUST NOT treat a GREASE unidirectional stream type as a connection error [RFC9114 §6.2.3 ¶?]" {
@@ -700,7 +700,7 @@ test "MUST NOT treat a GREASE unidirectional stream type as a connection error [
     try fixture.writeRawBytes(&pair.server, 7, "grease-payload");
 
     try fixture.pumpQuiet(allocator, &pair, 64);
-    try std.testing.expectEqual(null3.session.ShutdownState.active, pair.client_h3.shutdownState());
+    try std.testing.expectEqual(http3_zig.session.ShutdownState.active, pair.client_h3.shutdownState());
 }
 
 // ---------------------------------------------------------------- §6.2.1 critical-stream closure
@@ -770,7 +770,7 @@ test "MUST close with H3_STREAM_CREATION_ERROR when a server-initiated bidi stre
     // §6.1 ¶3: "Clients MUST treat receipt of a server-initiated
     // bidirectional stream as a connection error of type
     // H3_STREAM_CREATION_ERROR unless such an extension has been
-    // negotiated." null3.Session enforces this symmetrically — any
+    // negotiated." http3_zig.Session enforces this symmetrically — any
     // session whose role disagrees with a bidi stream's
     // client-initiated bit raises Error.UnexpectedStream, which maps
     // to H3_STREAM_CREATION_ERROR. Stream id 1 has the "server-
@@ -795,7 +795,7 @@ test "MUST close with H3_STREAM_CREATION_ERROR when a server-initiated bidi stre
         &pair.server_h3
     else
         &pair.client_h3;
-    try std.testing.expectEqual(null3.session.ShutdownState.closed, closed_side.shutdownState());
+    try std.testing.expectEqual(http3_zig.session.ShutdownState.closed, closed_side.shutdownState());
     try fixture.expectLastCloseCode(closed_side, ErrorCode.stream_creation_error);
 }
 
@@ -842,8 +842,8 @@ test "MUST tolerate a peer-initiated unidirectional stream reset before the stre
     try pair.server.streamReset(7, 0);
 
     try fixture.pumpQuiet(allocator, &pair, 64);
-    try std.testing.expectEqual(null3.session.ShutdownState.active, pair.client_h3.shutdownState());
-    try std.testing.expectEqual(null3.session.ShutdownState.active, pair.server_h3.shutdownState());
+    try std.testing.expectEqual(http3_zig.session.ShutdownState.active, pair.client_h3.shutdownState());
+    try std.testing.expectEqual(http3_zig.session.ShutdownState.active, pair.server_h3.shutdownState());
 }
 
 test "MUST tolerate a peer-initiated unidirectional stream FIN before the stream-type header [RFC9114 §6.2 ¶10]" {
@@ -860,8 +860,8 @@ test "MUST tolerate a peer-initiated unidirectional stream FIN before the stream
     try pair.server.streamFinish(7);
 
     try fixture.pumpQuiet(allocator, &pair, 64);
-    try std.testing.expectEqual(null3.session.ShutdownState.active, pair.client_h3.shutdownState());
-    try std.testing.expectEqual(null3.session.ShutdownState.active, pair.server_h3.shutdownState());
+    try std.testing.expectEqual(http3_zig.session.ShutdownState.active, pair.client_h3.shutdownState());
+    try std.testing.expectEqual(http3_zig.session.ShutdownState.active, pair.server_h3.shutdownState());
 }
 
 // ---------------------------------------------------------------- §7.2.8 reserved HTTP/2 frame types end-to-end

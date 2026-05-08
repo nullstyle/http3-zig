@@ -77,7 +77,7 @@
 //!   RFC9204         field-section *encoding* (static-table / Huffman)   → rfc9204_qpack_*.zig
 //!   RFC9220         WebSocket-specific :protocol value validation       → rfc9220_websocket_h3.zig
 //!
-//! Out of scope here (no public surface in null3.headers / null3.message):
+//! Out of scope here (no public surface in http3_zig.headers / http3_zig.message):
 //!   RFC9114 §4.2  ¶4   MUST NOT  TE header field with value other than "trailers"
 //!                                — validator does not inspect TE; classification of TE
 //!                                as connection-specific-with-exception is unimplemented
@@ -97,13 +97,13 @@
 //!                                — gateway concern, not part of validator surface
 
 const std = @import("std");
-const null3 = @import("null3");
+const http3_zig = @import("http3_zig");
 
-const headers = null3.headers;
-const message = null3.message;
-const FieldLine = null3.FieldLine;
-const MessageEncoder = null3.MessageEncoder;
-const MessageDecoder = null3.MessageDecoder;
+const headers = http3_zig.headers;
+const message = http3_zig.message;
+const FieldLine = http3_zig.FieldLine;
+const MessageEncoder = http3_zig.MessageEncoder;
+const MessageDecoder = http3_zig.MessageDecoder;
 
 // Convenience for the "minimal valid request" baseline — a GET that all of
 // RFC 9114 §4.3.1's MUST requirements satisfy in one go. Construct copies of

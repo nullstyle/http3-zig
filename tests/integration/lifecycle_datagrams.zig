@@ -1,6 +1,6 @@
 const std = @import("std");
-const null3 = @import("null3");
-const nullq = @import("nullq");
+const http3_zig = @import("http3_zig");
+const quic_zig = @import("quic_zig");
 const fixt = @import("_fixtures.zig");
 
 // Aliases — pulls in only the helpers this file's tests reference. It's
@@ -30,46 +30,46 @@ const exchangePairSettings = fixt.exchangePairSettings;
 const openGetAndAwaitServerHeaders = fixt.openGetAndAwaitServerHeaders;
 const sendRawH3Datagram = fixt.sendRawH3Datagram;
 
-test "session exchanges HTTP/3 datagrams over nullq datagram frames" {
+test "session exchanges HTTP/3 datagrams over quic_zig datagram frames" {
     const allocator = std.testing.allocator;
 
-    var server_tls = try null3.server.initTlsContext(.{}, test_cert_pem, test_key_pem);
+    var server_tls = try http3_zig.server.initTlsContext(.{}, test_cert_pem, test_key_pem);
     defer server_tls.deinit();
-    var client_tls = try null3.client.initTlsContext(.{ .verify = .none });
+    var client_tls = try http3_zig.client.initTlsContext(.{ .verify = .none });
     defer client_tls.deinit();
 
-    var client: nullq.Connection = undefined;
-    var server: nullq.Connection = undefined;
+    var client: quic_zig.Connection = undefined;
+    var server: quic_zig.Connection = undefined;
     try initConnectedQuic(allocator, client_tls, server_tls, &client, &server);
     defer client.deinit();
     defer server.deinit();
 
-    const h3_settings: null3.Settings = .{ .h3_datagram = true };
-    var client_h3 = null3.Session.init(allocator, .client, &client, .{
+    const h3_settings: http3_zig.Settings = .{ .h3_datagram = true };
+    var client_h3 = http3_zig.Session.init(allocator, .client, &client, .{
         .settings = h3_settings,
     });
     defer client_h3.deinit();
-    var server_h3 = null3.Session.init(allocator, .server, &server, .{
+    var server_h3 = http3_zig.Session.init(allocator, .server, &server, .{
         .settings = h3_settings,
     });
     defer server_h3.deinit();
 
     try client_h3.start();
     try server_h3.start();
-    var h3_client = null3.Client.init(&client_h3);
-    var h3_server = null3.Server.init(&server_h3);
+    var h3_client = http3_zig.Client.init(&client_h3);
+    var h3_server = http3_zig.Server.init(&server_h3);
 
     try std.testing.expectError(
-        null3.session.Error.MissingSettings,
+        http3_zig.session.Error.MissingSettings,
         h3_client.sendDatagram(0, "too-soon"),
     );
 
-    var client_events: std.ArrayList(null3.session.Event) = .empty;
+    var client_events: std.ArrayList(http3_zig.session.Event) = .empty;
     defer {
         clearSessionEvents(allocator, &client_events);
         client_events.deinit(allocator);
     }
-    var server_events: std.ArrayList(null3.session.Event) = .empty;
+    var server_events: std.ArrayList(http3_zig.session.Event) = .empty;
     defer {
         clearSessionEvents(allocator, &server_events);
         server_events.deinit(allocator);
@@ -302,7 +302,7 @@ test "session exchanges HTTP/3 datagrams over nullq datagram frames" {
                     server_saw_datagram_capsule = true;
                     const decoded_capsule = try data.capsule();
                     try std.testing.expect(decoded_capsule.capsule.isDatagram());
-                    const context = try null3.datagram.decodeContextPayload(decoded_capsule.capsule.value);
+                    const context = try http3_zig.datagram.decodeContextPayload(decoded_capsule.capsule.value);
                     try std.testing.expectEqual(@as(u64, 11), context.context_id);
                     try std.testing.expectEqualStrings("capsule-client", context.payload);
                 },
@@ -313,7 +313,7 @@ test "session exchanges HTTP/3 datagrams over nullq datagram frames" {
         clearSessionEvents(allocator, &client_events);
     }
 
-    const capsule_headers = [_]null3.FieldLine{
+    const capsule_headers = [_]http3_zig.FieldLine{
         .{ .name = "capsule-protocol", .value = "?1" },
     };
     var response_writer = try h3_server.startResponse(allocator, stream_id, .{
@@ -343,7 +343,7 @@ test "session exchanges HTTP/3 datagrams over nullq datagram frames" {
                     client_saw_datagram_capsule = true;
                     const decoded_capsule = try data.capsule();
                     try std.testing.expect(decoded_capsule.capsule.isDatagram());
-                    const context = try null3.datagram.decodeContextPayload(decoded_capsule.capsule.value);
+                    const context = try http3_zig.datagram.decodeContextPayload(decoded_capsule.capsule.value);
                     try std.testing.expectEqual(@as(u64, 13), context.context_id);
                     try std.testing.expectEqualStrings("capsule-server", context.payload);
                 },

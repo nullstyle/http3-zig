@@ -1,6 +1,6 @@
 const std = @import("std");
-const null3 = @import("null3");
-const nullq = @import("nullq");
+const http3_zig = @import("http3_zig");
+const quic_zig = @import("quic_zig");
 const fixt = @import("_fixtures.zig");
 
 // Aliases — pulls in only the helpers this file's tests reference. It's
@@ -31,14 +31,14 @@ const openGetAndAwaitServerHeaders = fixt.openGetAndAwaitServerHeaders;
 const sendRawH3Datagram = fixt.sendRawH3Datagram;
 
 test "priority field helpers surface request and response priorities" {
-    var request_headers = [_]null3.FieldLine{
+    var request_headers = [_]http3_zig.FieldLine{
         .{ .name = ":method", .value = "GET" },
         .{ .name = ":scheme", .value = "https" },
         .{ .name = ":path", .value = "/" },
         .{ .name = ":authority", .value = "example.com" },
         .{ .name = "priority", .value = "u=0, i" },
     };
-    var request_state = null3.RequestState{
+    var request_state = http3_zig.RequestState{
         .stream_id = 0,
         .headers = &request_headers,
     };
@@ -46,11 +46,11 @@ test "priority field helpers surface request and response priorities" {
     try std.testing.expectEqual(@as(u3, 0), request_priority.urgency);
     try std.testing.expect(request_priority.incremental);
 
-    var response_headers = [_]null3.FieldLine{
+    var response_headers = [_]http3_zig.FieldLine{
         .{ .name = ":status", .value = "200" },
         .{ .name = "Priority", .value = "u=6" },
     };
-    var response_state = null3.ResponseState{
+    var response_state = http3_zig.ResponseState{
         .stream_id = 0,
         .headers = &response_headers,
     };
@@ -68,8 +68,8 @@ test "client PRIORITY_UPDATE for request reaches server state" {
 
     try exchangePairSettings(allocator, &pair);
 
-    var h3_client = null3.Client.init(&pair.client_h3);
-    var h3_server = null3.Server.init(&pair.server_h3);
+    var h3_client = http3_zig.Client.init(&pair.client_h3);
+    var h3_server = http3_zig.Server.init(&pair.server_h3);
 
     var request = try h3_client.startRequest(allocator, .{
         .authority = "example.com",
@@ -78,15 +78,15 @@ test "client PRIORITY_UPDATE for request reaches server state" {
     const request_stream_id = request.stream_id;
     try request.updatePriority(.{ .urgency = 1, .incremental = true });
 
-    var server_runner = null3.ServerRunner.init(allocator);
+    var server_runner = http3_zig.ServerRunner.init(allocator);
     defer server_runner.deinit();
 
-    var client_events: std.ArrayList(null3.session.Event) = .empty;
+    var client_events: std.ArrayList(http3_zig.session.Event) = .empty;
     defer {
         clearSessionEvents(allocator, &client_events);
         client_events.deinit(allocator);
     }
-    var server_events: std.ArrayList(null3.session.Event) = .empty;
+    var server_events: std.ArrayList(http3_zig.session.Event) = .empty;
     defer {
         clearSessionEvents(allocator, &server_events);
         server_events.deinit(allocator);
@@ -142,10 +142,10 @@ test "client PRIORITY_UPDATE for push reaches server state" {
 
     try exchangePairSettings(allocator, &pair);
 
-    var h3_client = null3.Client.init(&pair.client_h3);
-    var h3_server = null3.Server.init(&pair.server_h3);
+    var h3_client = http3_zig.Client.init(&pair.client_h3);
+    var h3_server = http3_zig.Server.init(&pair.server_h3);
     const request_stream_id = try openGetAndAwaitServerHeaders(allocator, &pair, &h3_client);
-    const promised_headers = [_]null3.FieldLine{
+    const promised_headers = [_]http3_zig.FieldLine{
         .{ .name = ":method", .value = "GET" },
         .{ .name = ":scheme", .value = "https" },
         .{ .name = ":path", .value = "/priority.css" },
@@ -157,12 +157,12 @@ test "client PRIORITY_UPDATE for push reaches server state" {
         .response = .{ .status = "200" },
     });
 
-    var client_events: std.ArrayList(null3.session.Event) = .empty;
+    var client_events: std.ArrayList(http3_zig.session.Event) = .empty;
     defer {
         clearSessionEvents(allocator, &client_events);
         client_events.deinit(allocator);
     }
-    var server_events: std.ArrayList(null3.session.Event) = .empty;
+    var server_events: std.ArrayList(http3_zig.session.Event) = .empty;
     defer {
         clearSessionEvents(allocator, &server_events);
         server_events.deinit(allocator);
@@ -240,7 +240,7 @@ test "PRIORITY_UPDATE rejects invalid request stream targets" {
     });
 
     try expectPairH3Error(allocator, &pair, error.InvalidPriorityTarget);
-    try expectLastCloseCode(&pair.server_h3, null3.protocol.ErrorCode.id_error);
+    try expectLastCloseCode(&pair.server_h3, http3_zig.protocol.ErrorCode.id_error);
 }
 
 test "PRIORITY_UPDATE rejects server senders" {
@@ -259,7 +259,7 @@ test "PRIORITY_UPDATE rejects server senders" {
     });
 
     try expectPairH3Error(allocator, &pair, error.FrameUnexpected);
-    try expectLastCloseCode(&pair.client_h3, null3.protocol.ErrorCode.frame_unexpected);
+    try expectLastCloseCode(&pair.client_h3, http3_zig.protocol.ErrorCode.frame_unexpected);
 }
 
 test "PRIORITY_UPDATE rejects structurally malformed Priority field values" {
@@ -283,5 +283,5 @@ test "PRIORITY_UPDATE rejects structurally malformed Priority field values" {
     });
 
     try expectPairH3Error(allocator, &pair, error.InvalidParameter);
-    try expectLastCloseCode(&pair.server_h3, null3.protocol.ErrorCode.general_protocol_error);
+    try expectLastCloseCode(&pair.server_h3, http3_zig.protocol.ErrorCode.general_protocol_error);
 }

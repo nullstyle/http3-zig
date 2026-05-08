@@ -1,10 +1,10 @@
 //! HTTP/3 stream-type helpers.
 
 const std = @import("std");
-const nullq = @import("nullq");
+const quic_zig = @import("quic_zig");
 const protocol = @import("protocol.zig");
 
-const varint = nullq.wire.varint;
+const varint = quic_zig.wire.varint;
 
 pub const Kind = union(enum) {
     control,

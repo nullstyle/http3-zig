@@ -32,12 +32,12 @@ pub fn main(init: std.process.Init) !void {
         }
     }
 
-    std.debug.print("null3 fuzz codecs target={s} cases={d}\n", .{ codecs.targetName(target), cases });
+    std.debug.print("http3_zig fuzz codecs target={s} cases={d}\n", .{ codecs.targetName(target), cases });
 }
 
 fn usage() void {
     std.debug.print(
-        \\usage: null3-fuzz-codecs [target] [file ...]
+        \\usage: http3-zig-fuzz-codecs [target] [file ...]
         \\targets: all frame settings capsule datagram qpack-integer qpack-huffman
         \\         qpack-field-static qpack-field-literal qpack-field-dynamic
         \\         qpack-encoder-instruction qpack-decoder-instruction

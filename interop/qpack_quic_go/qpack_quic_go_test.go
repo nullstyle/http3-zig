@@ -28,7 +28,7 @@ var fixtures = []fixture{
 			{name: ":scheme", value: "https"},
 			{name: ":path", value: "/search"},
 			{name: ":authority", value: "example.com"},
-			{name: "user-agent", value: "null3-test"},
+			{name: "user-agent", value: "http3-zig-test"},
 		},
 		blockHex: "0000d1d7518561051d849f50882f91d35d055c87a75f5087aada2865649509",
 	},

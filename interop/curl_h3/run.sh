@@ -2,9 +2,9 @@
 set -euo pipefail
 
 CURL_H3="${CURL_H3:-/opt/homebrew/opt/curl/bin/curl}"
-SERVER_BIN="${SERVER_BIN:-./zig-out/bin/null3-curl-h3-server}"
+SERVER_BIN="${SERVER_BIN:-./zig-out/bin/http3-zig-curl-h3-server}"
 CERT="${CERT:-tests/data/test_cert.pem}"
-WORK_DIR="${WORK_DIR:-$(mktemp -d "${TMPDIR:-/tmp}/null3-curl-h3.XXXXXX")}"
+WORK_DIR="${WORK_DIR:-$(mktemp -d "${TMPDIR:-/tmp}/http3-zig-curl-h3.XXXXXX")}"
 
 cleanup() {
     if [[ -n "${SERVER_PID:-}" ]] && kill -0 "$SERVER_PID" 2>/dev/null; then
@@ -134,11 +134,11 @@ expect_body() {
 expect_body "hello" "hello" "/hello"
 
 start_server 1
-inspect_body="$(curl_common -H 'x-null3-test: curl' "https://localhost:${SERVER_PORT}/inspect?x=1")"
+inspect_body="$(curl_common -H 'x-http3-zig-test: curl' "https://localhost:${SERVER_PORT}/inspect?x=1")"
 for expected in \
     "method=GET" \
     "path=/inspect?x=1" \
-    "x-null3-test=curl"
+    "x-http3-zig-test=curl"
 do
     if ! grep -q "^${expected}$" <<<"$inspect_body"; then
         echo "FAIL inspect: missing ${expected}" >&2
@@ -169,8 +169,8 @@ if [[ "$(cat "$headers_body")" != "hello" ]]; then
     show_server_log
     exit 1
 fi
-if ! tr -d '\r' <"$headers_out" | grep -Eiq '^x-null3-interop:[[:space:]]*curl-h3$'; then
-    echo "FAIL headers/status: missing x-null3-interop header" >&2
+if ! tr -d '\r' <"$headers_out" | grep -Eiq '^x-http3-zig-interop:[[:space:]]*curl-h3$'; then
+    echo "FAIL headers/status: missing x-http3-zig-interop header" >&2
     cat "$headers_out" >&2 || true
     show_server_log
     exit 1

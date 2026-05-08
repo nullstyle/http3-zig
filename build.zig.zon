@@ -1,12 +1,12 @@
 .{
-    .name = .null3,
+    .name = .http3_zig,
     .version = "0.0.0",
-    .fingerprint = 0x8b9419664269dd14,
+    .fingerprint = 0x71cd45b0dc74266b,
     .minimum_zig_version = "0.16.0",
     .dependencies = .{
-        .nullq = .{
-            .url = "https://github.com/nullstyle/nullq/archive/67d44b0197f6ada2d6239e90a8ffd3cbf3056d35.tar.gz",
-            .hash = "nullq-0.2.0-FWe2SZp_GgCUUlZgdsB8pSWQdd1XunlVjRMoaupwPda0",
+        .quic_zig = .{
+            .url = "https://github.com/nullstyle/quic-zig/archive/f46137b.tar.gz",
+            .hash = "quic_zig-0.2.0-jMbGHWwIGwCHnlPXRjv0fxf4G-3nv9MlGUfTnDL5VWqC",
         },
         .boringssl_zig = .{
             .url = "https://github.com/nullstyle/boringssl-zig/archive/c2218dd.tar.gz",

@@ -10,8 +10,8 @@
 
 const std = @import("std");
 const boringssl = @import("boringssl");
-const null3 = @import("null3");
-const nullq = @import("nullq");
+const http3_zig = @import("http3_zig");
+const quic_zig = @import("quic_zig");
 
 pub const test_cert_pem = @embedFile("../data/test_cert.pem");
 pub const test_key_pem = @embedFile("../data/test_key.pem");
@@ -23,7 +23,7 @@ pub fn discardKeylog(line: []const u8) void {
     _ = line;
 }
 
-pub fn handshake(client: *nullq.Connection, server: *nullq.Connection) !void {
+pub fn handshake(client: *quic_zig.Connection, server: *quic_zig.Connection) !void {
     var step: u32 = 0;
     while (step < 50) : (step += 1) {
         if (client.handshakeDone() and server.handshakeDone()) break;
@@ -38,16 +38,16 @@ pub fn initConnectedQuic(
     allocator: std.mem.Allocator,
     client_tls: anytype,
     server_tls: anytype,
-    client: *nullq.Connection,
-    server: *nullq.Connection,
+    client: *quic_zig.Connection,
+    server: *quic_zig.Connection,
 ) !void {
-    client.* = try nullq.Connection.initClient(allocator, client_tls, "localhost");
+    client.* = try quic_zig.Connection.initClient(allocator, client_tls, "localhost");
     errdefer client.deinit();
-    server.* = try nullq.Connection.initServer(allocator, server_tls);
+    server.* = try quic_zig.Connection.initServer(allocator, server_tls);
     errdefer server.deinit();
 
     // Surface CONNECTION_CLOSE reason phrases in the integration tests
-    // so close-event assertions can verify them. nullq's hardening
+    // so close-event assertions can verify them. quic_zig's hardening
     // default redacts the reason on the wire (hardening guide §9 / §12);
     // tests opt in to the visible form.
     client.reveal_close_reason_on_wire = true;
@@ -58,7 +58,7 @@ pub fn initConnectedQuic(
     client.peer = server;
     server.peer = client;
 
-    const tp: nullq.tls.TransportParams = .{
+    const tp: quic_zig.tls.TransportParams = .{
         .initial_max_data = 1 << 22,
         .initial_max_stream_data_bidi_local = 1 << 20,
         .initial_max_stream_data_bidi_remote = 1 << 20,
@@ -80,25 +80,25 @@ pub fn initConnectedQuic(
 
 pub fn clearSessionEvents(
     allocator: std.mem.Allocator,
-    events: *std.ArrayList(null3.session.Event),
+    events: *std.ArrayList(http3_zig.session.Event),
 ) void {
     for (events.items) |event| event.deinit(allocator);
     events.clearRetainingCapacity();
 }
 
 pub fn pumpH3(
-    client: *nullq.Connection,
-    server: *nullq.Connection,
-    client_h3: *null3.Session,
-    server_h3: *null3.Session,
-    client_events: *std.ArrayList(null3.session.Event),
-    server_events: *std.ArrayList(null3.session.Event),
+    client: *quic_zig.Connection,
+    server: *quic_zig.Connection,
+    client_h3: *http3_zig.Session,
+    server_h3: *http3_zig.Session,
+    client_events: *std.ArrayList(http3_zig.session.Event),
+    server_events: *std.ArrayList(http3_zig.session.Event),
     now_us: *u64,
 ) !void {
     var pkt: [2048]u8 = undefined;
-    var driver = null3.TransportLoopback.init(
-        null3.TransportEndpoint.withSession(client, client_h3, client_events),
-        null3.TransportEndpoint.withSession(server, server_h3, server_events),
+    var driver = http3_zig.TransportLoopback.init(
+        http3_zig.TransportEndpoint.withSession(client, client_h3, client_events),
+        http3_zig.TransportEndpoint.withSession(server, server_h3, server_events),
         .{
             .now_us = now_us.*,
             .max_datagrams_per_direction = 1,
@@ -110,12 +110,12 @@ pub fn pumpH3(
 
 pub fn pumpUntilH3Error(
     allocator: std.mem.Allocator,
-    client: *nullq.Connection,
-    server: *nullq.Connection,
-    client_h3: *null3.Session,
-    server_h3: *null3.Session,
-    client_events: *std.ArrayList(null3.session.Event),
-    server_events: *std.ArrayList(null3.session.Event),
+    client: *quic_zig.Connection,
+    server: *quic_zig.Connection,
+    client_h3: *http3_zig.Session,
+    server_h3: *http3_zig.Session,
+    client_events: *std.ArrayList(http3_zig.session.Event),
+    server_events: *std.ArrayList(http3_zig.session.Event),
     now_us: *u64,
     expected: anyerror,
 ) !void {
@@ -139,53 +139,53 @@ pub fn pumpUntilH3Error(
     return error.ExpectedH3ErrorNotFound;
 }
 
-pub fn writeFrame(conn: *nullq.Connection, stream_id: u64, frame: null3.Frame) !void {
+pub fn writeFrame(conn: *quic_zig.Connection, stream_id: u64, frame: http3_zig.Frame) !void {
     var buf: [4096]u8 = undefined;
-    const n = try null3.frame.encode(&buf, frame);
+    const n = try http3_zig.frame.encode(&buf, frame);
     _ = try conn.streamWrite(stream_id, buf[0..n]);
 }
 
 pub fn writeQpackEncoderInstruction(
-    conn: *nullq.Connection,
+    conn: *quic_zig.Connection,
     stream_id: u64,
-    instruction: null3.QpackEncoderInstruction,
+    instruction: http3_zig.QpackEncoderInstruction,
 ) !void {
     var buf: [512]u8 = undefined;
-    const n = try null3.qpack.instructions.encodeEncoderInstruction(&buf, instruction);
+    const n = try http3_zig.qpack.instructions.encodeEncoderInstruction(&buf, instruction);
     _ = try conn.streamWrite(stream_id, buf[0..n]);
 }
 
-pub fn writeStreamType(conn: *nullq.Connection, stream_id: u64, stream_type: u64) !void {
+pub fn writeStreamType(conn: *quic_zig.Connection, stream_id: u64, stream_type: u64) !void {
     var buf: [8]u8 = undefined;
-    const n = try nullq.wire.varint.encode(&buf, stream_type);
+    const n = try quic_zig.wire.varint.encode(&buf, stream_type);
     _ = try conn.streamWrite(stream_id, buf[0..n]);
 }
 
-pub fn writeVarint(conn: *nullq.Connection, stream_id: u64, value: u64) !void {
+pub fn writeVarint(conn: *quic_zig.Connection, stream_id: u64, value: u64) !void {
     var buf: [8]u8 = undefined;
-    const n = try nullq.wire.varint.encode(&buf, value);
+    const n = try quic_zig.wire.varint.encode(&buf, value);
     _ = try conn.streamWrite(stream_id, buf[0..n]);
 }
 
-pub fn openUniWithType(conn: *nullq.Connection, stream_id: u64, stream_type: u64) !void {
+pub fn openUniWithType(conn: *quic_zig.Connection, stream_id: u64, stream_type: u64) !void {
     _ = try conn.openUni(stream_id);
     try writeStreamType(conn, stream_id, stream_type);
 }
 
-pub fn writeHeadersFrame(conn: *nullq.Connection, stream_id: u64, fields: []const null3.FieldLine) !void {
+pub fn writeHeadersFrame(conn: *quic_zig.Connection, stream_id: u64, fields: []const http3_zig.FieldLine) !void {
     var block: [2048]u8 = undefined;
-    const block_n = try null3.qpack.encodeFieldSection(&block, fields);
+    const block_n = try http3_zig.qpack.encodeFieldSection(&block, fields);
     try writeFrame(conn, stream_id, .{ .headers = block[0..block_n] });
 }
 
 pub fn writePushPromiseFrame(
-    conn: *nullq.Connection,
+    conn: *quic_zig.Connection,
     stream_id: u64,
     push_id: u64,
-    fields: []const null3.FieldLine,
+    fields: []const http3_zig.FieldLine,
 ) !void {
     var block: [2048]u8 = undefined;
-    const block_n = try null3.qpack.encodeFieldSection(&block, fields);
+    const block_n = try http3_zig.qpack.encodeFieldSection(&block, fields);
     try writeFrame(conn, stream_id, .{
         .push_promise = .{
             .push_id = push_id,
@@ -194,12 +194,12 @@ pub fn writePushPromiseFrame(
     });
 }
 
-pub fn expectLastCloseCode(session: *const null3.Session, code: u64) !void {
+pub fn expectLastCloseCode(session: *const http3_zig.Session, code: u64) !void {
     const close = session.lastCloseError() orelse return error.MissingCloseError;
     try std.testing.expectEqual(code, close.application.code);
 }
 
-pub fn fieldValue(fields: []const null3.FieldLine, name: []const u8) ?[]const u8 {
+pub fn fieldValue(fields: []const http3_zig.FieldLine, name: []const u8) ?[]const u8 {
     for (fields) |field| {
         if (std.mem.eql(u8, field.name, name)) return field.value;
     }
@@ -209,21 +209,21 @@ pub fn fieldValue(fields: []const null3.FieldLine, name: []const u8) ?[]const u8
 pub const H3Pair = struct {
     client_tls: boringssl.tls.Context,
     server_tls: boringssl.tls.Context,
-    client: nullq.Connection,
-    server: nullq.Connection,
-    client_h3: null3.Session,
-    server_h3: null3.Session,
+    client: quic_zig.Connection,
+    server: quic_zig.Connection,
+    client_h3: http3_zig.Session,
+    server_h3: http3_zig.Session,
 
     pub fn initStarted(
         self: *H3Pair,
         allocator: std.mem.Allocator,
-        client_config: null3.session.Config,
-        server_config: null3.session.Config,
+        client_config: http3_zig.session.Config,
+        server_config: http3_zig.session.Config,
     ) !void {
-        self.client_tls = try null3.client.initTlsContext(.{ .verify = .none });
+        self.client_tls = try http3_zig.client.initTlsContext(.{ .verify = .none });
         errdefer self.client_tls.deinit();
 
-        self.server_tls = try null3.server.initTlsContext(.{}, test_cert_pem, test_key_pem);
+        self.server_tls = try http3_zig.server.initTlsContext(.{}, test_cert_pem, test_key_pem);
         errdefer self.server_tls.deinit();
 
         try initConnectedQuic(allocator, self.client_tls, self.server_tls, &self.client, &self.server);
@@ -232,10 +232,10 @@ pub const H3Pair = struct {
             self.client.deinit();
         }
 
-        self.client_h3 = null3.Session.init(allocator, .client, &self.client, client_config);
+        self.client_h3 = http3_zig.Session.init(allocator, .client, &self.client, client_config);
         errdefer self.client_h3.deinit();
 
-        self.server_h3 = null3.Session.init(allocator, .server, &self.server, server_config);
+        self.server_h3 = http3_zig.Session.init(allocator, .server, &self.server, server_config);
         errdefer self.server_h3.deinit();
 
         try self.client_h3.start();
@@ -253,12 +253,12 @@ pub const H3Pair = struct {
 };
 
 pub fn expectPairH3Error(allocator: std.mem.Allocator, pair: *H3Pair, expected: anyerror) !void {
-    var client_events: std.ArrayList(null3.session.Event) = .empty;
+    var client_events: std.ArrayList(http3_zig.session.Event) = .empty;
     defer {
         clearSessionEvents(allocator, &client_events);
         client_events.deinit(allocator);
     }
-    var server_events: std.ArrayList(null3.session.Event) = .empty;
+    var server_events: std.ArrayList(http3_zig.session.Event) = .empty;
     defer {
         clearSessionEvents(allocator, &server_events);
         server_events.deinit(allocator);
@@ -279,12 +279,12 @@ pub fn expectPairH3Error(allocator: std.mem.Allocator, pair: *H3Pair, expected: 
 }
 
 pub fn exchangePairSettings(allocator: std.mem.Allocator, pair: *H3Pair) !void {
-    var client_events: std.ArrayList(null3.session.Event) = .empty;
+    var client_events: std.ArrayList(http3_zig.session.Event) = .empty;
     defer {
         clearSessionEvents(allocator, &client_events);
         client_events.deinit(allocator);
     }
-    var server_events: std.ArrayList(null3.session.Event) = .empty;
+    var server_events: std.ArrayList(http3_zig.session.Event) = .empty;
     defer {
         clearSessionEvents(allocator, &server_events);
         server_events.deinit(allocator);
@@ -311,7 +311,7 @@ pub fn exchangePairSettings(allocator: std.mem.Allocator, pair: *H3Pair) !void {
 pub fn openGetAndAwaitServerHeaders(
     allocator: std.mem.Allocator,
     pair: *H3Pair,
-    h3_client: *null3.Client,
+    h3_client: *http3_zig.Client,
 ) !u64 {
     var request = try h3_client.startRequest(allocator, .{
         .authority = "example.com",
@@ -320,15 +320,15 @@ pub fn openGetAndAwaitServerHeaders(
     const stream_id = request.stream_id;
     try request.finish();
 
-    var server_runner = null3.ServerRunner.init(allocator);
+    var server_runner = http3_zig.ServerRunner.init(allocator);
     defer server_runner.deinit();
 
-    var client_events: std.ArrayList(null3.session.Event) = .empty;
+    var client_events: std.ArrayList(http3_zig.session.Event) = .empty;
     defer {
         clearSessionEvents(allocator, &client_events);
         client_events.deinit(allocator);
     }
-    var server_events: std.ArrayList(null3.session.Event) = .empty;
+    var server_events: std.ArrayList(http3_zig.session.Event) = .empty;
     defer {
         clearSessionEvents(allocator, &server_events);
         server_events.deinit(allocator);
@@ -361,8 +361,8 @@ pub fn openGetAndAwaitServerHeaders(
     return error.ExpectedRequestHeaders;
 }
 
-pub fn sendRawH3Datagram(conn: *nullq.Connection, stream_id: u64, payload: []const u8) !void {
+pub fn sendRawH3Datagram(conn: *quic_zig.Connection, stream_id: u64, payload: []const u8) !void {
     var buf: [2048]u8 = undefined;
-    const n = try null3.datagram.encode(&buf, stream_id, payload);
+    const n = try http3_zig.datagram.encode(&buf, stream_id, payload);
     try conn.sendDatagram(buf[0..n]);
 }

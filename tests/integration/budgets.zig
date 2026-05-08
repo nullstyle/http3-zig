@@ -1,6 +1,6 @@
 const std = @import("std");
-const null3 = @import("null3");
-const nullq = @import("nullq");
+const http3_zig = @import("http3_zig");
+const quic_zig = @import("quic_zig");
 const fixt = @import("_fixtures.zig");
 
 // Aliases — pulls in only the helpers this file's tests reference. It's
@@ -41,7 +41,7 @@ test "session exposes send buffer state and enforces configured cap" {
     );
     defer pair.deinit();
 
-    var h3_client = null3.Client.init(&pair.client_h3);
+    var h3_client = http3_zig.Client.init(&pair.client_h3);
     var writer = try h3_client.startRequest(allocator, .{
         .method = "POST",
         .authority = "localhost",
@@ -76,12 +76,12 @@ test "session enforces drain event count budget" {
     );
     defer pair.deinit();
 
-    var client_events: std.ArrayList(null3.session.Event) = .empty;
+    var client_events: std.ArrayList(http3_zig.session.Event) = .empty;
     defer {
         clearSessionEvents(allocator, &client_events);
         client_events.deinit(allocator);
     }
-    var server_events: std.ArrayList(null3.session.Event) = .empty;
+    var server_events: std.ArrayList(http3_zig.session.Event) = .empty;
     defer {
         clearSessionEvents(allocator, &server_events);
         server_events.deinit(allocator);
@@ -119,12 +119,12 @@ test "session enforces drain event payload budget" {
 
     try sendRawH3Datagram(&pair.client, 0, "xx");
 
-    var client_events: std.ArrayList(null3.session.Event) = .empty;
+    var client_events: std.ArrayList(http3_zig.session.Event) = .empty;
     defer {
         clearSessionEvents(allocator, &client_events);
         client_events.deinit(allocator);
     }
-    var server_events: std.ArrayList(null3.session.Event) = .empty;
+    var server_events: std.ArrayList(http3_zig.session.Event) = .empty;
     defer {
         clearSessionEvents(allocator, &server_events);
         server_events.deinit(allocator);
@@ -158,13 +158,13 @@ test "production session config supports ordinary request flow" {
     var pair: H3Pair = undefined;
     try pair.initStarted(
         allocator,
-        null3.SessionConfig.production(.{}),
-        null3.SessionConfig.production(.{}),
+        http3_zig.SessionConfig.production(.{}),
+        http3_zig.SessionConfig.production(.{}),
     );
     defer pair.deinit();
 
     try exchangePairSettings(allocator, &pair);
-    var h3_client = null3.Client.init(&pair.client_h3);
+    var h3_client = http3_zig.Client.init(&pair.client_h3);
     const stream_id = try openGetAndAwaitServerHeaders(allocator, &pair, &h3_client);
     try std.testing.expectEqual(@as(u64, 0), stream_id);
     try std.testing.expectEqual(@as(?u64, 64 * 1024), pair.client_h3.peer_settings.?.max_field_section_size);
@@ -177,8 +177,8 @@ test "production session config advertises limits and enforces caps" {
     var pair: H3Pair = undefined;
     try pair.initStarted(
         allocator,
-        null3.SessionConfig.production(.{}),
-        null3.SessionConfig.production(.{
+        http3_zig.SessionConfig.production(.{}),
+        http3_zig.SessionConfig.production(.{
             .max_field_lines = 3,
         }),
     );
@@ -190,7 +190,7 @@ test "production session config advertises limits and enforces caps" {
 
     const stream_id: u64 = 0;
     _ = try pair.client.openBidi(stream_id);
-    const fields = [_]null3.FieldLine{
+    const fields = [_]http3_zig.FieldLine{
         .{ .name = ":method", .value = "GET" },
         .{ .name = ":scheme", .value = "https" },
         .{ .name = ":path", .value = "/" },
@@ -199,6 +199,6 @@ test "production session config advertises limits and enforces caps" {
     try writeHeadersFrame(&pair.client, stream_id, &fields);
 
     try expectPairH3Error(allocator, &pair, error.TooManyFieldLines);
-    try std.testing.expectEqual(null3.session.ShutdownState.closed, pair.server_h3.shutdownState());
-    try expectLastCloseCode(&pair.server_h3, null3.protocol.ErrorCode.message_error);
+    try std.testing.expectEqual(http3_zig.session.ShutdownState.closed, pair.server_h3.shutdownState());
+    try expectLastCloseCode(&pair.server_h3, http3_zig.protocol.ErrorCode.message_error);
 }

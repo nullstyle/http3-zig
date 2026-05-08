@@ -1,11 +1,11 @@
-# null3 RFC-traceable conformance suites
+# http3-zig RFC-traceable conformance suites
 
 These suites are **conformance** tests, not behaviour tests. Each test
 asserts a specific normative requirement from an RFC, named with the
 BCP 14 keyword the RFC uses, and cited back to its section. The shape
 follows the [RFC-traceable ZSpec testing
 guide](../../../zspec-rfc-testing.md), adapted to plain `std.testing`
-(no third-party runner). The layout mirrors `nullq/tests/conformance/`.
+(no third-party runner). The layout mirrors `quic-zig/tests/conformance/`.
 
 ## Run
 
@@ -86,7 +86,7 @@ tests/
 The entry point lives at `tests/conformance.zig` (one level up) so the
 Zig package boundary widens to `tests/`. Suites that need
 `@embedFile("../data/test_cert.pem")` get a valid in-package path that
-way (mirrors the nullq layout).
+way (mirrors the quic-zig layout).
 
 ## Suite skeleton
 
@@ -112,7 +112,7 @@ the citation in the test name itself for grouping.
 //!   RFC9114 §6.2     control-stream rules → rfc9114_streams.zig
 
 const std = @import("std");
-const null3 = @import("null3");
+const http3-zig = @import("http3-zig");
 
 // ---------------------------------------------------------------- §7.2.1 DATA
 
@@ -136,14 +136,14 @@ files are not imported by the entry point unless they contain tests).
 - [ ] One observable behaviour per test.
 - [ ] `MUST NOT` tests assert rejection / absence / error — never
       just "did not crash".
-- [ ] **Test exercises a null3 (or null3.qpack / null3.session / etc.)
+- [ ] **Test exercises a http3-zig (or http3-zig.qpack / http3-zig.session / etc.)
       surface — not stdlib arithmetic, not a file-local helper standing
       in as the oracle.** Every non-skipped conformance test must call
-      into `null3.*` (or a fixture that does) at least once. If you
+      into `http3-zig.*` (or a fixture that does) at least once. If you
       find yourself asserting `5 << 1` directly, you're testing
-      arithmetic, not null3 — route through the relevant null3
+      arithmetic, not http3-zig — route through the relevant http3-zig
       function (`frame.parse`, `qpack.encodeInteger`, `Session.feed`,
-      etc.). Add a small public wrapper to null3 if the path is
+      etc.). Add a small public wrapper to http3-zig if the path is
       currently private.
 - [ ] Coverage block at the top lists Covered / Visible debt / Out of
       scope (where applicable).

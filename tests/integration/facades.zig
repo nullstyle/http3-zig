@@ -1,6 +1,6 @@
 const std = @import("std");
-const null3 = @import("null3");
-const nullq = @import("nullq");
+const http3_zig = @import("http3_zig");
+const quic_zig = @import("quic_zig");
 const fixt = @import("_fixtures.zig");
 
 // Aliases — pulls in only the helpers this file's tests reference. It's
@@ -31,23 +31,23 @@ const openGetAndAwaitServerHeaders = fixt.openGetAndAwaitServerHeaders;
 const sendRawH3Datagram = fixt.sendRawH3Datagram;
 
 test "client and server facades classify session events" {
-    const request_fields = [_]null3.FieldLine{
+    const request_fields = [_]http3_zig.FieldLine{
         .{ .name = ":method", .value = "GET" },
         .{ .name = ":scheme", .value = "https" },
         .{ .name = ":path", .value = "/" },
         .{ .name = ":authority", .value = "localhost" },
     };
-    const response_fields = [_]null3.FieldLine{
+    const response_fields = [_]http3_zig.FieldLine{
         .{ .name = ":status", .value = "204" },
     };
 
-    const request_headers: null3.session.Event = .{ .headers = .{
+    const request_headers: http3_zig.session.Event = .{ .headers = .{
         .stream_id = 0,
         .kind = .request,
         .fields = @constCast(&request_fields),
     } };
-    try std.testing.expect(null3.client.ResponseEvent.from(request_headers) == null);
-    switch (null3.server.RequestEvent.from(request_headers).?) {
+    try std.testing.expect(http3_zig.client.ResponseEvent.from(request_headers) == null);
+    switch (http3_zig.server.RequestEvent.from(request_headers).?) {
         .headers => |headers| {
             try std.testing.expectEqual(@as(u64, 0), headers.stream_id);
             try std.testing.expectEqualStrings("GET", headers.fields[0].value);
@@ -55,63 +55,63 @@ test "client and server facades classify session events" {
         else => return error.TestExpectedEqual,
     }
 
-    const response_headers: null3.session.Event = .{ .headers = .{
+    const response_headers: http3_zig.session.Event = .{ .headers = .{
         .stream_id = 0,
         .kind = .response,
         .fields = @constCast(&response_fields),
     } };
-    try std.testing.expect(null3.server.RequestEvent.from(response_headers) == null);
-    switch (null3.client.ResponseEvent.from(response_headers).?) {
+    try std.testing.expect(http3_zig.server.RequestEvent.from(response_headers) == null);
+    switch (http3_zig.client.ResponseEvent.from(response_headers).?) {
         .headers => |headers| try std.testing.expectEqualStrings("204", headers.fields[0].value),
         else => return error.TestExpectedEqual,
     }
 
-    const request_data: null3.session.Event = .{ .data = .{
+    const request_data: http3_zig.session.Event = .{ .data = .{
         .stream_id = 0,
         .kind = .request,
         .data = @constCast("body"),
     } };
-    switch (null3.server.RequestEvent.from(request_data).?) {
+    switch (http3_zig.server.RequestEvent.from(request_data).?) {
         .data => |data| try std.testing.expectEqualStrings("body", data.bytes),
         else => return error.TestExpectedEqual,
     }
 
-    const rejected: null3.session.Event = .{ .request_rejected = .{
+    const rejected: http3_zig.session.Event = .{ .request_rejected = .{
         .stream_id = 4,
-        .error_code = null3.protocol.ErrorCode.request_rejected,
+        .error_code = http3_zig.protocol.ErrorCode.request_rejected,
     } };
-    switch (null3.server.RequestEvent.from(rejected).?) {
+    switch (http3_zig.server.RequestEvent.from(rejected).?) {
         .rejected => |event| {
             try std.testing.expectEqual(@as(u64, 4), event.stream_id);
-            try std.testing.expectEqual(null3.protocol.ErrorCode.request_rejected, event.error_code);
+            try std.testing.expectEqual(http3_zig.protocol.ErrorCode.request_rejected, event.error_code);
         },
         else => return error.TestExpectedEqual,
     }
 
-    const flow_blocked: null3.session.Event = .{ .flow_blocked = .{
+    const flow_blocked: http3_zig.session.Event = .{ .flow_blocked = .{
         .source = .local,
         .kind = .streams,
         .limit = 0,
         .bidi = true,
     } };
-    switch (null3.client.ResponseEvent.from(flow_blocked).?) {
+    switch (http3_zig.client.ResponseEvent.from(flow_blocked).?) {
         .flow_blocked => |event| {
-            try std.testing.expectEqual(null3.FlowBlockedSource.local, event.source);
-            try std.testing.expectEqual(null3.FlowBlockedKind.streams, event.kind);
+            try std.testing.expectEqual(http3_zig.FlowBlockedSource.local, event.source);
+            try std.testing.expectEqual(http3_zig.FlowBlockedKind.streams, event.kind);
             try std.testing.expectEqual(@as(?bool, true), event.bidi);
         },
         else => return error.TestExpectedEqual,
     }
-    switch (null3.server.RequestEvent.from(flow_blocked).?) {
+    switch (http3_zig.server.RequestEvent.from(flow_blocked).?) {
         .flow_blocked => |event| {
-            try std.testing.expectEqual(null3.FlowBlockedSource.local, event.source);
-            try std.testing.expectEqual(null3.FlowBlockedKind.streams, event.kind);
+            try std.testing.expectEqual(http3_zig.FlowBlockedSource.local, event.source);
+            try std.testing.expectEqual(http3_zig.FlowBlockedKind.streams, event.kind);
             try std.testing.expectEqual(@as(u64, 0), event.limit);
         },
         else => return error.TestExpectedEqual,
     }
 
-    const connection_ids_needed: null3.session.Event = .{ .connection_ids_needed = .{
+    const connection_ids_needed: http3_zig.session.Event = .{ .connection_ids_needed = .{
         .path_id = 0,
         .reason = .retired,
         .active_count = 1,
@@ -119,14 +119,14 @@ test "client and server facades classify session events" {
         .issue_budget = 1,
         .next_sequence_number = 3,
     } };
-    switch (null3.client.ResponseEvent.from(connection_ids_needed).?) {
+    switch (http3_zig.client.ResponseEvent.from(connection_ids_needed).?) {
         .connection_ids_needed => |event| {
             try std.testing.expectEqual(@as(u32, 0), event.path_id);
             try std.testing.expectEqual(@as(usize, 1), event.issue_budget);
         },
         else => return error.TestExpectedEqual,
     }
-    switch (null3.server.RequestEvent.from(connection_ids_needed).?) {
+    switch (http3_zig.server.RequestEvent.from(connection_ids_needed).?) {
         .connection_ids_needed => |event| {
             try std.testing.expectEqual(@as(usize, 2), event.active_limit);
             try std.testing.expectEqual(@as(u64, 3), event.next_sequence_number);
@@ -137,16 +137,16 @@ test "client and server facades classify session events" {
 
 test "request tracker owns server request lifecycle" {
     const allocator = std.testing.allocator;
-    var tracker = null3.RequestTracker.init(allocator);
+    var tracker = http3_zig.RequestTracker.init(allocator);
     defer tracker.deinit();
 
-    const request_fields = [_]null3.FieldLine{
+    const request_fields = [_]http3_zig.FieldLine{
         .{ .name = ":method", .value = "POST" },
         .{ .name = ":scheme", .value = "https" },
         .{ .name = ":path", .value = "/tracked" },
         .{ .name = ":authority", .value = "localhost" },
     };
-    const trailers = [_]null3.FieldLine{
+    const trailers = [_]http3_zig.FieldLine{
         .{ .name = "x-checksum", .value = "ok" },
     };
 
@@ -189,7 +189,7 @@ test "request tracker owns server request lifecycle" {
 
 test "request tracker enforces body budget" {
     const allocator = std.testing.allocator;
-    var tracker = null3.RequestTracker.initWithConfig(allocator, .{ .max_body_bytes = 5 });
+    var tracker = http3_zig.RequestTracker.initWithConfig(allocator, .{ .max_body_bytes = 5 });
     defer tracker.deinit();
 
     _ = try tracker.observe(.{ .data = .{
@@ -211,14 +211,14 @@ test "request tracker enforces body budget" {
 
 test "response tracker owns client response lifecycle" {
     const allocator = std.testing.allocator;
-    var tracker = null3.ResponseTracker.init(allocator);
+    var tracker = http3_zig.ResponseTracker.init(allocator);
     defer tracker.deinit();
 
-    const response_fields = [_]null3.FieldLine{
+    const response_fields = [_]http3_zig.FieldLine{
         .{ .name = ":status", .value = "200" },
         .{ .name = "content-type", .value = "text/plain" },
     };
-    const trailers = [_]null3.FieldLine{
+    const trailers = [_]http3_zig.FieldLine{
         .{ .name = "server-timing", .value = "app;dur=1" },
     };
 
@@ -257,7 +257,7 @@ test "response tracker owns client response lifecycle" {
 
 test "response tracker enforces body budget" {
     const allocator = std.testing.allocator;
-    var tracker = null3.ResponseTracker.initWithConfig(allocator, .{ .max_body_bytes = 4 });
+    var tracker = http3_zig.ResponseTracker.initWithConfig(allocator, .{ .max_body_bytes = 4 });
     defer tracker.deinit();
 
     _ = try tracker.observe(.{ .data = .{
@@ -279,17 +279,17 @@ test "response tracker enforces body budget" {
 
 test "server runner classifies and tracks request batches" {
     const allocator = std.testing.allocator;
-    var runner = null3.ServerRunner.init(allocator);
+    var runner = http3_zig.ServerRunner.init(allocator);
     defer runner.deinit();
 
-    var fields = [_]null3.FieldLine{
+    var fields = [_]http3_zig.FieldLine{
         .{ .name = ":method", .value = "POST" },
         .{ .name = ":scheme", .value = "https" },
         .{ .name = ":path", .value = "/runner" },
         .{ .name = ":authority", .value = "localhost" },
     };
     var body = [_]u8{ 'o', 'k' };
-    const events = [_]null3.session.Event{
+    const events = [_]http3_zig.session.Event{
         .{ .peer_settings = .{ .h3_datagram = true } },
         .{ .datagram_acked = .{
             .id = 7,
@@ -307,20 +307,20 @@ test "server runner classifies and tracks request batches" {
         } },
         .{ .headers = .{
             .stream_id = 0,
-            .kind = null3.message.Kind.request,
+            .kind = http3_zig.message.Kind.request,
             .fields = &fields,
         } },
         .{ .data = .{
             .stream_id = 0,
-            .kind = null3.message.Kind.request,
+            .kind = http3_zig.message.Kind.request,
             .data = &body,
         } },
         .{ .stream_finished = .{
             .stream_id = 0,
-            .kind = null3.message.Kind.request,
+            .kind = http3_zig.message.Kind.request,
         } },
     };
-    var completed: std.ArrayList(*null3.RequestState) = .empty;
+    var completed: std.ArrayList(*http3_zig.RequestState) = .empty;
     defer completed.deinit(allocator);
 
     const stats = try runner.observeBatch(&events, &completed);
@@ -344,15 +344,15 @@ test "server runner classifies and tracks request batches" {
 
 test "client runner classifies and tracks response batches" {
     const allocator = std.testing.allocator;
-    var runner = null3.ClientRunner.init(allocator);
+    var runner = http3_zig.ClientRunner.init(allocator);
     defer runner.deinit();
 
-    var fields = [_]null3.FieldLine{
+    var fields = [_]http3_zig.FieldLine{
         .{ .name = ":status", .value = "204" },
         .{ .name = "x-runner", .value = "yes" },
     };
     var body = [_]u8{ 'd', 'o', 'n', 'e' };
-    const events = [_]null3.session.Event{
+    const events = [_]http3_zig.session.Event{
         .{ .datagram_acked = .{
             .id = 3,
             .len = 9,
@@ -368,21 +368,21 @@ test "client runner classifies and tracks response batches" {
         } },
         .{ .headers = .{
             .stream_id = 0,
-            .kind = null3.message.Kind.response,
+            .kind = http3_zig.message.Kind.response,
             .fields = &fields,
         } },
         .{ .data = .{
             .stream_id = 0,
-            .kind = null3.message.Kind.response,
+            .kind = http3_zig.message.Kind.response,
             .data = &body,
         } },
         .{ .stream_finished = .{
             .stream_id = 0,
-            .kind = null3.message.Kind.response,
+            .kind = http3_zig.message.Kind.response,
         } },
         .{ .goaway = 4 },
     };
-    var completed: std.ArrayList(*null3.ResponseState) = .empty;
+    var completed: std.ArrayList(*http3_zig.ResponseState) = .empty;
     defer completed.deinit(allocator);
 
     const stats = try runner.observeBatch(&events, &completed);
@@ -406,7 +406,7 @@ test "client runner classifies and tracks response batches" {
 test "runners pass body budgets to lifecycle trackers" {
     const allocator = std.testing.allocator;
 
-    var client_runner = null3.ClientRunner.initWithConfig(allocator, .{
+    var client_runner = http3_zig.ClientRunner.initWithConfig(allocator, .{
         .response_tracker = .{ .max_body_bytes = 2 },
     });
     defer client_runner.deinit();
@@ -415,7 +415,7 @@ test "runners pass body budgets to lifecycle trackers" {
         .bytes = "abc",
     } }));
 
-    var server_runner = null3.ServerRunner.initWithConfig(allocator, .{
+    var server_runner = http3_zig.ServerRunner.initWithConfig(allocator, .{
         .request_tracker = .{ .max_body_bytes = 2 },
     });
     defer server_runner.deinit();

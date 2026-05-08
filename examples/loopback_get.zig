@@ -1,6 +1,6 @@
 const std = @import("std");
-const null3 = @import("null3");
-const nullq = @import("nullq");
+const http3_zig = @import("http3_zig");
+const quic_zig = @import("quic_zig");
 
 const ClientCid = [_]u8{ 0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37, 0x38 };
 const ServerCid = [_]u8{ 0x91, 0x92, 0x93, 0x94, 0x95, 0x96, 0x97, 0x98 };
@@ -14,28 +14,28 @@ pub fn main(init: std.process.Init) !void {
     const cert_pem = try std.Io.Dir.cwd().readFile(io, "tests/data/test_cert.pem", &cert_buf);
     const key_pem = try std.Io.Dir.cwd().readFile(io, "tests/data/test_key.pem", &key_buf);
 
-    var client_tls = try null3.client.initTlsContext(.{ .verify = .none });
+    var client_tls = try http3_zig.client.initTlsContext(.{ .verify = .none });
     defer client_tls.deinit();
-    var server_tls = try null3.server.initTlsContext(.{}, cert_pem, key_pem);
+    var server_tls = try http3_zig.server.initTlsContext(.{}, cert_pem, key_pem);
     defer server_tls.deinit();
 
-    var client_quic = try nullq.Connection.initClient(allocator, client_tls, "localhost");
+    var client_quic = try quic_zig.Connection.initClient(allocator, client_tls, "localhost");
     defer client_quic.deinit();
-    var server_quic = try nullq.Connection.initServer(allocator, server_tls);
+    var server_quic = try quic_zig.Connection.initServer(allocator, server_tls);
     defer server_quic.deinit();
 
     try connectQuic(&client_quic, &server_quic);
 
-    var client_h3 = null3.Session.init(allocator, .client, &client_quic, .{});
+    var client_h3 = http3_zig.Session.init(allocator, .client, &client_quic, .{});
     defer client_h3.deinit();
-    var server_h3 = null3.Session.init(allocator, .server, &server_quic, .{});
+    var server_h3 = http3_zig.Session.init(allocator, .server, &server_quic, .{});
     defer server_h3.deinit();
 
-    var client = null3.Client.init(&client_h3);
-    var server = null3.Server.init(&server_h3);
-    var client_runner = null3.ClientRunner.init(allocator);
+    var client = http3_zig.Client.init(&client_h3);
+    var server = http3_zig.Server.init(&server_h3);
+    var client_runner = http3_zig.ClientRunner.init(allocator);
     defer client_runner.deinit();
-    var server_runner = null3.ServerRunner.init(allocator);
+    var server_runner = http3_zig.ServerRunner.init(allocator);
     defer server_runner.deinit();
 
     const request = try client.request(allocator, .{
@@ -43,22 +43,22 @@ pub fn main(init: std.process.Init) !void {
         .path = "/hello",
     });
 
-    var client_events: std.ArrayList(null3.session.Event) = .empty;
+    var client_events: std.ArrayList(http3_zig.session.Event) = .empty;
     defer {
         clearEvents(allocator, &client_events);
         client_events.deinit(allocator);
     }
-    var server_events: std.ArrayList(null3.session.Event) = .empty;
+    var server_events: std.ArrayList(http3_zig.session.Event) = .empty;
     defer {
         clearEvents(allocator, &server_events);
         server_events.deinit(allocator);
     }
-    var completed_responses: std.ArrayList(*null3.ResponseState) = .empty;
+    var completed_responses: std.ArrayList(*http3_zig.ResponseState) = .empty;
     defer completed_responses.deinit(allocator);
 
-    var driver = null3.TransportLoopback.init(
-        null3.TransportEndpoint.withSession(&client_quic, &client_h3, &client_events),
-        null3.TransportEndpoint.withSession(&server_quic, &server_h3, &server_events),
+    var driver = http3_zig.TransportLoopback.init(
+        http3_zig.TransportEndpoint.withSession(&client_quic, &client_h3, &client_events),
+        http3_zig.TransportEndpoint.withSession(&server_quic, &server_h3, &server_events),
         .{},
     );
 
@@ -76,7 +76,7 @@ pub fn main(init: std.process.Init) !void {
                     if (!response_sent and incoming.stream_id == request.stream_id) {
                         _ = try server.respond(allocator, incoming.stream_id, .{
                             .status = "200",
-                            .body = "hello from null3\n",
+                            .body = "hello from http3_zig\n",
                         });
                         response_sent = true;
                     }
@@ -97,13 +97,13 @@ pub fn main(init: std.process.Init) !void {
     });
 }
 
-fn connectQuic(client: *nullq.Connection, server: *nullq.Connection) !void {
+fn connectQuic(client: *quic_zig.Connection, server: *quic_zig.Connection) !void {
     try client.bind();
     try server.bind();
     client.peer = server;
     server.peer = client;
 
-    const tp: nullq.tls.TransportParams = .{
+    const tp: quic_zig.tls.TransportParams = .{
         .initial_max_data = 1 << 22,
         .initial_max_stream_data_bidi_local = 1 << 20,
         .initial_max_stream_data_bidi_remote = 1 << 20,
@@ -130,7 +130,7 @@ fn connectQuic(client: *nullq.Connection, server: *nullq.Connection) !void {
 
 fn clearEvents(
     allocator: std.mem.Allocator,
-    events: *std.ArrayList(null3.session.Event),
+    events: *std.ArrayList(http3_zig.session.Event),
 ) void {
     for (events.items) |event| event.deinit(allocator);
     events.clearRetainingCapacity();

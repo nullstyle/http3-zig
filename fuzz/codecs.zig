@@ -1,9 +1,9 @@
 const std = @import("std");
-const null3 = @import("null3");
+const http3_zig = @import("http3_zig");
 
 const max_iterator_items = 1024;
 
-const qpack_decode_options: null3.QpackFieldSectionDecodeOptions = .{
+const qpack_decode_options: http3_zig.QpackFieldSectionDecodeOptions = .{
     .max_field_lines = 64,
     .max_decoded_bytes = 16 * 1024,
 };
@@ -126,9 +126,9 @@ pub fn runTarget(allocator: std.mem.Allocator, target: Target, input: []const u8
 }
 
 fn fuzzFrame(input: []const u8) void {
-    if (null3.frame.decode(input)) |_| {} else |_| {}
+    if (http3_zig.frame.decode(input)) |_| {} else |_| {}
 
-    var it = null3.frame.iter(input);
+    var it = http3_zig.frame.iter(input);
     var count: usize = 0;
     while (count < max_iterator_items) : (count += 1) {
         const maybe = it.next() catch break;
@@ -137,13 +137,13 @@ fn fuzzFrame(input: []const u8) void {
 }
 
 fn fuzzSettings(input: []const u8) void {
-    if (null3.Settings.decode(input)) |_| {} else |_| {}
+    if (http3_zig.Settings.decode(input)) |_| {} else |_| {}
 }
 
 fn fuzzCapsule(input: []const u8) void {
-    if (null3.capsule.decode(input)) |_| {} else |_| {}
+    if (http3_zig.capsule.decode(input)) |_| {} else |_| {}
 
-    var it = null3.capsule.iter(input);
+    var it = http3_zig.capsule.iter(input);
     var count: usize = 0;
     while (count < max_iterator_items) : (count += 1) {
         const maybe = it.next() catch break;
@@ -152,65 +152,65 @@ fn fuzzCapsule(input: []const u8) void {
 }
 
 fn fuzzDatagram(input: []const u8) void {
-    if (null3.datagram.decode(input)) |decoded| {
+    if (http3_zig.datagram.decode(input)) |decoded| {
         if (decoded.context()) |_| {} else |_| {}
     } else |_| {}
 
-    if (null3.datagram.decodeContextPayload(input)) |_| {} else |_| {}
+    if (http3_zig.datagram.decodeContextPayload(input)) |_| {} else |_| {}
 }
 
 fn fuzzQpackInteger(input: []const u8) void {
     var prefix_bits: u8 = 1;
     while (prefix_bits <= 8) : (prefix_bits += 1) {
-        if (null3.qpack.integer.decode(input, prefix_bits)) |_| {} else |_| {}
+        if (http3_zig.qpack.integer.decode(input, prefix_bits)) |_| {} else |_| {}
     }
 }
 
 fn fuzzQpackHuffman(allocator: std.mem.Allocator, input: []const u8) void {
-    if (null3.qpack.huffman.decode(allocator, input)) |decoded| {
+    if (http3_zig.qpack.huffman.decode(allocator, input)) |decoded| {
         allocator.free(decoded);
     } else |_| {}
 }
 
 fn fuzzQpackFieldStatic(allocator: std.mem.Allocator, input: []const u8) void {
-    if (null3.qpack.decodeFieldSectionWithOptions(allocator, input, qpack_decode_options)) |fields| {
-        null3.qpack.freeFieldSection(allocator, fields);
+    if (http3_zig.qpack.decodeFieldSectionWithOptions(allocator, input, qpack_decode_options)) |fields| {
+        http3_zig.qpack.freeFieldSection(allocator, fields);
     } else |_| {}
 }
 
 fn fuzzQpackFieldLiteral(allocator: std.mem.Allocator, input: []const u8) void {
-    if (null3.qpack.decodeLiteralFieldSectionWithOptions(allocator, input, qpack_decode_options)) |fields| {
-        null3.qpack.freeFieldSection(allocator, fields);
+    if (http3_zig.qpack.decodeLiteralFieldSectionWithOptions(allocator, input, qpack_decode_options)) |fields| {
+        http3_zig.qpack.freeFieldSection(allocator, fields);
     } else |_| {}
 }
 
 fn fuzzQpackFieldDynamic(allocator: std.mem.Allocator, input: []const u8) void {
-    var table = null3.DynamicTable.init(allocator, 0);
+    var table = http3_zig.DynamicTable.init(allocator, 0);
     defer table.deinit();
 
-    if (null3.qpack.decodeDynamicFieldSectionWithOptions(allocator, &table, 0, input, qpack_decode_options)) |fields| {
-        null3.qpack.freeFieldSection(allocator, fields);
+    if (http3_zig.qpack.decodeDynamicFieldSectionWithOptions(allocator, &table, 0, input, qpack_decode_options)) |fields| {
+        http3_zig.qpack.freeFieldSection(allocator, fields);
     } else |_| {}
 }
 
 fn fuzzQpackEncoderInstruction(allocator: std.mem.Allocator, input: []const u8) void {
-    if (null3.qpack.instructions.decodeEncoderInstruction(allocator, input)) |decoded| {
-        null3.qpack.instructions.freeDecodedEncoderInstruction(allocator, decoded);
+    if (http3_zig.qpack.instructions.decodeEncoderInstruction(allocator, input)) |decoded| {
+        http3_zig.qpack.instructions.freeDecodedEncoderInstruction(allocator, decoded);
     } else |_| {}
 }
 
 fn fuzzQpackDecoderInstruction(input: []const u8) void {
-    if (null3.qpack.instructions.decodeDecoderInstruction(input)) |_| {} else |_| {}
+    if (http3_zig.qpack.instructions.decodeDecoderInstruction(input)) |_| {} else |_| {}
 }
 
 fn fuzzWebSocketFrame(allocator: std.mem.Allocator, input: []const u8) void {
-    if (null3.websocket.frame.decode(allocator, input, .{
+    if (http3_zig.websocket.frame.decode(allocator, input, .{
         .max_payload_len = 16 * 1024,
     })) |decoded| {
         decoded.deinit(allocator);
     } else |_| {}
 
-    var decoder = null3.websocket.frame.Decoder.init(allocator, .{
+    var decoder = http3_zig.websocket.frame.Decoder.init(allocator, .{
         .max_payload_len = 16 * 1024,
     });
     defer decoder.deinit();
@@ -224,7 +224,7 @@ fn fuzzWebSocketFrame(allocator: std.mem.Allocator, input: []const u8) void {
 }
 
 fn fuzzWebSocketMessage(allocator: std.mem.Allocator, input: []const u8) void {
-    var decoder = null3.websocket.message.Decoder.init(allocator, .{
+    var decoder = http3_zig.websocket.message.Decoder.init(allocator, .{
         .frame = .{
             .max_payload_len = 16 * 1024,
         },
@@ -241,18 +241,18 @@ fn fuzzWebSocketMessage(allocator: std.mem.Allocator, input: []const u8) void {
 }
 
 fn fuzzMasque(allocator: std.mem.Allocator, input: []const u8) void {
-    if (null3.masque.parseConnectUdpTarget(
+    if (http3_zig.masque.parseConnectUdpTarget(
         allocator,
         input,
-        null3.masque.default_connect_udp_path_prefix,
+        http3_zig.masque.default_connect_udp_path_prefix,
     )) |target| {
         target.deinit(allocator);
     } else |_| {}
 
-    if (null3.masque.decodeUdpPayload(input)) |_| {} else |_| {}
+    if (http3_zig.masque.decodeUdpPayload(input)) |_| {} else |_| {}
 
-    var registry = null3.masque.ContextRegistry.init();
-    var pending = null3.masque.PendingDatagramBuffer.initWithConfig(allocator, .{
+    var registry = http3_zig.masque.ContextRegistry.init();
+    var pending = http3_zig.masque.PendingDatagramBuffer.initWithConfig(allocator, .{
         .max_datagrams = 2,
         .max_payload_bytes = 64,
     });
@@ -265,9 +265,9 @@ fn fuzzMasque(allocator: std.mem.Allocator, input: []const u8) void {
     if (registry.decodeUdpPayload(input)) |_| {} else |_| {}
     _ = registry.classifyDatagramPayload(input);
 
-    var receiver = null3.masque.ConnectUdpReceiver.init();
+    var receiver = http3_zig.masque.ConnectUdpReceiver.init();
     _ = receiver.classifyDatagramPayload(input);
-    if (null3.capsule.decode(input)) |decoded| {
+    if (http3_zig.capsule.decode(input)) |decoded| {
         _ = receiver.classifyCapsule(decoded.capsule);
     } else |_| {}
 }

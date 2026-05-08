@@ -5,7 +5,7 @@
 //! sequences for request, response, and push streams.
 
 const std = @import("std");
-const nullq = @import("nullq");
+const quic_zig = @import("quic_zig");
 
 const frame_mod = @import("frame.zig");
 const headers_mod = @import("headers.zig");
@@ -13,7 +13,7 @@ const protocol = @import("protocol.zig");
 const qpack = @import("qpack/root.zig");
 const stream_mod = @import("stream.zig");
 
-const varint = nullq.wire.varint;
+const varint = quic_zig.wire.varint;
 
 pub const Error = frame_mod.Error || qpack.Error || headers_mod.Error || stream_mod.FrameValidationError || varint.Error || error{
     OutOfMemory,

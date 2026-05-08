@@ -1,7 +1,7 @@
 const std = @import("std");
 const boringssl = @import("boringssl");
-const nullq = @import("nullq");
-const null3 = @import("null3");
+const quic_zig = @import("quic_zig");
+const http3_zig = @import("http3_zig");
 
 const Net = std.Io.net;
 
@@ -36,12 +36,12 @@ pub fn main(init: std.process.Init) !void {
     const sni = try allocator.dupeZ(u8, options.sni);
     defer allocator.free(sni);
 
-    var client_tls = try null3.client.initTlsContext(.{
+    var client_tls = try http3_zig.client.initTlsContext(.{
         .verify = options.verify,
     });
     defer client_tls.deinit();
 
-    var conn = try nullq.Connection.initClient(allocator, client_tls, sni);
+    var conn = try quic_zig.Connection.initClient(allocator, client_tls, sni);
     defer conn.deinit();
     try conn.bind();
 
@@ -60,7 +60,7 @@ pub fn main(init: std.process.Init) !void {
         .max_datagram_frame_size = 1200,
     });
 
-    var h3 = null3.Session.init(allocator, .client, &conn, .{
+    var h3 = http3_zig.Session.init(allocator, .client, &conn, .{
         .settings = .{
             .qpack_max_table_capacity = 256,
             .qpack_blocked_streams = 4,
@@ -68,13 +68,13 @@ pub fn main(init: std.process.Init) !void {
             .enable_connect_protocol = true,
         },
         .qpack_encoder_table_capacity = 256,
-        .qpack_indexing = null3.QpackIndexingPolicy.aggressive,
+        .qpack_indexing = http3_zig.QpackIndexingPolicy.aggressive,
         .max_field_section_size = 16 * 1024 * 1024,
         .max_data_frame_payload = 16 * 1024,
     });
     defer h3.deinit();
 
-    var h3_client = null3.Client.init(&h3);
+    var h3_client = http3_zig.Client.init(&h3);
     _ = try h3_client.request(allocator, .{
         .method = options.method,
         .scheme = "https",
@@ -84,17 +84,17 @@ pub fn main(init: std.process.Init) !void {
         .end_stream = true,
     });
 
-    var runner = null3.ClientRunner.init(allocator);
+    var runner = http3_zig.ClientRunner.init(allocator);
     defer runner.deinit();
-    var events: std.ArrayList(null3.session.Event) = .empty;
+    var events: std.ArrayList(http3_zig.session.Event) = .empty;
     defer {
         clearEvents(allocator, &events);
         events.deinit(allocator);
     }
-    var completed: std.ArrayList(*null3.ResponseState) = .empty;
+    var completed: std.ArrayList(*http3_zig.ResponseState) = .empty;
     defer completed.deinit(allocator);
 
-    var endpoint = null3.TransportEndpoint.withSession(&conn, &h3, &events);
+    var endpoint = http3_zig.TransportEndpoint.withSession(&conn, &h3, &events);
 
     const UdpSink = struct {
         socket: @TypeOf(sock),
@@ -134,7 +134,7 @@ pub fn main(init: std.process.Init) !void {
         }
 
         try endpoint.tick(now_us);
-        now_us += null3.driver.default_step_us;
+        now_us += http3_zig.driver.default_step_us;
     }
 
     if (completed.items.len == 0) return error.NoResponse;
@@ -190,7 +190,7 @@ fn parseArgs(init: std.process.Init, allocator: std.mem.Allocator) !Options {
 
 fn clearEvents(
     allocator: std.mem.Allocator,
-    events: *std.ArrayList(null3.session.Event),
+    events: *std.ArrayList(http3_zig.session.Event),
 ) void {
     for (events.items) |event| event.deinit(allocator);
     events.clearRetainingCapacity();
