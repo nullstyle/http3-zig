@@ -1,0 +1,55 @@
+name: release
+
+on:
+  push:
+    tags: ['v*.*.*']
+
+# http3-zig pins Zig 0.16.0 via mise (mise.toml), matching the test
+# workflow. The release job validates that the tag matches .version
+# in build.zig.zon, runs the full test suite, and cuts a GitHub
+# release with auto-generated notes plus the project CHANGELOG.md.
+permissions:
+  contents: write
+
+jobs:
+  release:
+    timeout-minutes: 45
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout http3-zig
+        uses: actions/checkout@v4
+
+      - name: Set up mise (zig 0.16.0 + project tools)
+        uses: jdx/mise-action@v2
+        with:
+          install: true
+          cache: true
+
+      - name: Print toolchain
+        run: |
+          zig version
+          uname -a
+
+      - name: Validate tag matches build.zig.zon version
+        run: |
+          zon_version=$(grep -E '^\s*\.version\s*=' build.zig.zon | awk -F'"' '{print $2}')
+          tag_version="${GITHUB_REF_NAME#v}"
+          echo "build.zig.zon version: ${zon_version}"
+          echo "tag version (stripped): ${tag_version}"
+          if [ "${zon_version}" != "${tag_version}" ]; then
+            echo "::error::tag ${GITHUB_REF_NAME} does not match build.zig.zon .version=${zon_version}"
+            exit 1
+          fi
+
+      - name: zig build test
+        timeout-minutes: 30
+        run: zig build test --summary all
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" \
+            --title "${GITHUB_REF_NAME}" \
+            --generate-notes \
+            --notes-file CHANGELOG.md

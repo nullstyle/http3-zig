@@ -19,4 +19,5 @@ test {
     _ = @import("integration/lifecycle_streams.zig");
     _ = @import("integration/lifecycle_datagrams.zig");
     _ = @import("integration/lifecycle_close.zig");
+    _ = @import("integration/production_preset.zig");
 }

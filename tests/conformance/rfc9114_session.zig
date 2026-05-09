@@ -229,6 +229,117 @@ test "MUST close with H3_FRAME_UNEXPECTED on a duplicate peer SETTINGS frame [RF
     try fixture.expectLastCloseCode(&pair.server_h3, ErrorCode.frame_unexpected);
 }
 
+test "SETTINGS frame with zero settings is accepted [RFC9114 §7.2.4 ¶3]" {
+    // §7.2.4 ¶3: "Each parameter has a default value, which the
+    // recipient SHOULD use if the SETTINGS frame is not received or
+    // does not include that parameter." Implication: a SETTINGS frame
+    // whose payload is empty (zero entries) is a valid frame — every
+    // default applies. The receiver MUST accept the empty SETTINGS
+    // and continue without error. This is the kind of edge case
+    // interop runners (e.g. quic-interop-runner) regularly send.
+    //
+    // The session's own `start()` always emits a non-empty SETTINGS
+    // payload because the encoder unconditionally lays down the
+    // QPACK_MAX_TABLE_CAPACITY and QPACK_BLOCKED_STREAMS varints
+    // (defaults 0 each = 4 bytes). To exercise the empty-payload
+    // wire case end-to-end we skip the *client*'s auto-start and
+    // hand-craft the bytes [stream_type=control, settings_type=0x04,
+    // payload_len=0] directly on the client's first uni stream id.
+    // The server H3 session is real and must accept the empty SETTINGS
+    // through its normal control-stream pipeline.
+    const allocator = std.testing.allocator;
+
+    var pair: fixture.H3Pair = undefined;
+    try pair.initStartedWithOptions(allocator, .{}, .{}, .{ .start_client = false });
+    defer pair.deinit();
+
+    // Manually open the client's control stream and send the
+    // stream-type prefix followed by an empty-payload SETTINGS frame.
+    // Client-initiated uni stream ids start at 2 (low bits 0b10).
+    const client_control_id: u64 = 2;
+    try fixture.openUniWithType(&pair.client, client_control_id, StreamType.control);
+    // SETTINGS frame: type varint 0x04, length varint 0x00, no payload.
+    try fixture.writeRawBytes(&pair.client, client_control_id, &[_]u8{ 0x04, 0x00 });
+
+    // Drive the loopback until the server applies the empty SETTINGS.
+    // We bypass the shared `pumpQuiet` helper so we can disable the
+    // client side's auto-start (otherwise the loopback driver would
+    // call `client_h3.start()` on every step and open a second
+    // critical control stream, which the server rejects with
+    // H3_STREAM_CREATION_ERROR).
+    var client_events: std.ArrayList(http3_zig.session.Event) = .empty;
+    defer {
+        fixture.clearSessionEvents(allocator, &client_events);
+        client_events.deinit(allocator);
+    }
+    var server_events: std.ArrayList(http3_zig.session.Event) = .empty;
+    defer {
+        fixture.clearSessionEvents(allocator, &server_events);
+        server_events.deinit(allocator);
+    }
+    var now_us: u64 = 1_000_000;
+    var iters: u32 = 0;
+    while (pair.server_h3.peer_settings == null) : (iters += 1) {
+        try std.testing.expect(iters < 20_000);
+        var pkt: [2048]u8 = undefined;
+        var client_endpoint = http3_zig.TransportEndpoint.withSession(
+            &pair.client,
+            &pair.client_h3,
+            &client_events,
+        );
+        client_endpoint.auto_start_session = false; // critical: keep client raw
+        var driver = http3_zig.TransportLoopback.init(
+            client_endpoint,
+            http3_zig.TransportEndpoint.withSession(&pair.server, &pair.server_h3, &server_events),
+            .{ .now_us = now_us, .max_datagrams_per_direction = 1 },
+        );
+        _ = try driver.step(&pkt);
+        now_us = driver.now_us;
+        fixture.clearSessionEvents(allocator, &client_events);
+        fixture.clearSessionEvents(allocator, &server_events);
+    }
+
+    // No close error fired and the empty SETTINGS materializes as an
+    // all-defaults `peer_settings` snapshot.
+    try std.testing.expectEqual(http3_zig.session.ShutdownState.active, pair.server_h3.shutdownState());
+    try std.testing.expectEqual(@as(?http3_zig.errors.ConnectionError, null), pair.server_h3.lastCloseError());
+
+    const peer = pair.server_h3.peer_settings.?;
+    try std.testing.expectEqual(@as(u64, 0), peer.qpack_max_table_capacity);
+    try std.testing.expectEqual(@as(u64, 0), peer.qpack_blocked_streams);
+    try std.testing.expectEqual(@as(?u64, null), peer.max_field_section_size);
+    try std.testing.expect(!peer.enable_connect_protocol);
+    try std.testing.expect(!peer.h3_datagram);
+
+    // The receiver still functions: a follow-up control-stream frame
+    // (GOAWAY) is processed normally, transitioning the server into
+    // draining without raising an error. This proves the empty
+    // SETTINGS did not poison the control-stream validator state.
+    try fixture.writeFrame(&pair.client, client_control_id, .{ .goaway = 0 });
+    iters = 0;
+    while (pair.server_h3.peer_goaway_id == null) : (iters += 1) {
+        try std.testing.expect(iters < 20_000);
+        var pkt: [2048]u8 = undefined;
+        var client_endpoint = http3_zig.TransportEndpoint.withSession(
+            &pair.client,
+            &pair.client_h3,
+            &client_events,
+        );
+        client_endpoint.auto_start_session = false;
+        var driver = http3_zig.TransportLoopback.init(
+            client_endpoint,
+            http3_zig.TransportEndpoint.withSession(&pair.server, &pair.server_h3, &server_events),
+            .{ .now_us = now_us, .max_datagrams_per_direction = 1 },
+        );
+        _ = try driver.step(&pkt);
+        now_us = driver.now_us;
+        fixture.clearSessionEvents(allocator, &client_events);
+        fixture.clearSessionEvents(allocator, &server_events);
+    }
+    try std.testing.expectEqual(http3_zig.session.ShutdownState.draining, pair.server_h3.shutdownState());
+    try std.testing.expectEqual(@as(?u64, 0), pair.server_h3.peer_goaway_id);
+}
+
 // ---------------------------------------------------------------- §6.2.1 ¶7 control-stream uniqueness (session-level)
 
 test "MUST close with H3_STREAM_CREATION_ERROR on a duplicate peer control stream [RFC9114 §6.2.1 ¶7]" {

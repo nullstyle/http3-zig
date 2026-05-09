@@ -18,7 +18,12 @@ on:
 # with longer corpora.
 jobs:
   smoke:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-14]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     steps:
       - name: Checkout http3-zig
         uses: actions/checkout@v4
@@ -35,8 +40,25 @@ jobs:
       - name: Run the codec smoke corpus
         run: zig build run-fuzz-smoke
 
+      - name: Upload fuzz crash artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-crashes-smoke-${{ matrix.os }}
+          path: |
+            fuzz/corpus/
+            zig-out/
+            .zig-cache/fuzz/
+          if-no-files-found: ignore
+          retention-days: 14
+
   corpus:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-14]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     steps:
       - name: Checkout http3-zig
         uses: actions/checkout@v4
@@ -52,3 +74,15 @@ jobs:
 
       - name: Run every file in fuzz/corpus/
         run: zig build run-fuzz-corpus
+
+      - name: Upload fuzz crash artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-crashes-corpus-${{ matrix.os }}
+          path: |
+            fuzz/corpus/
+            zig-out/
+            .zig-cache/fuzz/
+          if-no-files-found: ignore
+          retention-days: 14

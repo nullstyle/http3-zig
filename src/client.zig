@@ -1237,6 +1237,120 @@ pub const PushedResponseTracker = struct {
 pub const Client = struct {
     session: *session_mod.Session,
 
+    /// Client-side top-level configuration knobs.
+    ///
+    /// All fields default to the same permissive values the underlying
+    /// `session_mod.Config` uses (so an unconfigured `Config{}` is a 1:1
+    /// pass-through). Hand-tuning is still supported, but most users
+    /// should opt into the `production` preset for v0.1.0:
+    ///
+    /// ```zig
+    /// var session = http3_zig.Session.init(
+    ///     allocator, .client, &quic_conn,
+    ///     http3_zig.Client.Config.production.toSessionConfig(),
+    /// );
+    /// ```
+    ///
+    /// The struct only enumerates fields with a meaningful production
+    /// vs. default split; everything else stays at session-level
+    /// defaults.
+    pub const Config = struct {
+        /// Cap on concurrent peer-opened streams the session will
+        /// track. `null` preserves the legacy unbounded behaviour.
+        /// Mirrors `session_mod.Config.max_concurrent_peer_streams`.
+        max_concurrent_peer_streams: ?usize = null,
+
+        /// Cap on encoded HEADERS payload bytes per QPACK field
+        /// section. `null` preserves the legacy unbounded behaviour.
+        /// Mirrors `session_mod.Config.max_field_section_size` (it is
+        /// also re-advertised via SETTINGS when this knob is set).
+        max_field_section_size: ?usize = null,
+
+        /// Cap on bytes a single peer-opened WebTransport stream may
+        /// buffer while waiting for its session under
+        /// `BufferedStreamPolicy.buffer`. `null` preserves the legacy
+        /// unbounded behaviour. Mirrors
+        /// `session_mod.Config.wt_max_buffered_bytes_per_stream`.
+        wt_max_buffered_bytes_per_stream: ?usize = null,
+
+        /// Policy for peer-opened WebTransport streams whose Session
+        /// ID references a session that has not yet been confirmed.
+        /// Mirrors `session_mod.Config.buffered_stream_policy`.
+        buffered_stream_policy: session_mod.BufferedStreamPolicy = .pass_through,
+
+        /// Cap on aggregate owned event payload bytes emitted by one
+        /// `drain` call. `null` preserves the legacy unbounded
+        /// behaviour. Mirrors
+        /// `session_mod.Config.max_event_payload_bytes_per_drain`.
+        max_event_payload_bytes_per_drain: ?usize = null,
+
+        /// Cap on the number of events emitted by one `drain` call.
+        /// `null` preserves the legacy unbounded behaviour. Mirrors
+        /// `session_mod.Config.max_events_per_drain`.
+        max_events_per_drain: ?usize = null,
+
+        /// Production-grade defaults: tighter resource caps, strict
+        /// buffering policies. Uses defaults for any field not listed.
+        ///
+        /// Override list (with rationale):
+        ///   - `max_concurrent_peer_streams = 256`
+        ///       Defense-in-depth cap on peer-opened streams the
+        ///       session will track; protects against a peer that
+        ///       opens streams without finishing them. Tighter than
+        ///       QUIC's MAX_STREAMS budget (which is generous by
+        ///       design).
+        ///   - `max_field_section_size = 16 KiB`
+        ///       Bounds encoded HEADERS payload bytes per field
+        ///       section, limiting the cost of an oversized header
+        ///       attack. 16 KiB is comfortable for ordinary REST
+        ///       traffic.
+        ///   - `wt_max_buffered_bytes_per_stream = 16 KiB`
+        ///       Bounds bytes a single peer-opened WebTransport stream
+        ///       may buffer while waiting for its session
+        ///       (draft-ietf-webtrans-http3-15 §4.5).
+        ///   - `buffered_stream_policy = .reject`
+        ///       Reject peer-opened WT streams whose session has not
+        ///       yet been confirmed instead of buffering or surfacing
+        ///       them. Avoids unbounded buffering of bytes for a
+        ///       session that may never confirm.
+        ///   - `max_event_payload_bytes_per_drain = 4 MiB`
+        ///       Caps owned payload bytes a single `drain` may emit,
+        ///       providing backpressure on bursts of large frames.
+        ///   - `max_events_per_drain = 512`
+        ///       Caps event count per `drain`, providing structural
+        ///       backpressure independent of payload size.
+        pub const production: @This() = .{
+            .max_concurrent_peer_streams = 256,
+            .max_field_section_size = 16 * 1024,
+            .wt_max_buffered_bytes_per_stream = 16 * 1024,
+            .buffered_stream_policy = .reject,
+            .max_event_payload_bytes_per_drain = 4 * 1024 * 1024,
+            .max_events_per_drain = 512,
+        };
+
+        /// Project the preset onto a `session_mod.Config`, leaving all
+        /// other knobs at their session-level defaults.
+        ///
+        /// `max_field_section_size` is also re-advertised via the
+        /// connection's local SETTINGS so the peer respects the
+        /// tighter cap; this matches the wiring in
+        /// `session_mod.Config.production`.
+        pub fn toSessionConfig(self: Config) session_mod.Config {
+            var session_config: session_mod.Config = .{
+                .max_concurrent_peer_streams = self.max_concurrent_peer_streams,
+                .max_field_section_size = self.max_field_section_size,
+                .wt_max_buffered_bytes_per_stream = self.wt_max_buffered_bytes_per_stream,
+                .buffered_stream_policy = self.buffered_stream_policy,
+                .max_event_payload_bytes_per_drain = self.max_event_payload_bytes_per_drain,
+                .max_events_per_drain = self.max_events_per_drain,
+            };
+            if (self.max_field_section_size) |max| {
+                session_config.settings.max_field_section_size = @intCast(max);
+            }
+            return session_config;
+        }
+    };
+
     pub fn init(session: *session_mod.Session) Client {
         return .{ .session = session };
     }
@@ -1329,18 +1443,29 @@ pub const Client = struct {
         try self.session.sendRequestTrailers(stream_id, fields);
     }
 
+    /// Clean half-close — QUIC FIN on the send side. No error code;
+    /// bytes already sent are committed. See `Session.finishStream`.
     pub fn finish(self: *Client, stream_id: u64) session_mod.Error!void {
         try self.session.finishStream(stream_id);
     }
 
+    /// Outbound abort — RESET_STREAM with `error_code`, dropping our own
+    /// in-flight bytes. To also discard the response, follow with `cancel`.
+    /// See `Session.resetRequest`.
     pub fn reset(self: *Client, stream_id: u64, error_code: u64) session_mod.Error!void {
         try self.session.resetRequest(stream_id, error_code);
     }
 
+    /// Convenience: outbound abort with `request_cancelled`. Equivalent to
+    /// `reset(stream_id, protocol.ErrorCode.request_cancelled)`.
     pub fn abort(self: *Client, stream_id: u64) session_mod.Error!void {
         try self.reset(stream_id, protocol.ErrorCode.request_cancelled);
     }
 
+    /// Inbound abort — QUIC STOP_SENDING with `request_cancelled`,
+    /// asking the server to stop sending us the response body. Does NOT
+    /// drop our request send buffer — pair with `reset` for a full
+    /// bidirectional abort. See `Session.cancelRequest`.
     pub fn cancel(self: *Client, stream_id: u64) session_mod.Error!void {
         try self.session.cancelRequest(stream_id);
     }

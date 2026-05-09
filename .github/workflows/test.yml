@@ -13,10 +13,12 @@ on:
 # fetches them itself during build.
 jobs:
   build-test:
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest]
+        optimize: [Debug, ReleaseSafe]
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout http3-zig
@@ -34,10 +36,10 @@ jobs:
           uname -a
 
       - name: zig build
-        run: zig build --summary all
+        run: zig build -Doptimize=${{ matrix.optimize }} --summary all
 
       - name: zig build test
-        run: zig build test --summary all
+        run: zig build test -Doptimize=${{ matrix.optimize }} --summary all
 
       - name: zig build conformance
-        run: zig build conformance --summary all
+        run: zig build conformance -Doptimize=${{ matrix.optimize }} --summary all

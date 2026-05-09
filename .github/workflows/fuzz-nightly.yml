@@ -1,0 +1,54 @@
+name: fuzz-nightly
+
+on:
+  schedule:
+    - cron: '0 6 * * *'   # 06:00 UTC daily
+  workflow_dispatch: {}
+
+# Long-form companion to the per-push `fuzz.yml`. The push gate runs the
+# 12-input smoke corpus and a single walk over `fuzz/corpus/`; this job
+# keeps each fuzz target hot for 30 minutes by looping the corpus
+# runner. Neither `fuzz-codecs` nor `fuzz-corpus` accepts a duration
+# flag (they consume a fixed corpus and exit), so we wrap with
+# `timeout 30m` and accept exit code 124 (SIGTERM from `timeout`) as a
+# successful budget-exhaustion. Anything else is a real crash and
+# fails the job, with the work tree uploaded as an artifact for triage.
+jobs:
+  fuzz-codecs:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout http3-zig
+        uses: actions/checkout@v4
+
+      - name: Set up mise (zig 0.16.0 + project tools)
+        uses: jdx/mise-action@v2
+        with:
+          install: true
+          cache: true
+
+      - name: Build the fuzz harnesses
+        run: |
+          zig build fuzz-codecs
+          zig build fuzz-corpus
+
+      - name: Run codec smoke + corpus loop for 30 minutes
+        run: |
+          timeout 30m bash -c '
+            zig build run-fuzz-smoke
+            while true; do
+              zig build run-fuzz-corpus
+            done
+          ' || [ $? -eq 124 ]
+
+      - name: Upload fuzz crash artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-nightly-codecs-crashes
+          path: |
+            zig-out/
+            fuzz/corpus/
+            **/*.crash
+          if-no-files-found: ignore
+          retention-days: 14

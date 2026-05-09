@@ -36,27 +36,87 @@ pub const Error = quic_zig.conn.state.Error ||
     varint.Error ||
     std.mem.Allocator.Error ||
     error{
+        /// A second control / QPACK encoder / QPACK decoder uni stream was
+        /// opened locally; only one of each is allowed (RFC 9114 §6.2).
         CriticalStreamAlreadyOpen,
+        /// `start()` was called after the QPACK encoder + decoder streams
+        /// were already opened — internal state-machine guard.
         QpackStreamsAlreadyOpen,
+        /// A role-specific method was called from the wrong role
+        /// (e.g. `sendResponseHeaders` on a client session, or
+        /// `cancelRequest` on a server session).
         InvalidRole,
+        /// The underlying QUIC stream's send buffer accepted zero bytes —
+        /// either the stream is fully blocked by flow control or its local
+        /// `max_stream_send_buffered` cap is hit. Caller should drain
+        /// acknowledgements (run a pump) and retry.
         WriteStalled,
+        /// Internal classification: peer used a stream type that the
+        /// session machine doesn't expect at this point in the lifecycle
+        /// (e.g. server opening a request stream).
         UnexpectedStream,
+        /// Caller passed a `stream_id` that the session doesn't know
+        /// about (never opened, or already torn down).
         MissingStream,
+        /// Internal state mismatch — a method was called for the wrong
+        /// `Kind` of message stream (request/response/push). Indicates a
+        /// caller bug, not a peer protocol error.
         WrongMessageKind,
+        /// Peer closed (FIN or RESET) one of the critical uni streams
+        /// (control, QPACK encoder, QPACK decoder). Per RFC 9114 §6.2
+        /// this is a connection-level error; surfaced before the
+        /// session enters a closed state so the caller can observe it.
         ClosedCriticalStream,
+        /// `sendGoaway` rejected the supplied id: not the right parity
+        /// for the role, or not monotonically non-increasing relative
+        /// to a previously sent value (RFC 9114 §5.2).
         InvalidGoawayId,
+        /// Push id was outside the allowed range (negative parity, beyond
+        /// the peer-advertised `MAX_PUSH_ID`, or unknown when referenced).
         InvalidPushId,
+        /// PRIORITY_UPDATE targeted a stream id that doesn't exist or
+        /// isn't a request/push stream (RFC 9218 §7.2).
         InvalidPriorityTarget,
+        /// Two PUSH_PROMISE frames carried the same push id but
+        /// different field sections (RFC 9114 §7.2.5 — receiver MUST
+        /// reject).
         InconsistentPushPromise,
+        /// Client tried to open a new request after the peer sent a
+        /// GOAWAY whose id covers this stream (RFC 9114 §5.2).
         RequestBlockedByGoaway,
+        /// Server tried to start a push after it had already sent a
+        /// GOAWAY covering the next push id, or the peer's GOAWAY
+        /// covers it.
         PushBlockedByGoaway,
+        /// Peer never advertised a non-zero `MAX_PUSH_ID`; pushes are
+        /// forbidden until they do.
         PushNotEnabled,
+        /// Next push id would exceed the peer-advertised `MAX_PUSH_ID`.
         PushLimitExceeded,
+        /// Peer didn't advertise `SETTINGS_H3_DATAGRAM = 1` (RFC 9297
+        /// §2.2.1). Datagram and DATAGRAM-capsule sends are gated on
+        /// this. The local-receive path also surfaces it if a datagram
+        /// arrives before our own SETTINGS opt-in.
         DatagramNotEnabled,
+        /// Encoded datagram exceeds the peer-advertised
+        /// `max_datagram_frame_size` QUIC transport parameter.
         DatagramTooLarge,
+        /// Capsule value exceeds the local `Config.max_capsule_value_size`
+        /// cap. Caller-initiated; not a protocol violation.
         CapsuleTooLarge,
+        /// `Config.max_stream_send_buffered` would be exceeded by the
+        /// requested write. Caller should run a pump to flush
+        /// acknowledgements and retry.
         SendBufferFull,
+        /// A single drained event's payload exceeds
+        /// `Config.max_event_payload_size`. The session emits the
+        /// `connection_closed` event with `H3_EXCESSIVE_LOAD` and
+        /// surfaces this so the caller stops draining.
         EventPayloadTooLarge,
+        /// One pump's drain exceeded `Config.max_events_per_drain` or
+        /// `Config.max_event_payload_bytes_per_drain`. Soft signal —
+        /// the caller can drain again immediately to pick up where
+        /// this batch left off.
         EventQueueFull,
         /// Local send would exceed the peer-advertised WT_MAX_DATA
         /// limit (draft-ietf-webtrans-http3 §5.6.4). The session
@@ -613,7 +673,14 @@ const DrainBudget = struct {
 /// enforce non-null peer limits — meaning absence of a limit is treated
 /// as "no enforcement", which preserves the pre-flow-control behaviour
 /// for callers that don't care.
-pub const WTSessionFlowState = struct {
+/// Internal mutable per-WT-session flow-control state. Not part of the
+/// public API: applications observe a read-only `WTSessionFlowSnapshot`
+/// via `WebTransportClientStream.flowState()` /
+/// `WebTransportServerStream.flowState()`. Direct mutation would corrupt
+/// the session's accounting (peer_data_received, BLOCKED bookkeeping,
+/// drain bit) — the wrapping `Session` updates these fields under the
+/// invariants documented at each call site.
+const WTSessionFlowState = struct {
     session_id: u64,
 
     // ---------- Peer-advertised limits (gate our sends) ----------
@@ -1072,8 +1139,11 @@ pub const Session = struct {
     //   - confirmWebTransportSession — called by Server.acceptWebTransport
     //     after the 2xx response is sent, and by `processMessageState` on
     //     the client when a 2xx response arrives for a pending session.
-    //   - closeWebTransportSession — called when the CONNECT stream is
+    //   - endWebTransportSession — called when the CONNECT stream is
     //     finished or reset, or when a non-2xx response is observed.
+    //     Internal-only — applications signal "this session is over"
+    //     by sending CLOSE_WEBTRANSPORT_SESSION (draft-15 §5.4) via
+    //     the protocol-level API, not by calling this directly.
     //
     // When a session transitions from pending → established or
     // established → closed the buffered-stream replay path is run so
@@ -1113,7 +1183,7 @@ pub const Session = struct {
         try self.wt_established_sessions.put(self.allocator, stream_id, flow);
     }
 
-    pub fn closeWebTransportSession(self: *Session, stream_id: u64) void {
+    fn endWebTransportSession(self: *Session, stream_id: u64) void {
         _ = self.wt_pending_sessions.remove(stream_id);
         if (self.wt_established_sessions.fetchRemove(stream_id)) |entry| {
             self.allocator.destroy(entry.value);
@@ -1291,6 +1361,7 @@ pub const Session = struct {
     }
 
     pub fn sendRequestDatagramCapsule(self: *Session, stream_id: u64, payload: []const u8) Error!void {
+        try self.validatePeerDatagramEnabled();
         try self.sendRequestCapsule(stream_id, capsule_mod.Type.datagram, payload);
     }
 
@@ -1301,6 +1372,7 @@ pub const Session = struct {
         payload: []const u8,
     ) Error!void {
         if (self.role != .client) return Error.InvalidRole;
+        try self.validatePeerDatagramEnabled();
         const value_len = try contextPayloadEncodedLenChecked(context_id, payload.len);
         try self.validateCapsuleValueSize(value_len);
         const value = try self.allocator.alloc(u8, value_len);
@@ -1338,6 +1410,7 @@ pub const Session = struct {
     }
 
     pub fn sendResponseDatagramCapsule(self: *Session, stream_id: u64, payload: []const u8) Error!void {
+        try self.validatePeerDatagramEnabled();
         try self.sendResponseCapsule(stream_id, capsule_mod.Type.datagram, payload);
     }
 
@@ -1348,6 +1421,7 @@ pub const Session = struct {
         payload: []const u8,
     ) Error!void {
         if (self.role != .server) return Error.InvalidRole;
+        try self.validatePeerDatagramEnabled();
         const value_len = try contextPayloadEncodedLenChecked(context_id, payload.len);
         try self.validateCapsuleValueSize(value_len);
         const value = try self.allocator.alloc(u8, value_len);
@@ -1475,9 +1549,53 @@ pub const Session = struct {
         return self.push_priorities.get(push_id);
     }
 
+    // ----------------------------------------------------------------------
+    // Stream lifecycle verbs
+    //
+    // The public surface uses three distinct mechanisms to terminate a
+    // stream — they map to different QUIC frames, with different
+    // semantics. Picking the wrong one corrupts the wire. The taxonomy:
+    //
+    //   * `finishStream` (clean half-close) — sends a QUIC FIN. No error
+    //     code; bytes already sent are committed. Use after the last
+    //     payload byte goes out.
+    //
+    //   * `resetStream` / `resetRequest` / `resetResponse` (outbound
+    //     abort) — sends RESET_STREAM with an application error code.
+    //     Drops in-flight outbound bytes; the peer sees the error code.
+    //     Use when *we* want to stop sending (and don't care if the
+    //     peer's already-sent bytes still arrive).
+    //
+    //   * `cancelRequest` / `rejectRequest` / `stopSending` (inbound
+    //     abort) — sends QUIC STOP_SENDING. Asks the *peer* to stop
+    //     sending us bytes; doesn't drop our own outbound. Use when we
+    //     want to discard the response/request body but stay polite to
+    //     our own send buffer.
+    //
+    // Convenience wrappers `Client.abort` / `Server.abort` issue a
+    // RESET_STREAM with a role-appropriate default code (`request_cancelled`
+    // on the client, `internal_error` on the server). For a *full* abort
+    // (drop both directions), call `reset` followed by `cancel` (or vice
+    // versa) — there is no single-call helper today.
+    // ----------------------------------------------------------------------
+
+    /// Sends a QUIC FIN on `stream_id` — clean half-close on the send
+    /// side. Already-sent bytes are committed; no error code is exposed
+    /// to the peer. Idempotent at the QUIC layer.
+    ///
+    /// If `stream_id` is the CONNECT control stream of a known WebTransport
+    /// session, the local registry is also torn down — local FIN
+    /// implicitly ends the session per draft-ietf-webtrans-http3-15 §5.4,
+    /// mirroring what `observeFin` already does on the receive side. After
+    /// this returns, peer-opened WT streams targeting this session id are
+    /// routed through the buffered-stream policy instead of dispatched
+    /// against a session we've already abandoned.
     pub fn finishStream(self: *Session, stream_id: u64) Error!void {
         if (self.shutdown_state == .closed) return Error.SessionClosed;
         try self.quic.streamFinish(stream_id);
+        if (self.webTransportSessionExists(stream_id)) {
+            self.endWebTransportSession(stream_id);
+        }
     }
 
     pub fn sendDatagram(self: *Session, stream_id: u64, payload: []const u8) Error!void {
@@ -1536,6 +1654,14 @@ pub const Session = struct {
         return id;
     }
 
+    /// Outbound abort. Sends RESET_STREAM with `application_error_code`,
+    /// dropping any buffered or in-flight outbound bytes. Cancels QPACK
+    /// dynamic-table references owned by this stream. The peer sees the
+    /// error code on its receive side. Use when we no longer want to send.
+    ///
+    /// If `stream_id` is the CONNECT control stream of a known WebTransport
+    /// session, the local registry is also torn down — RESET implies
+    /// abandonment, same as `finishStream`'s handling.
     pub fn resetStream(self: *Session, stream_id: u64, application_error_code: u64) Error!void {
         self.qpack_encoder_state.cancelStream(stream_id);
         try self.quic.streamReset(stream_id, application_error_code);
@@ -1545,13 +1671,20 @@ pub const Session = struct {
             .stream_id = stream_id,
             .error_code = application_error_code,
         });
+        if (self.webTransportSessionExists(stream_id)) {
+            self.endWebTransportSession(stream_id);
+        }
     }
 
+    /// Client-only convenience around `resetStream` — fails fast for a
+    /// server-role caller.
     pub fn resetRequest(self: *Session, stream_id: u64, application_error_code: u64) Error!void {
         if (self.role != .client) return Error.InvalidRole;
         try self.resetStream(stream_id, application_error_code);
     }
 
+    /// Server-only convenience around `resetStream` — fails fast for a
+    /// client-role caller.
     pub fn resetResponse(self: *Session, stream_id: u64, application_error_code: u64) Error!void {
         if (self.role != .server) return Error.InvalidRole;
         try self.resetStream(stream_id, application_error_code);
@@ -1575,15 +1708,26 @@ pub const Session = struct {
         });
     }
 
+    /// Inbound abort. Sends QUIC STOP_SENDING with the given error code,
+    /// asking the peer to stop sending us bytes on `stream_id`. Does NOT
+    /// drop our own outbound bytes — pair with `resetStream` for a full
+    /// bidirectional abort.
     pub fn stopSending(self: *Session, stream_id: u64, application_error_code: u64) Error!void {
         try self.quic.streamStopSending(stream_id, application_error_code);
     }
 
+    /// Server-only inbound abort: STOP_SENDING with `request_rejected`.
+    /// Use to refuse a request body while still allowing our response to
+    /// flow (e.g. for a 4xx with a small error body).
     pub fn rejectRequest(self: *Session, stream_id: u64) Error!void {
         if (self.role != .server) return Error.InvalidRole;
         try self.stopSending(stream_id, protocol.ErrorCode.request_rejected);
     }
 
+    /// Client-only inbound abort: STOP_SENDING with `request_cancelled`.
+    /// Use to discard a server response we no longer care about. Does
+    /// NOT cancel our own request send — for that, also call
+    /// `resetRequest`.
     pub fn cancelRequest(self: *Session, stream_id: u64) Error!void {
         if (self.role != .client) return Error.InvalidRole;
         try self.stopSending(stream_id, protocol.ErrorCode.request_cancelled);
@@ -2822,7 +2966,7 @@ pub const Session = struct {
                 if (webtransport_mod.isAcceptedStatus(value)) {
                     try self.confirmWebTransportSession(state.id);
                 } else {
-                    self.closeWebTransportSession(state.id);
+                    self.endWebTransportSession(state.id);
                 }
             },
         }
@@ -2940,7 +3084,7 @@ pub const Session = struct {
         // peer FIN ends the session — clear the registry so subsequent
         // peer-opened WT streams aren't dispatched as if the session were
         // still alive.
-        self.closeWebTransportSession(state.id);
+        self.endWebTransportSession(state.id);
         try self.appendReservedEvent(events, .{
             .stream_finished = .{
                 .stream_id = state.id,
@@ -2965,7 +3109,7 @@ pub const Session = struct {
 
         // A peer RESET of the CONNECT stream tears the session down, the
         // same way a FIN does.
-        self.closeWebTransportSession(state.id);
+        self.endWebTransportSession(state.id);
 
         // If we locally rejected this stream (e.g. via the
         // buffered-stream `.reject` policy), the peer's matching RESET is
@@ -3022,6 +3166,15 @@ pub const Session = struct {
         const params = peer_transport orelse return Error.DatagramNotEnabled;
         if (params.max_datagram_frame_size == 0) return Error.DatagramNotEnabled;
         if (encoded_len > params.max_datagram_frame_size) return Error.DatagramTooLarge;
+    }
+
+    /// Mirrors the peer-settings half of `validateDatagramSend` for the
+    /// capsule-based DATAGRAM path (RFC 9297 §3.4): both transports require
+    /// `SETTINGS_H3_DATAGRAM = 1` from the peer. Capsule path doesn't go
+    /// through QUIC datagram framing so it skips the transport-param checks.
+    fn validatePeerDatagramEnabled(self: *const Session) Error!void {
+        const peer = self.peer_settings orelse return Error.MissingSettings;
+        if (!peer.h3_datagram) return Error.DatagramNotEnabled;
     }
 
     fn cancelQpackDecodeForStream(self: *Session, stream_id: u64) Error!void {
@@ -4517,6 +4670,50 @@ test "session event budget resumes pending trailers" {
     try std.testing.expectEqual(@as(usize, 0), state.rx.items.len);
 }
 
+test "session DATAGRAM capsule path gates on peer h3_datagram (RFC 9297 §3.4)" {
+    const allocator = std.testing.allocator;
+    var client_quic: quic_zig.Connection = undefined;
+
+    // Peer hasn't sent SETTINGS yet — every datagram-capsule entry point
+    // must surface MissingSettings rather than emit a stream-bound capsule
+    // the peer can't interpret.
+    {
+        var session = Session.init(allocator, .client, &client_quic, .{});
+        defer session.deinit();
+        _ = try session.ensureMessageState(0, .response, .request);
+
+        try std.testing.expectError(Error.MissingSettings, session.sendRequestDatagramCapsule(0, "x"));
+        try std.testing.expectError(Error.MissingSettings, session.sendRequestDatagramContextCapsule(0, 0, "x"));
+    }
+
+    // Peer SETTINGS arrived but `h3_datagram=0` — we must refuse to send.
+    {
+        var session = Session.init(allocator, .client, &client_quic, .{});
+        defer session.deinit();
+        session.peer_settings = .{ .h3_datagram = false };
+        _ = try session.ensureMessageState(0, .response, .request);
+
+        try std.testing.expectError(Error.DatagramNotEnabled, session.sendRequestDatagramCapsule(0, "x"));
+        try std.testing.expectError(Error.DatagramNotEnabled, session.sendRequestDatagramContextCapsule(0, 0, "x"));
+    }
+
+    // Server-side parity: `sendResponseDatagramCapsule` /
+    // `sendResponseDatagramContextCapsule` enforce the same gate.
+    {
+        var server_quic: quic_zig.Connection = undefined;
+        var session = Session.init(allocator, .server, &server_quic, .{});
+        defer session.deinit();
+        _ = try session.ensureMessageState(0, .request, .response);
+
+        try std.testing.expectError(Error.MissingSettings, session.sendResponseDatagramCapsule(0, "x"));
+        try std.testing.expectError(Error.MissingSettings, session.sendResponseDatagramContextCapsule(0, 0, "x"));
+
+        session.peer_settings = .{ .h3_datagram = false };
+        try std.testing.expectError(Error.DatagramNotEnabled, session.sendResponseDatagramCapsule(0, "x"));
+        try std.testing.expectError(Error.DatagramNotEnabled, session.sendResponseDatagramContextCapsule(0, 0, "x"));
+    }
+}
+
 test "session caps outgoing capsule values before allocation" {
     const allocator = std.testing.allocator;
     var client_quic: quic_zig.Connection = undefined;
@@ -4525,6 +4722,12 @@ test "session caps outgoing capsule values before allocation" {
         .max_capsule_value_size = 1,
     });
     defer session.deinit();
+
+    // The DATAGRAM-capsule path (RFC 9297 §3.4) requires the peer to have
+    // advertised `SETTINGS_H3_DATAGRAM = 1`. Inject a peer-settings record
+    // so this size-cap test reaches the `CapsuleTooLarge` check rather than
+    // bouncing on `MissingSettings`.
+    session.peer_settings = .{ .h3_datagram = true };
 
     _ = try session.ensureMessageState(0, .response, .request);
 

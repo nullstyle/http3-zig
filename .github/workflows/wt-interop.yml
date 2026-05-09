@@ -1,10 +1,11 @@
 name: wt-interop
 
 on:
+  push:
   schedule:
-    # Sunday 06:30 UTC — interop is environment-sensitive and slow,
-    # so run weekly rather than on every push. The test workflow
-    # (test.yml) is the actual CI gate.
+    # Sunday 06:30 UTC — keep the weekly cadence as a backstop so a
+    # quiet branch still gets exercised. Per-push runs are the
+    # primary signal.
     - cron: "30 6 * * 0"
   workflow_dispatch:
     inputs:
@@ -37,7 +38,6 @@ jobs:
   matrix:
     name: WT interop (http3-zig as client)
     runs-on: ubuntu-latest
-    continue-on-error: true
     timeout-minutes: 30
     env:
       TIMEOUT_MS: ${{ github.event.inputs.timeout_ms || '30000' }}

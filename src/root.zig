@@ -106,7 +106,8 @@ pub const WebTransportStreamFinishedEvent = session.WebTransportStreamFinishedEv
 pub const WebTransportStreamResetEvent = session.WebTransportStreamResetEvent;
 pub const WebTransportFlowViolationEvent = session.WebTransportFlowViolationEvent;
 pub const WebTransportFlowViolationKind = session.WebTransportFlowViolationKind;
-pub const WTSessionFlowState = session.WTSessionFlowState;
+// `WTSessionFlowState` (mutable per-session flow accounting) is intentionally
+// internal — applications only see the read-only snapshot below.
 pub const WTSessionFlowSnapshot = session.WTSessionFlowSnapshot;
 pub const WTStreamDirection = session.WTStreamDirection;
 pub const WebSocketOpcode = websocket.frame.Opcode;

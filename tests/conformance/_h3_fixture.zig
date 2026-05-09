@@ -125,6 +125,25 @@ pub const H3Pair = struct {
         client_config: http3_zig.session.Config,
         server_config: http3_zig.session.Config,
     ) !void {
+        try self.initStartedWithOptions(allocator, client_config, server_config, .{});
+    }
+
+    pub const StartOptions = struct {
+        start_client: bool = true,
+        start_server: bool = true,
+    };
+
+    /// Like `initStarted`, but lets the caller skip `start()` on either side
+    /// so the test can inject hand-crafted control-stream bytes that bypass
+    /// the auto-emitted SETTINGS encoding (which always emits the QPACK
+    /// varints, never an empty payload).
+    pub fn initStartedWithOptions(
+        self: *H3Pair,
+        allocator: std.mem.Allocator,
+        client_config: http3_zig.session.Config,
+        server_config: http3_zig.session.Config,
+        options: StartOptions,
+    ) !void {
         self.client_tls = try http3_zig.client.initTlsContext(.{ .verify = .none });
         errdefer self.client_tls.deinit();
 
@@ -143,8 +162,8 @@ pub const H3Pair = struct {
         self.server_h3 = http3_zig.Session.init(allocator, .server, &self.server, server_config);
         errdefer self.server_h3.deinit();
 
-        try self.client_h3.start();
-        try self.server_h3.start();
+        if (options.start_client) try self.client_h3.start();
+        if (options.start_server) try self.server_h3.start();
     }
 
     pub fn deinit(self: *H3Pair) void {

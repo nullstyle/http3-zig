@@ -3181,3 +3181,115 @@ test "WebTransport: .buffer replay under tight budget surfaces opened+data+finis
     try std.testing.expect(!seen_extra_opened);
 }
 
+test "WebTransport: peer FINs CONNECT control stream without CLOSE_WEBTRANSPORT_SESSION cleanly closes session" {
+    // draft-ietf-webtrans-http3-15 §5.4: an endpoint MAY end a session by
+    // FINing the CONNECT stream without first sending CLOSE_WEBTRANSPORT_SESSION.
+    // Both peers MUST treat this as a clean close — local-side cleanup
+    // runs in `finishStream` (mirroring the receive-side `observeFin` →
+    // `endWebTransportSession` path), and no error code surfaces.
+    const allocator = std.testing.allocator;
+    const h3_settings: http3_zig.Settings = .{
+        .enable_connect_protocol = true,
+        .h3_datagram = true,
+        .wt_enabled = true,
+    };
+
+    var pair: H3Pair = undefined;
+    try pair.initStarted(allocator, .{ .settings = h3_settings }, .{ .settings = h3_settings });
+    defer pair.deinit();
+    try exchangePairSettings(allocator, &pair);
+
+    var h3_client = http3_zig.Client.init(&pair.client_h3);
+    var h3_server = http3_zig.Server.init(&pair.server_h3);
+
+    var client_wt = try h3_client.startWebTransport(allocator, .{
+        .authority = "localhost",
+        .path = "/wt-fin-no-close",
+    });
+
+    var client_runner = http3_zig.ClientRunner.init(allocator);
+    defer client_runner.deinit();
+    var server_runner = http3_zig.ServerRunner.init(allocator);
+    defer server_runner.deinit();
+
+    var client_events: std.ArrayList(http3_zig.session.Event) = .empty;
+    defer {
+        clearSessionEvents(allocator, &client_events);
+        client_events.deinit(allocator);
+    }
+    var server_events: std.ArrayList(http3_zig.session.Event) = .empty;
+    defer {
+        clearSessionEvents(allocator, &server_events);
+        server_events.deinit(allocator);
+    }
+
+    // Pump until the server has accepted the WT bootstrap AND the client
+    // has observed the 2xx response (client-side flow state becomes
+    // non-null only after `confirmWebTransportSession` runs on the
+    // client's `processMessageState` path).
+    var server_wt: ?http3_zig.WebTransportServerStream = null;
+    var now_us: u64 = 1_000_000;
+    var iters: u32 = 0;
+    while (server_wt == null or client_wt.flowState() == null) : (iters += 1) {
+        try std.testing.expect(iters < 20_000);
+        try pumpH3(
+            &pair.client,
+            &pair.server,
+            &pair.client_h3,
+            &pair.server_h3,
+            &client_events,
+            &server_events,
+            &now_us,
+        );
+
+        for (server_events.items) |event| {
+            switch (try server_runner.observe(event)) {
+                .request_updated, .request_complete => |request_state| {
+                    const request = request_state.reader();
+                    if (server_wt == null and request.headers().len > 0 and request.isWebTransport()) {
+                        server_wt = try h3_server.acceptWebTransport(allocator, request, .{});
+                    }
+                },
+                else => {},
+            }
+        }
+        for (client_events.items) |event| _ = try client_runner.observe(event);
+        clearSessionEvents(allocator, &server_events);
+        clearSessionEvents(allocator, &client_events);
+    }
+
+    // Sanity: both peers see the session as established before the FIN.
+    try std.testing.expect(server_wt.?.flowState() != null);
+    try std.testing.expect(client_wt.flowState() != null);
+
+    // Server FINs its response side WITHOUT first sending CLOSE_WEBTRANSPORT_SESSION.
+    try server_wt.?.finishSend();
+
+    // Local-side cleanup is immediate: the server's flow snapshot for
+    // the session disappears the moment `finishStream` returns.
+    try std.testing.expect(server_wt.?.flowState() == null);
+
+    // Pump until the client observes the peer FIN and runs its own
+    // `observeFin` → `endWebTransportSession`.
+    while (client_wt.flowState() != null) : (iters += 1) {
+        try std.testing.expect(iters < 20_000);
+        try pumpH3(
+            &pair.client,
+            &pair.server,
+            &pair.client_h3,
+            &pair.server_h3,
+            &client_events,
+            &server_events,
+            &now_us,
+        );
+        for (client_events.items) |event| _ = try client_runner.observe(event);
+        for (server_events.items) |event| _ = try server_runner.observe(event);
+        clearSessionEvents(allocator, &client_events);
+        clearSessionEvents(allocator, &server_events);
+    }
+
+    // No protocol-level error code surfaced — the implicit close is clean.
+    try std.testing.expectEqual(@as(?http3_zig.errors.ConnectionError, null), pair.client_h3.lastCloseError());
+    try std.testing.expectEqual(@as(?http3_zig.errors.ConnectionError, null), pair.server_h3.lastCloseError());
+}
+
