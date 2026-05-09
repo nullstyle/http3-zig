@@ -60,6 +60,7 @@
 //!   RFC9114 §4.1.2 ¶?   MUST       reject content-length whose value mismatches DATA bytes
 //!   RFC9114 §4.1.2 ¶?   MUST       reject non-decimal / negative content-length
 //!   RFC9114 §4.1.2 ¶?   MUST       reject duplicate / conflicting content-length
+//!   RFC9114 §4.3.1 ¶?   MUST       reject empty :authority (when explicitly present)
 //!   RFC9114 §4.5   ¶?   MUST NOT   send DATA after trailers (request)
 //!   RFC9114 §4.1   ¶7   MUST NOT   send DATA after trailers (response)
 //!   RFC9114 §4.5   ¶?   MUST NOT   send a second HEADERS section after trailers
@@ -84,9 +85,6 @@
 //!   RFC9114 §4.2  ¶4   MUST NOT  TE header field with value other than "trailers"
 //!                                — validator does not inspect TE; classification of TE
 //!                                as connection-specific-with-exception is unimplemented
-//!   RFC9114 §4.3.1 ¶? MUST NOT  :authority MUST NOT be empty if present
-//!                                — validator currently accepts an empty :authority
-//!                                  (treats it as absent for syntax-check purposes)
 //!   RFC9114 §4.3.1 ¶? MUST      :authority and Host header MUST contain the same value
 //!                                — validator does not cross-check pseudo against regular field
 //!   RFC9114 §4.4   ¶3 MUST      classic CONNECT (omit :scheme and :path)
@@ -1156,4 +1154,34 @@ test "MUST accept body whose length matches content-length [RFC9114 §4.1.2 ¶?]
     try dec.observeBytes(allocator, buf[0..pos], &events);
     try dec.finish();
     try std.testing.expectEqual(@as(usize, 3), events.items.len);
+}
+
+// ---------------------------------------------------------------- §4.3.1 empty :authority
+
+test "MUST reject an explicitly-present empty :authority [RFC9114 §4.3.1 ¶?]" {
+    // §4.3.1: "If the :authority pseudo-header field is empty, the request
+    // MUST be treated as malformed." (Distinct from omitting :authority,
+    // which is permitted.)
+    const fields = [_]FieldLine{
+        .{ .name = ":method", .value = "GET" },
+        .{ .name = ":scheme", .value = "https" },
+        .{ .name = ":path", .value = "/" },
+        .{ .name = ":authority", .value = "" },
+    };
+    try std.testing.expectError(
+        headers.Error.MalformedAuthority,
+        headers.validateRequest(&fields),
+    );
+}
+
+test "MUST accept a request with non-empty :authority [RFC9114 §4.3.1 ¶?]" {
+    // Counter-example: a present, non-empty :authority is well-formed (this
+    // is the baseline minimal_request shape).
+    const fields = [_]FieldLine{
+        .{ .name = ":method", .value = "GET" },
+        .{ .name = ":scheme", .value = "https" },
+        .{ .name = ":path", .value = "/" },
+        .{ .name = ":authority", .value = "example.com" },
+    };
+    try headers.validateRequest(&fields);
 }

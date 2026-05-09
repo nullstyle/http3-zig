@@ -16,6 +16,7 @@ pub const Error = error{
     ConnectionSpecificField,
     InvalidContentLength,
     ContentLengthMismatch,
+    MalformedAuthority,
 };
 
 pub const RequestValidationOptions = struct {
@@ -119,11 +120,13 @@ pub fn validateRequestWithOptions(fields: []const FieldLine, options: RequestVal
 
     // RFC 9114 §4.3.1: ":authority" is the URI authority component, which
     // per RFC 3986 §3.2 contains only host and optional ":port" — no
-    // userinfo ("user:pass@…") and no fragment ("…#frag"). Empty values
-    // are accepted (the field MAY be absent), but a non-empty value must
-    // parse cleanly.
+    // userinfo ("user:pass@…") and no fragment ("…#frag"). The field MAY
+    // be absent (omitted from the field section), but if present it MUST
+    // NOT be empty: "If the :authority pseudo-header field is empty, the
+    // request MUST be treated as malformed."
     if (authority_value) |authority| {
-        if (authority.len != 0) try validateAuthority(authority);
+        if (authority.len == 0) return Error.MalformedAuthority;
+        try validateAuthority(authority);
     }
 
     // RFC 9114 §4.3.1 ¶? : "If the :scheme pseudo-header field identifies

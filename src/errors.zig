@@ -172,6 +172,7 @@ pub fn codeForError(err: anyerror) u64 {
         error.ConnectionSpecificField,
         error.InvalidContentLength,
         error.ContentLengthMismatch,
+        error.MalformedAuthority,
         error.DecodedFieldSectionTooLarge,
         error.TooManyFieldLines,
         => protocol.ErrorCode.message_error,
