@@ -508,6 +508,74 @@ test "required insert count and field section prefix follow RFC wrapping" {
     try std.testing.expectEqual(@as(u64, 0), decoded_no_refs.prefix.base);
 }
 
+test "Required Insert Count round-trips at the modular wrap boundary (RFC 9204 §4.5.1.1)" {
+    // RFC 9204 §4.5.1.1 defines:
+    //   EncReqInsertCount = (ReqInsertCount mod (2 * MaxEntries)) + 1
+    //   when ReqInsertCount > 0; otherwise 0.
+    //
+    // The boundary case `ReqInsertCount == full_range` (a multiple of
+    // 2 * MaxEntries) encodes to the same byte (1) as
+    // `ReqInsertCount == 1`. The decoder disambiguates using
+    // `total_number_of_inserts`. This test pins that round-trip at
+    // the exact modular boundaries — the audit identified the wrap
+    // point as a latent edge case whose behavior wasn't directly
+    // covered.
+    //
+    // With max_table_capacity = 96 and dynamic_table.overhead = 32:
+    //   MaxEntries = 96 / 32 = 3
+    //   full_range = 6
+    const max_table_capacity: u64 = 96;
+    const full_range = try insertCountFullRange(max_table_capacity);
+    try std.testing.expectEqual(@as(u64, 6), full_range);
+    try std.testing.expectEqual(@as(u64, 3), maxEntries(max_table_capacity));
+
+    // ReqInsertCount = full_range produces encoded value 1
+    // (because full_range mod full_range = 0; +1 = 1).
+    try std.testing.expectEqual(
+        @as(u64, 1),
+        try encodeRequiredInsertCount(full_range, max_table_capacity),
+    );
+
+    // Decoder disambiguates encoded=1 using `total_number_of_inserts`.
+    // When total_number_of_inserts is in the same wrap window as the
+    // value being communicated, the decoder MUST recover it exactly.
+    try std.testing.expectEqual(
+        @as(u64, full_range),
+        try decodeRequiredInsertCount(1, max_table_capacity, full_range),
+    );
+
+    // ReqInsertCount = full_range + 1 wraps to encoded=2.
+    try std.testing.expectEqual(
+        @as(u64, 2),
+        try encodeRequiredInsertCount(full_range + 1, max_table_capacity),
+    );
+    try std.testing.expectEqual(
+        @as(u64, full_range + 1),
+        try decodeRequiredInsertCount(2, max_table_capacity, full_range + 1),
+    );
+
+    // 2 * full_range (== 2 * 6 == 12) also encodes as 1.
+    try std.testing.expectEqual(
+        @as(u64, 1),
+        try encodeRequiredInsertCount(full_range * 2, max_table_capacity),
+    );
+    try std.testing.expectEqual(
+        @as(u64, full_range * 2),
+        try decodeRequiredInsertCount(1, max_table_capacity, full_range * 2),
+    );
+
+    // Sweep the 0..2*full_range range to confirm round-trip at every
+    // integer point (with a `total_number_of_inserts` that pins the
+    // wrap window). This catches off-by-ones around the boundary
+    // that the spot checks above might miss.
+    var req: u64 = 0;
+    while (req <= full_range * 2) : (req += 1) {
+        const encoded = try encodeRequiredInsertCount(req, max_table_capacity);
+        const recovered = try decodeRequiredInsertCount(encoded, max_table_capacity, req);
+        try std.testing.expectEqual(req, recovered);
+    }
+}
+
 test "encoder state tracks blocked streams, references, acknowledgments, and cancellations" {
     var encoder = EncoderState.init(std.testing.allocator, 1);
     defer encoder.deinit();

@@ -3042,3 +3042,142 @@ test "WebTransport: .buffer policy rejects stream that exceeds wt_max_buffered_b
         pair.server_h3.shutdownState(),
     );
 }
+
+test "WebTransport: .buffer replay under tight budget surfaces opened+data+finished in order" {
+    // Stress test for the audit-flagged concern that budget
+    // exhaustion mid-replay could orphan a parked FIN. The setup:
+    //
+    //   * Server uses `BufferedStreamPolicy.buffer`.
+    //   * Client opens a uni WT stream, writes a payload, FINs the
+    //     stream — ALL before the server has called
+    //     `acceptWebTransport()`. The server's session sees the
+    //     stream's prefix, parks it as `wt_buffered`, and sets
+    //     `wt_buffered_fin = true` when the FIN arrives.
+    //   * Server then accepts the WT bootstrap. The replay path
+    //     fires on the next drain.
+    //   * Server is configured with a TINY drain budget so most
+    //     drains can fire only one event at a time. We pump until
+    //     we observe the full lifecycle and assert event order.
+    //
+    // The invariant being regressed on: regardless of how the
+    // budget exhausts mid-replay, the server eventually surfaces
+    // `_opened` → `_data` → `_finished` for the buffered stream,
+    // in that order, with no phantom or duplicate events.
+    const allocator = std.testing.allocator;
+    const h3_settings: http3_zig.Settings = .{
+        .enable_connect_protocol = true,
+        .h3_datagram = true,
+        .wt_enabled = true,
+    };
+
+    var pair: H3Pair = undefined;
+    try pair.initStarted(allocator, .{ .settings = h3_settings }, .{
+        .settings = h3_settings,
+        .buffered_stream_policy = .buffer,
+        // Tight budget: at most 1 event per drain. Forces the
+        // replay path through multiple drains to surface all three
+        // events.
+        .max_events_per_drain = 1,
+        .max_event_payload_bytes_per_drain = 1 * 1024 * 1024,
+    });
+    defer pair.deinit();
+    try exchangePairSettings(allocator, &pair);
+
+    var h3_client = http3_zig.Client.init(&pair.client_h3);
+    var h3_server = http3_zig.Server.init(&pair.server_h3);
+
+    var client_wt = try h3_client.startWebTransport(allocator, .{
+        .authority = "localhost",
+        .path = "/wt-buffer-replay",
+    });
+
+    // Open a client→server uni stream BEFORE the server accepts.
+    // The bytes will be buffered on the server side until the
+    // session is confirmed via `acceptWebTransport`.
+    const payload = "buffered-stream-payload";
+    const uni = try client_wt.openUniStream();
+    try client_wt.writeStream(uni, payload);
+    try client_wt.finishStream(uni);
+
+    var client_runner = http3_zig.ClientRunner.init(allocator);
+    defer client_runner.deinit();
+    var server_runner = http3_zig.ServerRunner.init(allocator);
+    defer server_runner.deinit();
+
+    var client_events: std.ArrayList(http3_zig.session.Event) = .empty;
+    defer {
+        clearSessionEvents(allocator, &client_events);
+        client_events.deinit(allocator);
+    }
+    var server_events: std.ArrayList(http3_zig.session.Event) = .empty;
+    defer {
+        clearSessionEvents(allocator, &server_events);
+        server_events.deinit(allocator);
+    }
+
+    var server_wt: ?http3_zig.WebTransportServerStream = null;
+    var seen_opened = false;
+    var seen_data_total: usize = 0;
+    var seen_finished = false;
+    var seen_after_opened = false; // assert ordering: data only after opened
+    var seen_finished_after_data = false; // assert ordering: finished only after data
+    var seen_extra_opened = false; // duplicate-event guard
+
+    var now_us: u64 = 1_000_000;
+    var iters: u32 = 0;
+    while (!seen_finished) : (iters += 1) {
+        try std.testing.expect(iters < 20_000);
+        // Budget errors are non-fatal under tight `max_events_per_drain`
+        // — they signal "drain again." A real application with a
+        // budget cap loops on the same buffer; we mirror that here.
+        pumpH3(
+            &pair.client,
+            &pair.server,
+            &pair.client_h3,
+            &pair.server_h3,
+            &client_events,
+            &server_events,
+            &now_us,
+        ) catch |err| switch (err) {
+            error.EventQueueFull, error.EventPayloadTooLarge => {},
+            else => return err,
+        };
+
+        for (server_events.items) |event| {
+            switch (event) {
+                .webtransport_stream_opened => {
+                    if (seen_opened) seen_extra_opened = true;
+                    seen_opened = true;
+                },
+                .webtransport_stream_data => |data| {
+                    seen_after_opened = seen_opened or seen_after_opened;
+                    seen_data_total += data.data.len;
+                },
+                .webtransport_stream_finished => {
+                    seen_finished_after_data = seen_data_total >= payload.len;
+                    seen_finished = true;
+                },
+                else => {},
+            }
+            switch (try server_runner.observe(event)) {
+                .request_updated, .request_complete => |request_state| {
+                    const request = request_state.reader();
+                    if (server_wt == null and request.headers().len > 0 and request.isWebTransport()) {
+                        server_wt = try h3_server.acceptWebTransport(allocator, request, .{});
+                    }
+                },
+                else => {},
+            }
+        }
+        clearSessionEvents(allocator, &server_events);
+        clearSessionEvents(allocator, &client_events);
+    }
+
+    try std.testing.expect(seen_opened);
+    try std.testing.expectEqual(payload.len, seen_data_total);
+    try std.testing.expect(seen_finished);
+    try std.testing.expect(seen_after_opened);
+    try std.testing.expect(seen_finished_after_data);
+    try std.testing.expect(!seen_extra_opened);
+}
+

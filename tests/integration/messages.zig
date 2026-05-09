@@ -114,3 +114,98 @@ test "message codec rejects oversized headers and DATA after trailers" {
     );
 }
 
+test "response decoder surfaces 1xx interim headers before final response (RFC 9110 §15.2)" {
+    // A response that emits `100 Continue` followed by `200 OK` must
+    // surface as `interim_headers: 100` then `headers: 200`, NOT as
+    // `headers: 100` then `trailers: 200` (the pre-fix shape that
+    // broke curl/nginx interop).
+    const allocator = std.testing.allocator;
+
+    const interim_fields = [_]http3_zig.FieldLine{
+        .{ .name = ":status", .value = "100" },
+    };
+    const final_fields = [_]http3_zig.FieldLine{
+        .{ .name = ":status", .value = "200" },
+        .{ .name = "content-type", .value = "text/plain" },
+    };
+
+    var bytes: [512]u8 = undefined;
+    var pos: usize = 0;
+    var enc = http3_zig.MessageEncoder.init(.response, .{});
+    pos += try enc.encodeHeaders(bytes[pos..], &interim_fields);
+    pos += try enc.encodeHeaders(bytes[pos..], &final_fields);
+    pos += try http3_zig.frame.encode(bytes[pos..], .{ .data = "ok" });
+
+    var dec = http3_zig.MessageDecoder.init(.response, .{});
+    var events: std.ArrayList(http3_zig.message.Event) = .empty;
+    defer {
+        for (events.items) |event| event.deinit(allocator);
+        events.deinit(allocator);
+    }
+
+    try dec.observeBytes(allocator, bytes[0..pos], &events);
+    try dec.finish();
+
+    try std.testing.expectEqual(@as(usize, 3), events.items.len);
+    switch (events.items[0]) {
+        .interim_headers => |fields| try std.testing.expectEqualStrings("100", fields[0].value),
+        else => return error.ExpectedInterimHeaders,
+    }
+    switch (events.items[1]) {
+        .headers => |fields| try std.testing.expectEqualStrings("200", fields[0].value),
+        else => return error.ExpectedFinalHeaders,
+    }
+    switch (events.items[2]) {
+        .data => |bytes_| try std.testing.expectEqualStrings("ok", bytes_),
+        else => return error.ExpectedDataEvent,
+    }
+}
+
+test "response decoder surfaces multiple 1xx interim responses before final" {
+    // The spec allows multiple interim responses (e.g. `103 Early
+    // Hints` followed by `100 Continue`). All surface as separate
+    // `interim_headers` events; the non-1xx is the single `headers`.
+    const allocator = std.testing.allocator;
+
+    const early_hints = [_]http3_zig.FieldLine{
+        .{ .name = ":status", .value = "103" },
+        .{ .name = "link", .value = "</style.css>; rel=preload" },
+    };
+    const continu = [_]http3_zig.FieldLine{
+        .{ .name = ":status", .value = "100" },
+    };
+    const final = [_]http3_zig.FieldLine{
+        .{ .name = ":status", .value = "200" },
+    };
+
+    var bytes: [512]u8 = undefined;
+    var pos: usize = 0;
+    var enc = http3_zig.MessageEncoder.init(.response, .{});
+    pos += try enc.encodeHeaders(bytes[pos..], &early_hints);
+    pos += try enc.encodeHeaders(bytes[pos..], &continu);
+    pos += try enc.encodeHeaders(bytes[pos..], &final);
+
+    var dec = http3_zig.MessageDecoder.init(.response, .{});
+    var events: std.ArrayList(http3_zig.message.Event) = .empty;
+    defer {
+        for (events.items) |event| event.deinit(allocator);
+        events.deinit(allocator);
+    }
+    try dec.observeBytes(allocator, bytes[0..pos], &events);
+    try dec.finish();
+
+    try std.testing.expectEqual(@as(usize, 3), events.items.len);
+    switch (events.items[0]) {
+        .interim_headers => |fields| try std.testing.expectEqualStrings("103", fields[0].value),
+        else => return error.ExpectedInterimHeaders,
+    }
+    switch (events.items[1]) {
+        .interim_headers => |fields| try std.testing.expectEqualStrings("100", fields[0].value),
+        else => return error.ExpectedInterimHeaders,
+    }
+    switch (events.items[2]) {
+        .headers => |fields| try std.testing.expectEqualStrings("200", fields[0].value),
+        else => return error.ExpectedFinalHeaders,
+    }
+}
+

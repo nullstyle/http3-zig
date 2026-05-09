@@ -467,6 +467,12 @@ pub const WebTransportStreamResetEvent = struct {
 pub const Event = union(enum) {
     peer_settings: settings_mod.Settings,
     headers: FieldEvent,
+    /// 1xx informational response (RFC 9110 §15.2). Surfaced on the
+    /// client side when the server emits a 1xx status before the
+    /// final response. The application MAY observe more
+    /// `interim_headers` events; exactly one final `headers` event
+    /// (with `:status` outside 1xx) follows.
+    interim_headers: FieldEvent,
     data: DataEvent,
     datagram: DatagramEvent,
     datagram_acked: DatagramSendEvent,
@@ -493,6 +499,7 @@ pub const Event = union(enum) {
     pub fn deinit(self: Event, allocator: std.mem.Allocator) void {
         switch (self) {
             .headers => |event| freeFields(allocator, event.fields),
+            .interim_headers => |event| freeFields(allocator, event.fields),
             .trailers => |event| freeFields(allocator, event.fields),
             .data => |event| allocator.free(event.data),
             .datagram => |event| allocator.free(event.payload),
@@ -1671,8 +1678,17 @@ pub const Session = struct {
 
         // Replay WebTransport streams whose buffered prefix is now
         // unblocked because the corresponding session was confirmed (or
-        // closed) since the previous drain.
-        try self.replayBufferedWebTransportStreams(events, &budget);
+        // closed) since the previous drain. Budget exhaustion mid-replay
+        // is non-fatal — the partially-replayed state survives to the
+        // next drain via the wt_buffered / wt_buffered_fin flags. We
+        // catch the budget errors here so a tight `max_events_per_drain`
+        // setting doesn't tear the whole session down.
+        self.replayBufferedWebTransportStreams(events, &budget) catch |err| {
+            if (!isLocalDrainBudgetError(err)) {
+                self.closeForError(err);
+                return err;
+            }
+        };
 
         const read_chunk_size = if (self.config.read_chunk_size == 0) 4096 else self.config.read_chunk_size;
         const tmp = try self.allocator.alloc(u8, read_chunk_size);
@@ -2356,12 +2372,32 @@ pub const Session = struct {
 
             switch (self.webTransportSessionState(session_id)) {
                 .established => {
-                    // Emit the open event first; only flip the flag
-                    // once that succeeds so a budget-exhaustion error
-                    // doesn't leave the stream in a half-replayed
-                    // state on the next drain.
+                    // Atomic-ish replay: each step either commits its
+                    // event under the drain budget or returns a budget
+                    // error that the caller filters into "retry next
+                    // drain". The state must survive a partial-success
+                    // bail-out, so we only flip `wt_buffered = false`
+                    // and remove from the buffered list AFTER the open
+                    // event has committed. The data + FIN events that
+                    // follow ride the regular processWebTransportStreamState /
+                    // observeFin paths from the main drain loop on
+                    // subsequent drains: state.wt_session_id is set,
+                    // state.rx still holds the buffered payload, and
+                    // state.wt_buffered_fin (set in observeFin while
+                    // buffered) makes the FIN replay through the
+                    // already-handled "wt branch" of observeFin once
+                    // wt_buffered is false.
                     try self.emitWebTransportStreamOpened(state, kind, events, budget);
                     state.wt_buffered = false;
+                    _ = self.wt_buffered_streams.orderedRemove(i);
+                    // Try to drain buffered data + FIN inside this same
+                    // drain pass when budget allows. If either step
+                    // returns a budget error, the un-emitted bytes /
+                    // un-emitted FIN persist on `state.rx` /
+                    // `state.wt_buffered_fin` and the next drain's
+                    // regular path picks them up — we don't roll back
+                    // the open event because that's already committed
+                    // to the events list.
                     if (state.rx.items.len > 0) {
                         try self.processWebTransportStreamState(state, kind, events, budget);
                     }
@@ -2377,7 +2413,6 @@ pub const Session = struct {
                             },
                         });
                     }
-                    _ = self.wt_buffered_streams.orderedRemove(i);
                 },
                 .pending => {
                     // Keep buffering. Advance the cursor so we look at
@@ -3007,6 +3042,11 @@ pub const Session = struct {
     ) Error!void {
         const out: Event = switch (event) {
             .headers => |fields| .{ .headers = .{
+                .stream_id = stream_id,
+                .kind = kind,
+                .fields = try cloneFields(self.allocator, fields),
+            } },
+            .interim_headers => |fields| .{ .interim_headers = .{
                 .stream_id = stream_id,
                 .kind = kind,
                 .fields = try cloneFields(self.allocator, fields),
@@ -3954,6 +3994,14 @@ pub const Session = struct {
                 .frame_type = protocol.FrameType.settings,
             }),
             .headers => |headers| self.trace(.{
+                .name = .headers_received,
+                .role = self.role,
+                .stream_id = headers.stream_id,
+                .frame_type = protocol.FrameType.headers,
+                .bytes = fieldsOwnedBytes(headers.fields),
+                .count = headers.fields.len,
+            }),
+            .interim_headers => |headers| self.trace(.{
                 .name = .headers_received,
                 .role = self.role,
                 .stream_id = headers.stream_id,

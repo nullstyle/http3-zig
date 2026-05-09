@@ -582,6 +582,10 @@ pub const ResponseReader = struct {
 pub const ResponseEvent = union(enum) {
     settings: settings_mod.Settings,
     headers: Headers,
+    /// 1xx informational response (RFC 9110 §15.2). Surfaced before
+    /// the final `headers` event when the server sends an interim
+    /// status (e.g. `100 Continue`, `103 Early Hints`).
+    interim_headers: Headers,
     data: Data,
     datagram: Datagram,
     datagram_acked: DatagramSend,
@@ -615,6 +619,9 @@ pub const ResponseEvent = union(enum) {
                 .headers = .{ .stream_id = headers.stream_id, .fields = headers.fields },
             } else if (headers.kind == .push) .{
                 .push_headers = .{ .stream_id = headers.stream_id, .fields = headers.fields },
+            } else null,
+            .interim_headers => |headers| if (headers.kind == .response) .{
+                .interim_headers = .{ .stream_id = headers.stream_id, .fields = headers.fields },
             } else null,
             .data => |data| if (data.kind == .response) .{
                 .data = .{ .stream_id = data.stream_id, .bytes = data.data },
@@ -872,6 +879,11 @@ pub const ResponseTracker = struct {
                 response.complete = true;
                 return response;
             },
+            // Interim 1xx headers do NOT update the response tracker
+            // (they don't replace the final headers; they sit in
+            // front of them in the event stream). The application
+            // observes them directly via ClientObservation.interim_headers.
+            .interim_headers,
             .settings,
             .datagram,
             .datagram_acked,

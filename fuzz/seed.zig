@@ -356,28 +356,69 @@ fn seedQpackFieldDynamic(allocator: std.mem.Allocator, io: std.Io, root: std.Io.
 fn seedQpackEncoderInstruction(allocator: std.mem.Allocator, io: std.Io, root: std.Io.Dir, buf: []u8) !void {
     _ = allocator;
     _ = buf;
-    // 01-set-capacity-0
+    // 01-set-capacity-0 — `Set Dynamic Table Capacity` instruction
+    // (RFC 9204 §4.3.1) with capacity 0. Tests the small-integer
+    // path of the encoder-stream instruction decoder.
     try writeSeed(io, root, "qpack-encoder-instruction", "01-set-cap-0", &[_]u8{0x20});
-    // 02-set-capacity-large
+    // 02-set-capacity-large — capacity = 0x40 + 0xff = 319 (multi-byte
+    // varint via the prefix-extension form).
     try writeSeed(io, root, "qpack-encoder-instruction", "02-set-cap-large", &[_]u8{ 0x3f, 0xff, 0x40 });
-    // 03-duplicate
+    // 03-duplicate — `Duplicate` instruction (RFC 9204 §4.3.4) with
+    // relative index 0.
     try writeSeed(io, root, "qpack-encoder-instruction", "03-duplicate", &[_]u8{0x00});
-    // 04-insert-name-ref-static — high bit set, T=1.
+    // 04-insert-name-ref-static — `Insert with Name Reference`
+    // (§4.3.2) with high bit set (instruction class) and T=1
+    // (static-table reference); 5-byte literal value "hello".
     try writeSeed(io, root, "qpack-encoder-instruction", "04-insert-name-ref", &[_]u8{ 0xc0, 0x05, 'h', 'e', 'l', 'l', 'o' });
-    // 05-truncated
+    // 05-truncated — `Insert with Name Reference` with the value
+    // length missing. Exercises the early-return path on truncated
+    // input, which used to be a hot spot for length-vs-data desyncs.
     try writeSeed(io, root, "qpack-encoder-instruction", "05-truncated", &[_]u8{0xc0});
+    // 06-insert-with-literal-name — `Insert with Literal Name`
+    // (§4.3.3): leading bits `010`, name length 3 ("foo"), value
+    // length 3 ("bar"). Stresses the no-name-reference path.
+    try writeSeed(io, root, "qpack-encoder-instruction", "06-insert-literal-name", &[_]u8{ 0x43, 'f', 'o', 'o', 0x03, 'b', 'a', 'r' });
+    // 07-insert-name-ref-dynamic — Same shape as 04 but with T=0
+    // (dynamic-table reference) at a non-existent index. Decoder
+    // should produce a structured error rather than panic.
+    try writeSeed(io, root, "qpack-encoder-instruction", "07-insert-name-ref-dynamic", &[_]u8{ 0x80, 0x05, 'h', 'e', 'l', 'l', 'o' });
+    // 08-insert-with-huffman-name — Insert-with-literal-name where
+    // the name is Huffman-encoded (high bit of length byte set).
+    // Forces the Huffman-decode path through allocator-backed
+    // string decoding — the most likely place for an integer-overflow
+    // or padding-validation oversight to bite.
+    try writeSeed(io, root, "qpack-encoder-instruction", "08-insert-huffman-name", &[_]u8{ 0x4b, 0xa8, 0xeb, 0x10, 0x64, 0x9c, 0xbf, 0x03, 'b', 'a', 'r' });
+    // 09-set-cap-overflow — leading 5-bit prefix extension with
+    // a giant continuation; should hit the varint overflow path.
+    try writeSeed(io, root, "qpack-encoder-instruction", "09-set-cap-overflow", &[_]u8{ 0x3f, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x7f });
+    // 10-empty — zero-length input; decoder must return cleanly.
+    try writeSeed(io, root, "qpack-encoder-instruction", "10-empty", "");
 }
 
 fn seedQpackDecoderInstruction(io: std.Io, root: std.Io.Dir, buf: []u8) !void {
     _ = buf;
-    // 01-section-ack
+    // 01-section-ack — `Section Acknowledgment` (RFC 9204 §4.4.1)
+    // with stream id 0 (high bit set, value 0).
     try writeSeed(io, root, "qpack-decoder-instruction", "01-section-ack", &[_]u8{0x80});
-    // 02-stream-cancel
+    // 02-stream-cancel — `Stream Cancellation` (§4.4.2) with stream
+    // id 0 (bit pattern 01, value 0).
     try writeSeed(io, root, "qpack-decoder-instruction", "02-stream-cancel", &[_]u8{0x40});
-    // 03-insert-count-increment
+    // 03-insert-count-increment — `Insert Count Increment` (§4.4.3)
+    // with increment 5.
     try writeSeed(io, root, "qpack-decoder-instruction", "03-insert-count-incr", &[_]u8{0x05});
-    // 04-empty
+    // 04-empty — zero-length input.
     try writeSeed(io, root, "qpack-decoder-instruction", "04-empty", "");
+    // 05-section-ack-large-stream-id — Section Ack with a multi-byte
+    // varint stream id (>= 127). Exercises the prefix-extension form
+    // of the 7-bit decoder.
+    try writeSeed(io, root, "qpack-decoder-instruction", "05-section-ack-large", &[_]u8{ 0xff, 0x01 });
+    // 06-stream-cancel-overflow — multi-byte varint that overflows u64
+    // via the continuation form. Decoder should return an error rather
+    // than wrap silently.
+    try writeSeed(io, root, "qpack-decoder-instruction", "06-stream-cancel-overflow", &[_]u8{ 0x7f, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x7f });
+    // 07-truncated-mid-instruction — half-encoded varint; decoder
+    // must not over-read.
+    try writeSeed(io, root, "qpack-decoder-instruction", "07-truncated", &[_]u8{0xff});
 }
 
 // ---------------------------------------------------------------- websocket

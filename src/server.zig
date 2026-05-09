@@ -696,6 +696,9 @@ pub const RequestEvent = union(enum) {
             .headers => |headers| if (headers.kind == .request) .{
                 .headers = .{ .stream_id = headers.stream_id, .fields = headers.fields },
             } else null,
+            // 1xx interim responses are server-emitted by definition;
+            // server-side request observers never see them.
+            .interim_headers => null,
             .data => |data| if (data.kind == .request) .{
                 .data = .{ .stream_id = data.stream_id, .bytes = data.data },
             } else null,

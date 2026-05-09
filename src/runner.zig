@@ -14,6 +14,10 @@ pub const BatchStats = struct {
     observed: usize = 0,
     ignored: usize = 0,
     settings: usize = 0,
+    /// Count of `ClientObservation.interim_headers` events seen
+    /// in the batch (RFC 9110 §15.2 1xx responses preceding the
+    /// final response).
+    interim_headers: usize = 0,
     push_state_updates: usize = 0,
     push_completions: usize = 0,
     datagrams: usize = 0,
@@ -38,6 +42,11 @@ pub const BatchStats = struct {
 pub const ClientObservation = union(enum) {
     ignored,
     settings: settings_mod.Settings,
+    /// 1xx informational response (RFC 9110 §15.2). Surfaced before
+    /// the final `response_updated` / `response_complete`. The
+    /// fields slice borrows from the source event — copy if you
+    /// need to outlive the next drain.
+    interim_headers: client_mod.Headers,
     response_updated: *client_mod.ResponseState,
     response_complete: *client_mod.ResponseState,
     pushed_response_updated: *client_mod.PushedResponseState,
@@ -162,6 +171,7 @@ pub const ClientRunner = struct {
                 return .{ .connection_closed = closed };
             },
             .ignored_unknown_frame => |unknown| return .{ .ignored_unknown_frame = unknown },
+            .interim_headers => |interim| return .{ .interim_headers = interim },
             .headers, .data, .trailers, .push_promise => {
                 const response = (try self.tracker.observe(event)) orelse return .ignored;
                 _ = try self.push_tracker.observe(event);
@@ -300,6 +310,7 @@ fn noteClientObservation(
     switch (observation) {
         .ignored => stats.ignored += 1,
         .settings => stats.settings += 1,
+        .interim_headers => stats.interim_headers += 1,
         .response_updated => stats.state_updates += 1,
         .response_complete => |response| {
             stats.completions += 1;

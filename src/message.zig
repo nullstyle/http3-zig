@@ -44,6 +44,13 @@ pub const DecodeOptions = struct {
 
 pub const Event = union(enum) {
     headers: []qpack.FieldLine,
+    /// 1xx informational response (RFC 9110 §15.2). Surfaces a
+    /// non-final response HEADERS section. The application should
+    /// expect more HEADERS sections — possibly more `interim_headers`
+    /// events, then exactly one final `headers` event with `:status`
+    /// outside the 1xx range. Only emitted on response streams (the
+    /// decoder treats interim headers as illegal on requests / pushes).
+    interim_headers: []qpack.FieldLine,
     data: []const u8,
     trailers: []qpack.FieldLine,
     push_promise: frame_mod.PushPromise,
@@ -51,7 +58,7 @@ pub const Event = union(enum) {
 
     pub fn deinit(self: Event, allocator: std.mem.Allocator) void {
         switch (self) {
-            .headers, .trailers => |fields| qpack.freeFieldSection(allocator, fields),
+            .headers, .interim_headers, .trailers => |fields| qpack.freeFieldSection(allocator, fields),
             else => {},
         }
     }
@@ -68,13 +75,19 @@ pub const Encoder = struct {
     }
 
     pub fn encodeHeaders(self: *Encoder, dst: []u8, fields: []const qpack.FieldLine) Error!usize {
-        if (self.sent_headers) return Error.DuplicateHeaders;
+        // RFC 9110 §15.2: response streams MAY emit one or more 1xx
+        // interim responses before the final response. Detect that
+        // case via `:status` and don't flip `sent_headers` so a
+        // subsequent HEADERS call can land. Request and push streams
+        // get the strict no-duplicate behavior.
+        const interim = self.kind == .response and isInterim(fields);
+        if (self.sent_headers and !interim) return Error.DuplicateHeaders;
         try validateFields(self.kind, fields, .{
             .max_field_section_size = self.options.max_field_section_size,
             .enable_connect_protocol = self.options.enable_connect_protocol,
         });
         const n = try encodeHeadersFrame(dst, fields, self.options);
-        self.sent_headers = true;
+        if (!interim) self.sent_headers = true;
         return n;
     }
 
@@ -84,13 +97,14 @@ pub const Encoder = struct {
         fields: []const qpack.FieldLine,
         field_section: []const u8,
     ) Error!usize {
-        if (self.sent_headers) return Error.DuplicateHeaders;
+        const interim = self.kind == .response and isInterim(fields);
+        if (self.sent_headers and !interim) return Error.DuplicateHeaders;
         try validateFields(self.kind, fields, .{
             .max_field_section_size = self.options.max_field_section_size,
             .enable_connect_protocol = self.options.enable_connect_protocol,
         });
         const n = try encodeHeadersFrameFromBlock(dst, field_section, self.options);
-        self.sent_headers = true;
+        if (!interim) self.sent_headers = true;
         return n;
     }
 
@@ -233,6 +247,20 @@ pub const Decoder = struct {
         if (self.seen_trailers) return Error.DuplicateHeaders;
         if (!self.seen_headers) {
             try validateFields(self.kind, fields, self.options);
+
+            // RFC 9110 §15.2: a 1xx (informational) response is
+            // followed by at least one further response, including the
+            // final response. On the response side, look at `:status`:
+            // if it's 1xx, this is an interim — surface as a separate
+            // event, do NOT mark `seen_headers`, and keep the decoder
+            // ready to receive more HEADERS frames. On request /
+            // push streams, 1xx isn't meaningful, so we fall through
+            // to the regular path (validateFields would have rejected
+            // it if it were structurally malformed anyway).
+            if (self.kind == .response and isInterim(fields)) {
+                return .{ .interim_headers = fields };
+            }
+
             self.expected_body_len = try headers_mod.parseContentLength(fields);
             self.seen_headers = true;
             return .{ .headers = fields };
@@ -333,6 +361,20 @@ fn frameContext(kind: Kind) stream_mod.FrameContext {
         .request, .response => .request,
         .push => .push,
     };
+}
+
+/// True when a response field section's `:status` is in the 1xx range
+/// (RFC 9110 §15.2 informational responses). The HTTP/3 mapping of
+/// pseudo-headers per RFC 9114 §4.3.2 puts `:status` at the front of
+/// the section; we accept it anywhere among the pseudo-headers but
+/// require its first character to be ASCII '1'.
+fn isInterim(fields: []const qpack.FieldLine) bool {
+    for (fields) |field| {
+        if (std.mem.eql(u8, field.name, ":status")) {
+            return field.value.len > 0 and field.value[0] == '1';
+        }
+    }
+    return false;
 }
 
 test "request encoder and decoder round-trip headers data trailers" {
