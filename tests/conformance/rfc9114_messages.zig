@@ -57,6 +57,10 @@
 //!   RFC9114 §4.5   ¶?   NORMATIVE  trailer field section permitted after response body
 //!   RFC9114 §4.5   ¶?   MUST NOT   include any pseudo-header in trailers
 //!   RFC9114 §4.5   ¶?   MUST NOT   include connection-specific fields in trailers
+//!   RFC9110 §6.5.1 ¶?   MUST NOT   include content-length in trailers
+//!   RFC9110 §6.5.1 ¶?   MUST NOT   include host / te in trailers
+//!   RFC9110 §6.5.1 ¶?   MUST NOT   include cache-control / expect / range in trailers
+//!   RFC9110 §6.5.1 ¶?   MUST NOT   include authorization / authentication fields in trailers
 //!   RFC9114 §4.1.2 ¶?   MUST       reject content-length whose value mismatches DATA bytes
 //!   RFC9114 §4.1.2 ¶?   MUST       reject non-decimal / negative content-length
 //!   RFC9114 §4.1.2 ¶?   MUST       reject duplicate / conflicting content-length
@@ -1264,4 +1268,135 @@ test "NORMATIVE Extended CONNECT keeps :scheme and :path [RFC9114 §4.3.2]" {
         .{ .name = ":protocol", .value = "websocket" },
     };
     try headers.validateRequestWithOptions(&fields, .{ .enable_connect_protocol = true });
+}
+
+// ---------------------------------------------------------------- §6.5.1 trailer field allowlist
+
+test "MUST reject content-length in trailers [RFC9110 §6.5.1]" {
+    // RFC 9110 §6.5.1: trailers MUST NOT contain message-framing fields,
+    // including content-length. A trailer that "modifies how the message
+    // is processed" is malformed.
+    const trailers = [_]FieldLine{
+        .{ .name = "content-length", .value = "5" },
+    };
+    try std.testing.expectError(
+        headers.Error.ForbiddenTrailerField,
+        headers.validateTrailers(&trailers),
+    );
+}
+
+test "MUST reject host in trailers [RFC9110 §6.5.1]" {
+    // RFC 9110 §6.5.1: trailers MUST NOT contain routing fields like host.
+    const trailers = [_]FieldLine{
+        .{ .name = "host", .value = "example.com" },
+    };
+    try std.testing.expectError(
+        headers.Error.ForbiddenTrailerField,
+        headers.validateTrailers(&trailers),
+    );
+}
+
+test "MUST reject te in trailers [RFC9110 §6.5.1]" {
+    // RFC 9114 §4.2 + RFC 9110 §6.5.1: te is request-only and may not
+    // appear in trailers.
+    const trailers = [_]FieldLine{
+        .{ .name = "te", .value = "trailers" },
+    };
+    try std.testing.expectError(
+        headers.Error.ForbiddenTrailerField,
+        headers.validateTrailers(&trailers),
+    );
+}
+
+test "MUST reject cache-control / expect / range in trailers [RFC9110 §6.5.1]" {
+    // RFC 9110 §6.5.1: request modifiers/conditionals (cache-control,
+    // expect, max-forwards, pragma, range) MUST NOT appear in trailers.
+    const cache_control = [_]FieldLine{
+        .{ .name = "cache-control", .value = "no-cache" },
+    };
+    try std.testing.expectError(
+        headers.Error.ForbiddenTrailerField,
+        headers.validateTrailers(&cache_control),
+    );
+
+    const expect_field = [_]FieldLine{
+        .{ .name = "expect", .value = "100-continue" },
+    };
+    try std.testing.expectError(
+        headers.Error.ForbiddenTrailerField,
+        headers.validateTrailers(&expect_field),
+    );
+
+    const range_field = [_]FieldLine{
+        .{ .name = "range", .value = "bytes=0-100" },
+    };
+    try std.testing.expectError(
+        headers.Error.ForbiddenTrailerField,
+        headers.validateTrailers(&range_field),
+    );
+}
+
+test "MUST reject authorization-related fields in trailers [RFC9110 §6.5.1]" {
+    // RFC 9110 §6.5.1: authentication-related fields MUST NOT appear in
+    // trailers — applying them after body delivery defeats their purpose.
+    const authorization = [_]FieldLine{
+        .{ .name = "authorization", .value = "Bearer xyz" },
+    };
+    try std.testing.expectError(
+        headers.Error.ForbiddenTrailerField,
+        headers.validateTrailers(&authorization),
+    );
+
+    const proxy_auth = [_]FieldLine{
+        .{ .name = "proxy-authorization", .value = "Basic xyz" },
+    };
+    try std.testing.expectError(
+        headers.Error.ForbiddenTrailerField,
+        headers.validateTrailers(&proxy_auth),
+    );
+
+    const www_auth = [_]FieldLine{
+        .{ .name = "www-authenticate", .value = "Basic" },
+    };
+    try std.testing.expectError(
+        headers.Error.ForbiddenTrailerField,
+        headers.validateTrailers(&www_auth),
+    );
+}
+
+test "MUST reject set-cookie / cookie in trailers [RFC9110 §6.5.1]" {
+    // Cookie lines depend on origin and path established at message
+    // start; placing them in trailers is a security and routing hazard
+    // and forbidden.
+    const set_cookie = [_]FieldLine{
+        .{ .name = "set-cookie", .value = "sid=abc" },
+    };
+    try std.testing.expectError(
+        headers.Error.ForbiddenTrailerField,
+        headers.validateTrailers(&set_cookie),
+    );
+}
+
+test "MUST reject trailer field 'trailer' in trailers [RFC9110 §6.5.1]" {
+    // The 'trailer' header itself signals the trailer field set in
+    // chunked HTTP/1.1; placing it in the trailer block is meaningless
+    // and forbidden.
+    const trailers = [_]FieldLine{
+        .{ .name = "trailer", .value = "x-checksum" },
+    };
+    try std.testing.expectError(
+        headers.Error.ForbiddenTrailerField,
+        headers.validateTrailers(&trailers),
+    );
+}
+
+test "MUST accept allowed application trailers [RFC9114 §4.5]" {
+    // Counter-example: trailers that aren't in the forbidden list (e.g.
+    // application checksums, custom signaling) are permitted.
+    const trailers = [_]FieldLine{
+        .{ .name = "x-checksum", .value = "abc123" },
+        .{ .name = "x-trace-id", .value = "deadbeef" },
+        .{ .name = "etag", .value = "\"v1\"" },
+    };
+    try headers.validateTrailers(&trailers);
 }

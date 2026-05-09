@@ -17,6 +17,7 @@ pub const Error = error{
     InvalidContentLength,
     ContentLengthMismatch,
     MalformedAuthority,
+    ForbiddenTrailerField,
 };
 
 pub const RequestValidationOptions = struct {
@@ -28,6 +29,7 @@ pub fn validateTrailers(fields: []const FieldLine) Error!void {
         try validateName(field.name);
         if (field.name[0] == ':') return Error.InvalidPseudoHeader;
         if (isConnectionSpecific(field.name)) return Error.ConnectionSpecificField;
+        if (isForbiddenTrailerField(field.name)) return Error.ForbiddenTrailerField;
     }
 }
 
@@ -270,6 +272,39 @@ fn isConnectionSpecific(name: []const u8) bool {
         std.ascii.eqlIgnoreCase(name, "proxy-connection") or
         std.ascii.eqlIgnoreCase(name, "transfer-encoding") or
         std.ascii.eqlIgnoreCase(name, "upgrade");
+}
+
+// RFC 9110 §6.5.1: trailers MUST NOT contain fields that affect message
+// framing (content-length), routing (host), authentication
+// (authorization, www-authenticate, proxy-authenticate,
+// proxy-authorization), request modifiers / conditionals (cache-control,
+// expect, max-forwards, pragma, range, if-*), response control data
+// related to message handling (set-cookie, cookie), or trailer signaling
+// itself (trailer). RFC 9114 §4.2 also confines `te` to request headers.
+// This is a small, conservative constant list. The "request modifiers"
+// citation comes from RFC 9110 §6.5.1, which lists fields a server might
+// rely on before having seen the body.
+fn isForbiddenTrailerField(name: []const u8) bool {
+    return std.ascii.eqlIgnoreCase(name, "content-length") or
+        std.ascii.eqlIgnoreCase(name, "host") or
+        std.ascii.eqlIgnoreCase(name, "te") or
+        std.ascii.eqlIgnoreCase(name, "cache-control") or
+        std.ascii.eqlIgnoreCase(name, "expect") or
+        std.ascii.eqlIgnoreCase(name, "max-forwards") or
+        std.ascii.eqlIgnoreCase(name, "pragma") or
+        std.ascii.eqlIgnoreCase(name, "range") or
+        std.ascii.eqlIgnoreCase(name, "if-match") or
+        std.ascii.eqlIgnoreCase(name, "if-none-match") or
+        std.ascii.eqlIgnoreCase(name, "if-modified-since") or
+        std.ascii.eqlIgnoreCase(name, "if-unmodified-since") or
+        std.ascii.eqlIgnoreCase(name, "if-range") or
+        std.ascii.eqlIgnoreCase(name, "authorization") or
+        std.ascii.eqlIgnoreCase(name, "proxy-authorization") or
+        std.ascii.eqlIgnoreCase(name, "www-authenticate") or
+        std.ascii.eqlIgnoreCase(name, "proxy-authenticate") or
+        std.ascii.eqlIgnoreCase(name, "set-cookie") or
+        std.ascii.eqlIgnoreCase(name, "cookie") or
+        std.ascii.eqlIgnoreCase(name, "trailer");
 }
 
 fn fieldValue(fields: []const FieldLine, name: []const u8) ?[]const u8 {
