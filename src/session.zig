@@ -524,36 +524,181 @@ pub const WebTransportStreamResetEvent = struct {
     final_size: u64,
 };
 
+/// Drained from `Session.poll()` and returned to the application. The
+/// union is shared between client and server sessions; some variants
+/// only fire on one role. Each variant carries a `Role:` tag in its
+/// doc comment indicating where it can be observed:
+///
+///   - `client`  — only fires when `Session.role == .client`
+///   - `server`  — only fires when `Session.role == .server`
+///   - `both`    — fires on either role
+///
+/// A summary of the role split is documented in the comment block
+/// directly below the union, so a future API split (separate
+/// `ClientEvent` / `ServerEvent` unions) can be derived mechanically
+/// from the tags.
 pub const Event = union(enum) {
+    /// Peer's HTTP/3 SETTINGS frame, decoded from the control stream.
+    /// Emitted exactly once per session, after the first SETTINGS
+    /// frame has been received and validated.
+    ///
+    /// Role: both
     peer_settings: settings_mod.Settings,
+    /// Final HEADERS section on a request, response, or push stream.
+    /// The `kind` field on `FieldEvent` distinguishes context:
+    ///   - `kind == .request`  → server-side: incoming request headers
+    ///   - `kind == .response` → client-side: server's final response
+    ///   - `kind == .push`     → client-side: pushed response headers
+    /// (Push promise *frames* surface separately as `push_promise`.)
+    ///
+    /// Role: both
     headers: FieldEvent,
     /// 1xx informational response (RFC 9110 §15.2). Surfaced on the
     /// client side when the server emits a 1xx status before the
     /// final response. The application MAY observe more
     /// `interim_headers` events; exactly one final `headers` event
-    /// (with `:status` outside 1xx) follows.
+    /// (with `:status` outside 1xx) follows. Never emitted on
+    /// requests or pushes — the message decoder rejects interim
+    /// headers on those kinds.
+    ///
+    /// Role: client
     interim_headers: FieldEvent,
+    /// A DATA frame's payload on a request, response, or push stream.
+    /// The `kind` on `DataEvent` mirrors `headers` semantics
+    /// (request body server-side; response/push body client-side).
+    ///
+    /// Role: both
     data: DataEvent,
+    /// An HTTP/3 DATAGRAM (RFC 9297) addressed to a stream on this
+    /// session. Both peers may send and receive DATAGRAMs once
+    /// `SETTINGS_H3_DATAGRAM = 1` has been negotiated.
+    ///
+    /// Role: both
     datagram: DatagramEvent,
+    /// QUIC-level acknowledgement that a previously-sent DATAGRAM
+    /// frame was acknowledged by the peer. Bubbled up from the
+    /// transport.
+    ///
+    /// Role: both
     datagram_acked: DatagramSendEvent,
+    /// QUIC-level signal that a previously-sent DATAGRAM frame was
+    /// declared lost by the loss detector. Bubbled up from the
+    /// transport.
+    ///
+    /// Role: both
     datagram_lost: DatagramSendEvent,
+    /// QUIC flow-control hint: the connection or one of its streams
+    /// is blocked from sending. Bubbled up from the transport.
+    ///
+    /// Role: both
     flow_blocked: FlowBlockedEvent,
+    /// QUIC connection-id pool replenishment hint. Bubbled up from
+    /// the transport so the application can issue NEW_CONNECTION_ID
+    /// frames as needed. Role-agnostic.
+    ///
+    /// Role: both
     connection_ids_needed: ConnectionIdsNeededEvent,
+    /// Trailing HEADERS section on a request, response, or push
+    /// stream. `kind` mirrors `headers` semantics.
+    ///
+    /// Role: both
     trailers: FieldEvent,
+    /// Server promised a pushed response via a PUSH_PROMISE frame on
+    /// a request stream. Only clients accept PUSH_PROMISE — servers
+    /// emit them but never receive them. The matching response
+    /// content arrives later as a `push_stream` followed by
+    /// `headers`/`data`/`trailers` with `kind == .push`.
+    ///
+    /// Role: client
     push_promise: PushPromiseEvent,
+    /// A new server-pushed unidirectional stream has been opened and
+    /// its push id parsed. Only clients see push streams — the
+    /// server-side rejects push uni streams as `UnexpectedStream`.
+    ///
+    /// Role: client
     push_stream: PushStreamEvent,
+    /// Peer sent a CANCEL_PUSH frame on the control stream. Both
+    /// sides may receive CANCEL_PUSH (RFC 9114 §7.2.3): clients use
+    /// it to learn the server abandoned a promised push; servers use
+    /// it to learn the client refuses a not-yet-sent push.
+    ///
+    /// Role: both
     cancel_push: CancelPushEvent,
+    /// Peer sent a PRIORITY_UPDATE frame (RFC 9218). Only servers
+    /// receive PRIORITY_UPDATE in this implementation — the receiver
+    /// rejects it with `FrameUnexpected` on the client side.
+    ///
+    /// Role: server
     priority_update: PriorityUpdateEvent,
+    /// Peer sent a GOAWAY frame on the control stream. Both sides
+    /// may receive GOAWAY: a client's GOAWAY contains a push id
+    /// limit, a server's GOAWAY contains a stream id limit. The
+    /// `u64` payload is the raw id from the wire.
+    ///
+    /// Role: both
     goaway: u64,
+    /// A bidi stream's receive half closed cleanly (FIN observed).
+    /// `StreamFinishedEvent.kind` records the message kind if the
+    /// stream was a request/response/push (null for raw streams,
+    /// e.g. WebTransport CONNECT streams whose body has not yet
+    /// classified the message).
+    ///
+    /// Role: both
     stream_finished: StreamFinishedEvent,
+    /// A bidi or peer-uni stream was reset by the peer. Carries the
+    /// peer's RESET_STREAM error code and final size.
+    ///
+    /// Role: both
     stream_reset: StreamResetEvent,
+    /// The session refused an incoming request via STOP_SENDING with
+    /// `H3_REQUEST_REJECTED` (RFC 9114 §4.1.2). Only servers reject
+    /// requests this way — emitted by `Session.rejectRequest` and by
+    /// the post-GOAWAY auto-reject path.
+    ///
+    /// Role: server
     request_rejected: RequestRejectedEvent,
+    /// The underlying QUIC connection has entered draining or closed
+    /// state. Mirrors the transport's CloseEvent verbatim plus the
+    /// resolved HTTP/3 application error code, if any.
+    ///
+    /// Role: both
     connection_closed: ConnectionClosedEvent,
+    /// An unknown frame type was observed and skipped (RFC 9114
+    /// §7.2.8). Surfaced for observability — applications normally
+    /// ignore it. Both control- and message-stream paths can emit
+    /// this event.
+    ///
+    /// Role: both
     ignored_unknown_frame: UnknownFrameEvent,
+    /// A peer-opened WebTransport stream (uni or bidi) has had its
+    /// prefix parsed and its session id resolved. Both client and
+    /// server WT sessions may accept peer-opened streams.
+    ///
+    /// Role: both
     webtransport_stream_opened: WebTransportStreamOpenedEvent,
+    /// Bytes arrived on a WebTransport stream. Body-only — the
+    /// stream-prefix bytes are stripped before this event is
+    /// emitted.
+    ///
+    /// Role: both
     webtransport_stream_data: WebTransportStreamDataEvent,
+    /// A WebTransport stream's receive half closed cleanly (FIN).
+    ///
+    /// Role: both
     webtransport_stream_finished: WebTransportStreamFinishedEvent,
+    /// A WebTransport stream was reset by the peer. The wire error
+    /// code is preserved alongside the recovered 32-bit application
+    /// code (per draft-ietf-webtrans-http3 §4.6).
+    ///
+    /// Role: both
     webtransport_stream_reset: WebTransportStreamResetEvent,
+    /// The peer violated our advertised WebTransport flow-control
+    /// limits (data overflow, bidi-streams overflow, or uni-streams
+    /// overflow per draft-ietf-webtrans-http3 §5.6). The offending
+    /// stream has already been reset with `WEBTRANSPORT_SESSION_GONE`
+    /// before the event is delivered.
+    ///
+    /// Role: both
     webtransport_flow_violated: WebTransportFlowViolationEvent,
 
     pub fn deinit(self: Event, allocator: std.mem.Allocator) void {
@@ -574,6 +719,41 @@ pub const Event = union(enum) {
         }
     }
 };
+
+// ---------------------------------------------------------------------------
+// Event role split (audit summary)
+//
+// The `Event` union above is intentionally shared between client and
+// server sessions for v0.1.0 — applications switch on the variant tag.
+// The lists below document which variants can fire on which role, so a
+// future API split (separate `ClientEvent` / `ServerEvent` unions) can
+// be derived mechanically. Keep this in sync with the per-variant
+// `Role:` doc tags.
+//
+// Client-only (3):
+//   - interim_headers   — 1xx informational responses (RFC 9110 §15.2)
+//   - push_promise      — server promised a push (RFC 9114 §7.2.1)
+//   - push_stream       — server-pushed uni stream prefix observed
+//
+// Server-only (2):
+//   - priority_update   — peer PRIORITY_UPDATE; rejected on clients
+//   - request_rejected  — STOP_SENDING with H3_REQUEST_REJECTED
+//
+// Both roles (20):
+//   - peer_settings, headers, data, trailers, datagram,
+//     datagram_acked, datagram_lost, flow_blocked,
+//     connection_ids_needed, cancel_push, goaway, stream_finished,
+//     stream_reset, connection_closed, ignored_unknown_frame,
+//     webtransport_stream_opened, webtransport_stream_data,
+//     webtransport_stream_finished, webtransport_stream_reset,
+//     webtransport_flow_violated
+//
+// For the "both" variants whose payload carries a message kind
+// (`headers`, `data`, `trailers`), the `kind` field on the payload
+// further distinguishes context: `kind == .request` only ever appears
+// on a server (incoming request); `kind == .response` and
+// `kind == .push` only ever appear on a client.
+// ---------------------------------------------------------------------------
 
 const BidiKind = enum {
     /// HTTP/3 request/response stream (the normal case).
@@ -838,6 +1018,13 @@ pub const Session = struct {
     /// stream is replayed or rejected.
     wt_buffered_streams: std.ArrayList(u64) = .empty,
 
+    /// Per-drain scratch buffers — reused across `drain()` calls instead
+    /// of being alloc'd + freed every drain. Sized lazily on first use
+    /// (and grown if a config knob changes between drains). Released
+    /// in `deinit`. Not part of the public API surface.
+    drain_read_scratch: []u8 = &.{},
+    drain_datagram_scratch: []u8 = &.{},
+
     pub fn init(
         allocator: std.mem.Allocator,
         role: protocol.Role,
@@ -882,6 +1069,32 @@ pub const Session = struct {
         self.qpack_decoder_table.deinit();
         self.qpack_encoder_state.deinit();
         self.qpack_decoder_state.deinit();
+        if (self.drain_read_scratch.len > 0) self.allocator.free(self.drain_read_scratch);
+        if (self.drain_datagram_scratch.len > 0) self.allocator.free(self.drain_datagram_scratch);
+    }
+
+    /// Lazily (re)allocates `scratch.*` to hold at least `needed` bytes
+    /// using `self.allocator`, then returns the prefix slice. Used by
+    /// `drain` and `drainDatagrams` to reuse buffers across calls
+    /// instead of paying alloc+free per drain. Grows monotonically —
+    /// the scratch is freed in `deinit`.
+    fn ensureDrainScratch(self: *Session, scratch: *[]u8, needed: usize) Error![]u8 {
+        if (scratch.len < needed) {
+            if (scratch.len > 0) self.allocator.free(scratch.*);
+            scratch.* = try self.allocator.alloc(u8, needed);
+        }
+        return scratch.*[0..needed];
+    }
+
+    /// Releases the deep-cloned bytes attached to `event` using the
+    /// session's allocator. Equivalent to `event.deinit(session.allocator)`
+    /// but binds the right allocator implicitly — the caller doesn't
+    /// have to remember that the bytes were cloned out of the session's
+    /// allocator (not the events list's allocator). No-op for variants
+    /// whose payload is plain scalars; safe to call on every drained
+    /// event.
+    pub fn freeEvent(self: *const Session, event: Event) void {
+        event.deinit(self.allocator);
     }
 
     pub fn start(self: *Session) Error!void {
@@ -1835,8 +2048,7 @@ pub const Session = struct {
         };
 
         const read_chunk_size = if (self.config.read_chunk_size == 0) 4096 else self.config.read_chunk_size;
-        const tmp = try self.allocator.alloc(u8, read_chunk_size);
-        defer self.allocator.free(tmp);
+        const tmp = try self.ensureDrainScratch(&self.drain_read_scratch, read_chunk_size);
 
         var it = self.quic.streamIterator();
         while (it.next()) |entry| {
@@ -1903,8 +2115,7 @@ pub const Session = struct {
             64 * 1024
         else
             self.config.max_datagram_payload_size;
-        const scratch = try self.allocator.alloc(u8, max_payload);
-        defer self.allocator.free(scratch);
+        const scratch = try self.ensureDrainScratch(&self.drain_datagram_scratch, max_payload);
 
         while (self.quic.receiveDatagramInfo(scratch)) |info| {
             if (!self.local_settings.h3_datagram) {
@@ -4079,9 +4290,13 @@ pub const Session = struct {
 
     fn validatePriorityPushId(self: *const Session, push_id: u64) Error!void {
         const max_push_id = self.peer_max_push_id orelse return Error.InvalidPriorityTarget;
-        if (push_id > max_push_id or push_id >= self.next_push_id) {
-            return Error.InvalidPriorityTarget;
-        }
+        if (push_id > max_push_id) return Error.InvalidPriorityTarget;
+        // RFC 9218 §7.2: PRIORITY_UPDATE for a push id the server hasn't
+        // promised yet (push_id >= self.next_push_id) is BUFFERED, not
+        // rejected. The hint persists in `push_priorities` and is
+        // consulted when `startPush` later assigns that id. We still
+        // reject `push_id > peer_max_push_id` because that's an
+        // out-of-bounds violation by the peer, independent of timing.
     }
 
     fn stopReceivingPushIfOpen(self: *Session, push_id: u64) void {

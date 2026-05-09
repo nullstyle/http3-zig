@@ -275,6 +275,36 @@ test "MUST NOT accept a member whose key is empty (\"=value\") [RFC9218 §4 ¶1]
     try std.testing.expectError(priority.Error.InvalidParameter, Priority.parse("=42"));
 }
 
+test "MUST reject a dictionary key with characters outside the dict-key grammar [RFC8941 §3.1.2]" {
+    // RFC 8941 §3.1.2 (and the dict-key shorthand in §3.3.7) restricts
+    // dictionary keys to `( lcalpha / "*" ) *( lcalpha / DIGIT / "_" /
+    // "-" / "." / "*" )`. Anything else — uppercase letters, internal
+    // whitespace, punctuation outside the allowed set — makes the
+    // dictionary structurally malformed, distinct from §4 ¶7's
+    // "ignore unknown parameter" tolerance which only applies to
+    // syntactically valid dictionaries. Verify a valid lowercase token
+    // (`u-foo` — extension-style key with `-`) still parses, while an
+    // uppercase-led key fails.
+    const ok = try Priority.parse("u-foo=1, u=4");
+    try std.testing.expectEqual(@as(u3, 4), ok.urgency);
+    try std.testing.expectError(priority.Error.InvalidParameter, Priority.parse("Foo=1, u=4"));
+}
+
+test "MUST reject internal whitespace in a member-value (trailing garbage) [RFC8941 §3.1.2]" {
+    // RFC 8941 §3.1.2 ABNF for `dict-member` does not permit any OWS
+    // around `=` or inside the member-value. After the outer OWS
+    // around the member is stripped (§4.2 step 2 / step 9), any
+    // whitespace inside the value is structural garbage that comes
+    // after a putative member-value and before the next `,`/end —
+    // and §4.2 step 6/8 expects only `,` or end at that position.
+    // Verify that a clean value parses while a value with embedded
+    // whitespace fails (rather than being silently dropped via the
+    // §4 ¶7 wrong-type path).
+    const ok = try Priority.parse("u=4");
+    try std.testing.expectEqual(@as(u3, 4), ok.urgency);
+    try std.testing.expectError(priority.Error.InvalidParameter, Priority.parse("u=4 garbage"));
+}
+
 // ---------------------------------------------------------------- §4 — fromFieldLines
 
 test "MUST extract Priority from QPACK field lines case-insensitively [RFC9218 §4 ¶3]" {
@@ -837,6 +867,112 @@ test "NORMATIVE server buffers PRIORITY_UPDATE received before the stream is ope
 
     const stored = pair.server_h3.priorityForRequest(future_stream_id) orelse return error.MissingPriority;
     try std.testing.expectEqual(@as(u3, 0), stored.urgency);
+    try std.testing.expect(stored.incremental);
+}
+
+test "PRIORITY_UPDATE for unopened request stream is buffered, not rejected [RFC9218 §7.2]" {
+    // §7.2 (companion of §7 ¶4): "If a server receives a
+    // PRIORITY_UPDATE for a request stream that has not yet been
+    // opened, it cannot resolve which request the frame applies to ...
+    // the server SHOULD buffer the priority signal." The receiver
+    // MUST NOT close the connection. This test extends the §7 ¶4
+    // coverage: not only does the priority survive in the buffer, the
+    // receiver stays in `.active` with no close error, and once the
+    // referenced request stream actually opens the buffered priority
+    // is the one observed via `priorityForRequest`.
+    const allocator = std.testing.allocator;
+
+    var pair: fixture.H3Pair = undefined;
+    try pair.initStarted(allocator, .{}, .{});
+    defer pair.deinit();
+    try fixture.exchangePairSettings(allocator, &pair);
+
+    // Stream id 12 is client-initiated bidi (12 % 4 == 0) and has not
+    // yet been opened — the client peer has issued zero request
+    // streams. Send PRIORITY_UPDATE on the client control stream
+    // targeting that future id, then drive the server until it has
+    // processed the frame.
+    const future_stream_id: u64 = 12;
+    try pair.client_h3.sendPriorityUpdateForRequest(future_stream_id, .{
+        .urgency = 2,
+        .incremental = true,
+    });
+    try fixture.pumpQuiet(allocator, &pair, 64);
+
+    // Assertion 1 (RFC 9218 §7.2 "MUST NOT close"): the server
+    // session is still active and has not recorded a CONNECTION_CLOSE.
+    try std.testing.expectEqual(http3_zig.session.ShutdownState.active, pair.server_h3.shutdownState());
+    try std.testing.expect(pair.server_h3.lastCloseError() == null);
+
+    // Assertion 2 (the SHOULD-buffer expectation): the priority is
+    // already visible on the server before the stream is opened.
+    {
+        const buffered = pair.server_h3.priorityForRequest(future_stream_id) orelse return error.MissingPriority;
+        try std.testing.expectEqual(@as(u3, 2), buffered.urgency);
+        try std.testing.expect(buffered.incremental);
+    }
+
+    // Now open stream id 12 from the client peer with a HEADERS frame
+    // and pump again. The buffered priority must still be the one
+    // observed for the now-open stream — opening the stream does not
+    // clobber the entry in `request_priorities`.
+    _ = try pair.client.openBidi(future_stream_id);
+    const request_fields = [_]http3_zig.FieldLine{
+        .{ .name = ":method", .value = "GET" },
+        .{ .name = ":scheme", .value = "https" },
+        .{ .name = ":path", .value = "/" },
+        .{ .name = ":authority", .value = "example.com" },
+    };
+    var headers_buf: [256]u8 = undefined;
+    const headers_n = try http3_zig.qpack.encodeFieldSection(&headers_buf, &request_fields);
+    try fixture.writeFrame(&pair.client, future_stream_id, .{ .headers = headers_buf[0..headers_n] });
+    try fixture.pumpQuiet(allocator, &pair, 64);
+
+    // Server must still be active after the stream opens.
+    try std.testing.expectEqual(http3_zig.session.ShutdownState.active, pair.server_h3.shutdownState());
+    try std.testing.expect(pair.server_h3.lastCloseError() == null);
+
+    const applied = pair.server_h3.priorityForRequest(future_stream_id) orelse return error.MissingPriority;
+    try std.testing.expectEqual(@as(u3, 2), applied.urgency);
+    try std.testing.expect(applied.incremental);
+}
+
+test "PRIORITY_UPDATE for unpromised push id is buffered, not rejected [RFC9218 §7.2]" {
+    // §7.2 push-side companion: "If a server receives a
+    // PRIORITY_UPDATE for a push that has not yet been promised, it
+    // ... SHOULD buffer the priority signal." Mirrors the request-
+    // stream test above but for a push id that hasn't yet been
+    // emitted by the server. The client must have advertised
+    // MAX_PUSH_ID so push is enabled at all.
+    const allocator = std.testing.allocator;
+
+    var pair: fixture.H3Pair = undefined;
+    // Client opt-in: advertise MAX_PUSH_ID = 8 so the server side will
+    // accept push ids 0..=8.
+    try pair.initStarted(allocator, .{ .max_push_id = 8 }, .{});
+    defer pair.deinit();
+    try fixture.exchangePairSettings(allocator, &pair);
+
+    // Push id 5 is within MAX_PUSH_ID and the server hasn't promised
+    // anything yet (`next_push_id == 0`). Per §7.2 the hint must be
+    // buffered, not rejected.
+    const future_push_id: u64 = 5;
+    try fixture.writeFrame(&pair.client, pair.client_h3.control_stream_id.?, .{
+        .priority_update_push = .{
+            .prioritized_element_id = future_push_id,
+            .priority_field_value = "u=2,i",
+        },
+    });
+    try fixture.pumpQuiet(allocator, &pair, 64);
+
+    // §7.2 "MUST NOT close": server stays active, no close error.
+    try std.testing.expectEqual(http3_zig.ShutdownState.active, pair.server_h3.shutdownState());
+    try std.testing.expect(pair.server_h3.lastCloseError() == null);
+
+    // §7.2 SHOULD-buffer: the priority survives in `push_priorities`
+    // and is observable via `priorityForPush`.
+    const stored = pair.server_h3.priorityForPush(future_push_id) orelse return error.MissingPriority;
+    try std.testing.expectEqual(@as(u3, 2), stored.urgency);
     try std.testing.expect(stored.incremental);
 }
 

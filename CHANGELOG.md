@@ -149,7 +149,44 @@ breaking changes; see notes per release.
   peer's view; this restores symmetry. Covered by the new test
   `WebTransport: peer FINs CONNECT control stream without CLOSE_WEBTRANSPORT_SESSION cleanly closes session`.
 
+- **PRIORITY_UPDATE-Push for an unpromised push id now buffers**
+  instead of closing the connection (RFC 9218 §7.2 — receiver SHOULD
+  buffer the priority signal and apply it when the push is later
+  promised). Previously `validatePriorityPushId` rejected
+  `push_id >= next_push_id` with `H3_ID_ERROR`. The peer's
+  `MAX_PUSH_ID` bound is still enforced — only the timing race is
+  relaxed. Companion to the existing buffering for unopened request
+  streams. New test:
+  `PRIORITY_UPDATE for unpromised push id is buffered, not rejected [RFC9218 §7.2]`.
+
+### Performance
+
+- **Drain scratch buffers reused across `Session.drain` calls.** The
+  per-drain `read_chunk_size` and `max_datagram_payload_size`
+  scratch allocations are now stored on the session and grown
+  monotonically; previously each drain paid alloc + free.
+  Released in `Session.deinit`.
+
+- **`Session.freeEvent(event)` helper** binds the right allocator for
+  drained events implicitly. Equivalent to `event.deinit(session.allocator)`,
+  but the caller no longer has to remember which allocator pairs with
+  the event bytes (cloned out of the session's allocator, not the
+  events list's allocator).
+
 ### Documentation
+
+- **Allocator contract** documented at the top of
+  [`src/root.zig`](src/root.zig). Six-bullet section explaining
+  `Session.init` allocator lifetime, `Client/Server.init` facade
+  semantics, Event byte ownership transfer on drain, the arena-with-reset
+  warning for QPACK tables and rx buffers, `Session.deinit` invariants,
+  and the independent allocator held by trackers.
+
+- **Event-variant role audit.** Each variant of `Session.Event` now
+  carries a `Role: client | server | both` doc tag, plus a 30-line
+  summary block listing the role split (3 client-only, 2 server-only,
+  20 shared). Makes a future `ClientEvent` / `ServerEvent` API split a
+  mechanical refactor.
 
 - **Stream lifecycle verbs documented** in
   [`src/session.zig`](src/session.zig). `finishStream` (clean FIN,
@@ -164,6 +201,22 @@ breaking changes; see notes per release.
   error variants now each carry a doc comment explaining when they
   fire and (where applicable) the spec section that defines the
   underlying behaviour.
+
+### Observability
+
+- **QPACK trace events.** Four new
+  `observability.TraceEventName` variants emitted through the existing
+  `Hooks` infrastructure:
+  - `qpack_dynamic_insert` — fires after a successful dynamic-table
+    append in `DynamicTable.insertOwned`.
+  - `qpack_dynamic_evict` — fires per evicted entry inside
+    `DynamicTable.evictToCapacity`.
+  - `qpack_section_blocked` — fires in `DecoderState.beginFieldSection`
+    when a header section is held pending dynamic-table insertions.
+  - `qpack_section_unblocked` — fires when a previously-blocked
+    section's required insert count is satisfied.
+  Each event carries `stream_id` / `value` / `bytes` / `count` as
+  appropriate; matching `Metrics` counters increment on emit.
 
 ### Tooling / infra
 
@@ -188,6 +241,12 @@ breaking changes; see notes per release.
 
 - **New conformance test** `SETTINGS frame with zero settings is
   accepted [RFC9114 §7.2.4 ¶3]` (peer-sends-empty-SETTINGS).
+
+- **Stricter Priority field-value parsing** (RFC 8941 §3.1.2 +
+  RFC 9218 §4): dictionary keys outside the lowercase-token grammar
+  and internal whitespace inside member-values now produce
+  `Error.InvalidParameter` rather than slipping through as
+  silently-ignored unknowns. Two new tests under `tests/conformance/rfc9218_priority.zig`.
 
 - **Dual-peer WebTransport interop** in
   [`.github/workflows/wt-interop.yml`](.github/workflows/wt-interop.yml):

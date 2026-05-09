@@ -50,6 +50,22 @@ pub const TraceEventName = enum {
     qpack_encoder_instruction_received,
     qpack_decoder_instruction_sent,
     qpack_decoder_instruction_received,
+    /// A QPACK dynamic-table insertion has committed. `value` carries the
+    /// new entry's absolute index, `count` the resulting `table.len()`,
+    /// and `bytes` the entry's size (name + value + 32-byte overhead).
+    qpack_dynamic_insert,
+    /// A QPACK dynamic-table entry was evicted to free room. `value`
+    /// carries the evicted absolute index, `bytes` the freed size, and
+    /// `count` the remaining `table.len()`.
+    qpack_dynamic_evict,
+    /// A field-section decode is held pending dynamic-table inserts.
+    /// `stream_id` is the field section's stream, `value` the section's
+    /// Required Insert Count.
+    qpack_section_blocked,
+    /// A previously-blocked field section's required insert count is
+    /// satisfied and the section has been completed. `stream_id` and
+    /// `value` mirror the matching `qpack_section_blocked` event.
+    qpack_section_unblocked,
     flow_blocked,
     connection_ids_needed,
     webtransport_stream_opened,
@@ -142,6 +158,17 @@ pub const Metrics = struct {
     qpack_encoder_instructions_received: u64 = 0,
     qpack_decoder_instructions_sent: u64 = 0,
     qpack_decoder_instructions_received: u64 = 0,
+    /// Cumulative QPACK dynamic-table insertions observed.
+    qpack_dynamic_inserts: u64 = 0,
+    /// Cumulative QPACK dynamic-table evictions observed.
+    qpack_dynamic_evicts: u64 = 0,
+    /// Cumulative field sections that were held pending QPACK dynamic
+    /// inserts (one increment per blocking event, including re-arming
+    /// an existing blocked stream's required insert count).
+    qpack_sections_blocked: u64 = 0,
+    /// Cumulative previously-blocked field sections that have been
+    /// completed (their Required Insert Count was satisfied).
+    qpack_sections_unblocked: u64 = 0,
 
     flow_blocked_events: u64 = 0,
     connection_ids_needed_events: u64 = 0,
@@ -248,6 +275,10 @@ pub const Metrics = struct {
             .qpack_encoder_instruction_received => increment(&self.qpack_encoder_instructions_received),
             .qpack_decoder_instruction_sent => increment(&self.qpack_decoder_instructions_sent),
             .qpack_decoder_instruction_received => increment(&self.qpack_decoder_instructions_received),
+            .qpack_dynamic_insert => increment(&self.qpack_dynamic_inserts),
+            .qpack_dynamic_evict => increment(&self.qpack_dynamic_evicts),
+            .qpack_section_blocked => increment(&self.qpack_sections_blocked),
+            .qpack_section_unblocked => increment(&self.qpack_sections_unblocked),
             .flow_blocked => increment(&self.flow_blocked_events),
             .connection_ids_needed => increment(&self.connection_ids_needed_events),
             .webtransport_stream_opened => increment(&self.webtransport_streams_opened),

@@ -64,9 +64,27 @@ fn parseInto(out: *Priority, src: []const u8) Error!void {
         if (member.len == 0) continue;
 
         const eq = std.mem.indexOfScalar(u8, member, '=');
-        const key = if (eq) |i| std.mem.trim(u8, member[0..i], " \t") else member;
-        const value = if (eq) |i| std.mem.trim(u8, member[i + 1 ..], " \t") else "";
+        // RFC 8941 §3.1.2 ABNF: `dict-member = member-name [ "=" member-value ]`.
+        // No OWS is allowed around the `=`, inside the member-name, or
+        // inside the member-value — surrounding OWS is stripped above
+        // (RFC 8941 §4.2 step 2 / step 9). Anything left is structurally
+        // malformed and must surface as `Error.InvalidParameter` so the
+        // caller (RFC 9218 §8) can close with H3_GENERAL_PROTOCOL_ERROR
+        // rather than fall through to the §4 ¶7 "ignore unknown / wrong
+        // type" path that only applies to syntactically valid dictionaries.
+        const key = if (eq) |i| member[0..i] else member;
+        const value = if (eq) |i| member[i + 1 ..] else "";
         if (key.len == 0) return Error.InvalidParameter;
+        // RFC 8941 §3.1.2 / §3.3.7: dictionary keys are restricted to
+        // `( lcalpha / "*" ) *( lcalpha / DIGIT / "_" / "-" / "." / "*" )`.
+        // Uppercase, internal whitespace, or any char outside that set
+        // makes the dictionary structurally malformed.
+        if (!isValidDictKey(key)) return Error.InvalidParameter;
+        // Reject internal whitespace in the value (covers `u= 2`, `u=2 x`,
+        // etc.). RFC 8941 §4.2 step 6/8 expects either OWS+`,` or end of
+        // input immediately after the member-value, so any whitespace
+        // surviving the outer trim is trailing garbage inside one member.
+        if (containsWhitespace(value)) return Error.InvalidParameter;
 
         if (std.mem.eql(u8, key, "u")) {
             // RFC 9218 §4 ¶7: out-of-range or wrong-type urgency values MUST
@@ -86,6 +104,31 @@ fn parseInto(out: *Priority, src: []const u8) Error!void {
             // scheduler scaffold; later phases can expose them losslessly.
         }
     }
+}
+
+fn isValidDictKey(key: []const u8) bool {
+    // RFC 8941 §3.1.2 dict-key ABNF:
+    //   key = ( lcalpha / "*" ) *( lcalpha / DIGIT / "_" / "-" / "." / "*" )
+    //   lcalpha = %x61-7A
+    if (key.len == 0) return false;
+    if (!isLcalpha(key[0]) and key[0] != '*') return false;
+    for (key[1..]) |c| {
+        if (!isLcalpha(c) and !std.ascii.isDigit(c) and c != '_' and c != '-' and c != '.' and c != '*') {
+            return false;
+        }
+    }
+    return true;
+}
+
+fn isLcalpha(c: u8) bool {
+    return c >= 'a' and c <= 'z';
+}
+
+fn containsWhitespace(s: []const u8) bool {
+    for (s) |c| {
+        if (c == ' ' or c == '\t') return true;
+    }
+    return false;
 }
 
 fn parseUrgency(value: []const u8) ?u3 {

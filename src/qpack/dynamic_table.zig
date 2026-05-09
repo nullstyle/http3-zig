@@ -5,6 +5,9 @@
 
 const std = @import("std");
 
+const observability = @import("../observability.zig");
+const protocol = @import("../protocol.zig");
+
 pub const Error = std.mem.Allocator.Error || error{
     CapacityTooLarge,
     EntryTooLarge,
@@ -24,6 +27,16 @@ pub const Entry = struct {
     }
 };
 
+/// Optional trace surface attached to a `DynamicTable`. The session
+/// installs its `observability.Hooks` and `protocol.Role` here so
+/// dynamic-table mutations surface as `qpack_dynamic_insert` /
+/// `qpack_dynamic_evict` trace events without coupling QPACK to the
+/// session's transport state.
+pub const TraceContext = struct {
+    hooks: observability.Hooks = .{},
+    role: protocol.Role = .client,
+};
+
 pub const DynamicTable = struct {
     allocator: std.mem.Allocator,
     max_capacity: usize,
@@ -32,6 +45,9 @@ pub const DynamicTable = struct {
     insert_count: u64 = 0,
     dropped_count: u64 = 0,
     entries: std.ArrayList(Entry) = .empty,
+    /// Optional trace context. Defaults to a no-op hook so the table
+    /// stays usable in transport-free settings (tests, fuzzing).
+    trace: TraceContext = .{},
 
     pub fn init(allocator: std.mem.Allocator, max_capacity: usize) DynamicTable {
         return .{
@@ -177,6 +193,13 @@ pub const DynamicTable = struct {
         });
         self.insert_count += 1;
         self.size += size_needed;
+        self.trace.hooks.emit(.{
+            .name = .qpack_dynamic_insert,
+            .role = self.trace.role,
+            .bytes = size_needed,
+            .count = self.entries.items.len,
+            .value = absolute_index,
+        });
         return absolute_index;
     }
 
@@ -191,9 +214,18 @@ pub const DynamicTable = struct {
         while (self.size > target_size) {
             if (self.entries.items.len == 0) return Error.EntryTooLarge;
             var entry = self.entries.orderedRemove(0);
-            self.size -= entry.size();
-            self.dropped_count = entry.absolute_index + 1;
+            const entry_size = entry.size();
+            const evicted_index = entry.absolute_index;
+            self.size -= entry_size;
+            self.dropped_count = evicted_index + 1;
             self.freeEntry(&entry);
+            self.trace.hooks.emit(.{
+                .name = .qpack_dynamic_evict,
+                .role = self.trace.role,
+                .bytes = entry_size,
+                .count = self.entries.items.len,
+                .value = evicted_index,
+            });
         }
     }
 
@@ -300,4 +332,63 @@ test "dynamic table rejects invalid capacity, entry, and index" {
     try table.setCapacity(32);
     try std.testing.expectError(Error.EntryTooLarge, table.insert("x", "y", false));
     try std.testing.expectError(Error.InvalidDynamicIndex, table.duplicate(0));
+}
+
+test "dynamic table emits qpack_dynamic_insert and qpack_dynamic_evict trace events" {
+    const TraceRecorder = struct {
+        events: [8]observability.TraceEvent = undefined,
+        count: usize = 0,
+
+        fn callback(user_data: ?*anyopaque, event: observability.TraceEvent) void {
+            const self: *@This() = @ptrCast(@alignCast(user_data.?));
+            if (self.count < self.events.len) {
+                self.events[self.count] = event;
+                self.count += 1;
+            }
+        }
+    };
+
+    var recorder: TraceRecorder = .{};
+    var table = DynamicTable.init(std.testing.allocator, 96);
+    defer table.deinit();
+    table.trace = .{
+        .hooks = .{ .callback = TraceRecorder.callback, .user_data = &recorder },
+        .role = .client,
+    };
+    try table.setCapacity(96);
+
+    // Three inserts, third forces an eviction (96-byte capacity fits two
+    // 34-byte entries, not three).
+    _ = try table.insert("a", "1", false);
+    _ = try table.insert("b", "2", false);
+    _ = try table.insert("c", "3", false);
+
+    var inserts: usize = 0;
+    var evicts: usize = 0;
+    var evicted_index: ?u64 = null;
+    for (recorder.events[0..recorder.count]) |event| {
+        switch (event.name) {
+            .qpack_dynamic_insert => {
+                inserts += 1;
+                try std.testing.expectEqual(protocol.Role.client, event.role);
+                try std.testing.expectEqual(entrySize("a", "1"), event.bytes);
+            },
+            .qpack_dynamic_evict => {
+                evicts += 1;
+                evicted_index = event.value;
+                try std.testing.expectEqual(entrySize("a", "1"), event.bytes);
+            },
+            else => {},
+        }
+    }
+
+    try std.testing.expectEqual(@as(usize, 3), inserts);
+    try std.testing.expectEqual(@as(usize, 1), evicts);
+    try std.testing.expectEqual(@as(?u64, 0), evicted_index);
+
+    // Metrics observe the same events.
+    var metrics: observability.Metrics = .{};
+    for (recorder.events[0..recorder.count]) |event| metrics.observe(event);
+    try std.testing.expectEqual(@as(u64, 3), metrics.qpack_dynamic_inserts);
+    try std.testing.expectEqual(@as(u64, 1), metrics.qpack_dynamic_evicts);
 }

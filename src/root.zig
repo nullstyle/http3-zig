@@ -22,6 +22,69 @@
 //! a single dispatch thread (or one thread per shard, with each shard
 //! owning a disjoint set of sessions). Two threads operating on the
 //! same `Session` simultaneously is undefined behavior.
+//!
+//! ## Allocator contract
+//!
+//! `http3_zig` does not own a global allocator. Every long-lived
+//! object takes one explicitly and uses **that same allocator** for
+//! its full lifetime. The allocator is not required to be
+//! thread-safe — sessions are single-threaded (see above).
+//!
+//! - `Session.init(allocator, role, *quic.Connection, config)` stores
+//!   the allocator. The session uses it for everything it owns:
+//!   per-stream `StreamState` (rx buffers, decoders), the QPACK
+//!   encoder/decoder dynamic tables and stream state, push-promise
+//!   field caches, priority maps, WebTransport per-session flow
+//!   state, and the deep-owned bytes attached to each yielded
+//!   `Event`. A single long-lived allocator (e.g. `GeneralPurposeAllocator`,
+//!   page allocator, or a wrapping arena that lives at least as long
+//!   as the session) is the right shape. **Do not** back a `Session`
+//!   with an arena that gets `reset()` between drains — the dynamic
+//!   tables and per-stream rx buffers persist across calls and a
+//!   reset would corrupt them. Per-drain arenas are fine for
+//!   *consuming* events, just not for the session itself.
+//! - `Client.init(*Session)` and `Server.init(*Session)` are thin
+//!   facades — they hold the session pointer and inherit its
+//!   allocator. They take no allocator of their own. `Client.init`
+//!   does not own the session; `Session.deinit` is still the
+//!   caller's responsibility.
+//! - `Session.drain(events: *ArrayList(Event))` writes into the
+//!   caller-provided list. The list's allocator (which the caller
+//!   chose) is independent of the session's; it just stores the
+//!   `Event` enum tags. The **bytes inside each event** (header
+//!   field name/value pairs, DATA payload slices, DATAGRAM payload,
+//!   priority field-value, close-reason, push-promise field section,
+//!   WebTransport stream-data) are deep-cloned by the session out of
+//!   the session's allocator. The session retains no reference to
+//!   them after drain returns; ownership transfers to the caller.
+//! - For each yielded event the caller must call
+//!   `event.deinit(allocator)` using the **session's** allocator
+//!   (the one passed to `Session.init`), not the events list's
+//!   allocator. A typical pattern:
+//!
+//!       defer for (events.items) |ev| ev.deinit(session.allocator);
+//!       defer events.deinit(events_arena);
+//!
+//!   `event.deinit` is a no-op for variants whose payload is plain
+//!   scalars (peer_settings, flow_blocked, goaway, stream_finished,
+//!   stream_reset, request_rejected, datagram_acked/lost, push_stream,
+//!   cancel_push, ignored_unknown_frame, webtransport_stream_opened/
+//!   _finished/_reset/_flow_violated, connection_ids_needed). Calling
+//!   it on every event is always safe.
+//! - `Session.deinit` frees only state still owned by the session:
+//!   per-stream buffers, QPACK tables, hash maps, etc. It does **not**
+//!   free events that have already been yielded by `drain` —
+//!   ownership of those moved to the caller, who is responsible for
+//!   freeing each one (or accepting the leak). Drain any pending
+//!   events and free them before calling `Session.deinit`.
+//! - Trackers (`ResponseTracker`, `RequestTracker`,
+//!   `PushedResponseTracker`) take their **own** allocator at
+//!   `init`. They hold cloned per-stream lifecycle state (response
+//!   headers, accumulated body bytes, trailers) independent of the
+//!   session — this allocator can differ from the session's, and the
+//!   tracker's `deinit` releases everything it cloned.
+//! - The underlying `*quic_zig.Connection` is owned by the embedder.
+//!   `Session` borrows it; `Session.deinit` does not free it.
 
 const std = @import("std");
 const boringssl = @import("boringssl");

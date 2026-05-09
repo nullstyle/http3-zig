@@ -9,6 +9,17 @@ const std = @import("std");
 const dynamic_table = @import("dynamic_table.zig");
 const instructions = @import("instructions.zig");
 const integer = @import("integer.zig");
+const observability = @import("../observability.zig");
+const protocol = @import("../protocol.zig");
+
+/// Optional trace surface for `DecoderState`. Mirrors
+/// `dynamic_table.TraceContext`: the session installs its hooks and
+/// role here and the decoder fires `qpack_section_blocked` /
+/// `qpack_section_unblocked` events at field-section boundaries.
+pub const TraceContext = struct {
+    hooks: observability.Hooks = .{},
+    role: protocol.Role = .client,
+};
 
 pub const Error = instructions.Error || std.mem.Allocator.Error || error{
     InvalidRequiredInsertCount,
@@ -360,6 +371,9 @@ pub const DecoderState = struct {
     insert_count: u64 = 0,
     advertised_insert_count: u64 = 0,
     blocked: std.ArrayList(BlockedStream) = .empty,
+    /// Optional trace context. Defaults to no-op hooks so the state
+    /// machine remains usable without an observability install.
+    trace: TraceContext = .{},
 
     pub fn init(allocator: std.mem.Allocator, max_blocked_streams: u64) DecoderState {
         return .{
@@ -403,6 +417,7 @@ pub const DecoderState = struct {
                 self.blocked.items[index].required_insert_count,
                 required_insert_count,
             );
+            self.emitBlocked(stream_id, required_insert_count);
             return .blocked;
         }
 
@@ -414,6 +429,7 @@ pub const DecoderState = struct {
             .stream_id = stream_id,
             .required_insert_count = required_insert_count,
         });
+        self.emitBlocked(stream_id, required_insert_count);
         return .blocked;
     }
 
@@ -437,7 +453,8 @@ pub const DecoderState = struct {
         if (required_insert_count > self.insert_count) return error.RequiredInsertCountNotReady;
         if (self.findBlocked(stream_id)) |index| {
             if (self.blocked.items[index].required_insert_count <= self.insert_count) {
-                _ = self.blocked.orderedRemove(index);
+                const removed = self.blocked.orderedRemove(index);
+                self.emitUnblocked(removed.stream_id, removed.required_insert_count);
             }
         }
         if (required_insert_count == 0) return null;
@@ -463,6 +480,24 @@ pub const DecoderState = struct {
             if (blocked.stream_id == stream_id) return i;
         }
         return null;
+    }
+
+    fn emitBlocked(self: *const DecoderState, stream_id: u64, required_insert_count: u64) void {
+        self.trace.hooks.emit(.{
+            .name = .qpack_section_blocked,
+            .role = self.trace.role,
+            .stream_id = stream_id,
+            .value = required_insert_count,
+        });
+    }
+
+    fn emitUnblocked(self: *const DecoderState, stream_id: u64, required_insert_count: u64) void {
+        self.trace.hooks.emit(.{
+            .name = .qpack_section_unblocked,
+            .role = self.trace.role,
+            .stream_id = stream_id,
+            .value = required_insert_count,
+        });
     }
 };
 
@@ -665,4 +700,55 @@ test "decoder state applies encoder instructions and emits insert count incremen
     const increment = decoder.takeInsertCountIncrement().?;
     try std.testing.expectEqual(@as(u64, 1), increment.insert_count_increment);
     try std.testing.expect(decoder.takeInsertCountIncrement() == null);
+}
+
+test "decoder state emits qpack_section_blocked and qpack_section_unblocked trace events" {
+    const TraceRecorder = struct {
+        events: [8]observability.TraceEvent = undefined,
+        count: usize = 0,
+
+        fn callback(user_data: ?*anyopaque, event: observability.TraceEvent) void {
+            const self: *@This() = @ptrCast(@alignCast(user_data.?));
+            if (self.count < self.events.len) {
+                self.events[self.count] = event;
+                self.count += 1;
+            }
+        }
+    };
+
+    var recorder: TraceRecorder = .{};
+    var decoder = DecoderState.init(std.testing.allocator, 2);
+    defer decoder.deinit();
+    decoder.trace = .{
+        .hooks = .{ .callback = TraceRecorder.callback, .user_data = &recorder },
+        .role = .server,
+    };
+
+    // Section requiring RIC=2 starts blocked, then becomes ready after
+    // two synthetic insert events, and the completion drains the
+    // blocked-list entry.
+    try std.testing.expectEqual(FieldSectionStatus.blocked, try decoder.beginFieldSection(4, 2));
+    decoder.recordInsertCount(2);
+    _ = try decoder.completeFieldSection(4, 2);
+
+    var blocked: usize = 0;
+    var unblocked: usize = 0;
+    for (recorder.events[0..recorder.count]) |event| {
+        switch (event.name) {
+            .qpack_section_blocked => {
+                blocked += 1;
+                try std.testing.expectEqual(@as(?u64, 4), event.stream_id);
+                try std.testing.expectEqual(@as(?u64, 2), event.value);
+                try std.testing.expectEqual(protocol.Role.server, event.role);
+            },
+            .qpack_section_unblocked => {
+                unblocked += 1;
+                try std.testing.expectEqual(@as(?u64, 4), event.stream_id);
+                try std.testing.expectEqual(@as(?u64, 2), event.value);
+            },
+            else => {},
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 1), blocked);
+    try std.testing.expectEqual(@as(usize, 1), unblocked);
 }
