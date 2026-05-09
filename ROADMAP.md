@@ -191,7 +191,263 @@ Datagrams / capsules), and the QUIC RFCs already tracked by `quic-zig`.
   and GREASE registration rejection, bounded per-receiver capacity, receiver
   routing, pending-buffer non-retention, and structured CONNECT error
   classification.
-- Next: external proxy interop.
+- Done: WebTransport-over-HTTP/3 (draft-ietf-webtrans-http3-15) handshake slice
+  with `:protocol = webtransport` request/response classification,
+  `SETTINGS_WT_ENABLED` (codepoint `0x2c7cf000`) advertisement,
+  `WebTransportClientStream` / `WebTransportServerStream` facades layered
+  on the existing CONNECT, HTTP/3 Datagram, and Capsule plumbing, plus
+  session-level helpers that open locally-initiated unidirectional and
+  bidirectional WebTransport streams with the `0x54` / `0x41` prefix
+  written automatically.
+- Done: WebTransport stream-error code mapping (the
+  `f(n) = 0x52e4a40fa8db + n + (n / 30)` translation between the
+  application's 32-bit code and the QUIC stream error code), reserved
+  `WEBTRANSPORT_BUFFERED_STREAM_REJECTED` / `WEBTRANSPORT_SESSION_GONE`
+  codes, and `CLOSE_WEBTRANSPORT_SESSION` (0x2843) +
+  `DRAIN_WEBTRANSPORT_SESSION` (0x78ae) capsule encoders/decoders with
+  UTF-8 reason validation and 1024-byte length cap, exercised by the
+  draft-ietf-webtrans-http3 conformance suite and the codec fuzz target.
+- Done: inbound WebTransport stream dispatch — peer-opened
+  unidirectional streams (type `0x54`) and client-initiated
+  bidirectional streams (frame type `0x41`) are now recognized in the
+  session state machine, the Session ID prefix is parsed, and bytes
+  flow through new typed events
+  (`webtransport_stream_opened` / `webtransport_stream_data` /
+  `webtransport_stream_finished` / `webtransport_stream_reset`). Stream
+  RESETs reverse-map the QUIC error code back to the 32-bit
+  WebTransport application code via the §4.6 algorithm and surface
+  both the wire and application codes to the application.
+- Done: WebTransport session registry tracking pending and
+  established CONNECT streams, fed by hooks in
+  `Client.startWebTransport`, `Server.acceptWebTransport`, and the
+  HEADERS observer in `processMessageState`. Session lifecycle is
+  closed automatically on FIN / RESET of the CONNECT stream.
+- Removed: server-side `SETTINGS_WT_MAX_SESSIONS` enforcement.
+  draft-ietf-webtrans-http3-15 §9.2 collapsed the numeric
+  `SETTINGS_WT_MAX_SESSIONS = 0x14e9cd29` codepoint into the boolean
+  `SETTINGS_WT_ENABLED = 0x2c7cf000`, so there is no longer a
+  SETTINGS-advertised session-count limit to enforce. Applications
+  that want to bound concurrent sessions can decline
+  `Server.acceptWebTransport` based on their own counters
+  (`Session.webTransportPendingCount` /
+  `webTransportEstablishedCount` are still public for that purpose).
+- Done: buffered-stream policy (`SessionConfig.buffered_stream_policy`).
+  Three modes — `.pass_through` (legacy), `.reject` (sends
+  STOP_SENDING with `WEBTRANSPORT_BUFFERED_STREAM_REJECTED`), and
+  `.buffer` (holds bytes until the corresponding session is confirmed
+  and replays the dispatch on the next drain). The replay path runs
+  at the start of every drain and abandons buffered streams whose
+  session never establishes (CONNECT FIN/RESET observed before
+  acceptance).
+- Done: WebTransport subprotocol negotiation
+  (`wt-available-protocols` / `wt-protocol`). `Client.startWebTransport`
+  takes a list of offered tokens; `Server.acceptWebTransport`
+  validates the chosen token against that list. Helpers parse the
+  RFC 8941 sf-list value with whitespace trimming, validate against
+  the HTTP token grammar (RFC 9110 §5.6.2), and bound the offered
+  list to `max_subprotocol_count`.
+- Done: `SessionConfig.production` WebTransport preset fields
+  (`enable_webtransport`, `buffered_stream_policy`). Enabling
+  WebTransport in the preset auto-enables the prerequisite settings
+  (`enable_connect_protocol`, `h3_datagram`) and emits
+  `SETTINGS_WT_ENABLED` (draft-ietf-webtrans-http3-15 §9.2).
+- Done: WebTransport flow-control capsule codecs pinned to
+  draft-ietf-webtrans-http3-15 (capsule values verified against the
+  IANA "Capsule Types" registry table, §9.6 and §5.6.{2..5}; values
+  unchanged since draft-13). `WT_MAX_DATA` (0x190b4d3d),
+  `WT_DATA_BLOCKED` (0x190b4d41), `WT_MAX_STREAMS_BIDI` (0x190b4d3f),
+  `WT_MAX_STREAMS_UNI` (0x190b4d40), `WT_STREAMS_BLOCKED_BIDI`
+  (0x190b4d43), `WT_STREAMS_BLOCKED_UNI` (0x190b4d44). Each carries a
+  single QUIC varint and rides through the existing
+  `webtransport.classifyCapsule` dispatch as a typed `CapsuleEvent`
+  variant. Codec only — session-level enforcement (consuming
+  `WT_MAX_DATA` to gate sends, emitting `WT_DATA_BLOCKED` on
+  backpressure, intermediary forwarding) is still pending.
+- Done: WebTransport-specific trace event names
+  (`webtransport_stream_opened` / `_data_received` / `_finished` /
+  `_reset_received`) plus matching counters in `observability.Metrics`,
+  so qlog consumers can distinguish WebTransport streams from generic
+  HTTP/3 streams without inspecting the per-event `frame_type` field.
+- Done: in-process WebTransport loopback example
+  (`examples/loopback_wt.zig`, build target
+  `run-example-loopback-wt`). Walks through QUIC handshake, SETTINGS
+  exchange, `startWebTransport` / `acceptWebTransport`, datagram
+  exchange, unidirectional WT stream send, and
+  `CLOSE_WEBTRANSPORT_SESSION` capsule, with progress prints for each
+  step.
+- Done: sustained-pressure integration tests for WebTransport — 16
+  concurrent uni streams, 256 KiB single-stream payload across
+  multiple writes, 64 concurrent datagrams, scoped buffered-stream
+  replay (8 streams under `.buffer` policy), and per-stream
+  send-buffer backpressure. Surfaced two known nuances of the
+  `.buffer` policy (FIN delivery before replay, hash-map
+  iteration order vs. open order) — see "Next" below.
+- Done: server-initiated bidirectional WebTransport streams
+  (draft-ietf-webtrans-http3 §4.2 carve-out of RFC 9114 §6.1 ¶3).
+  quic-zig already supported server-initiated bidi at the QUIC
+  layer (`tests/conformance/rfc9000_streams_flow.zig` pre-existing
+  KAT) — the actual block was in http3-zig: `ensureIncomingState`
+  rejected server-initiated bidi at the client before the WT marker
+  peek could fire. Now: bidi role-validation is deferred to
+  `processBidiState` whenever any WebTransport session is pending
+  or established (`webTransportEndpointActive()`), and the server
+  exposes `WebTransportServerStream.openBidiStream()` mirroring the
+  client side. The non-WebTransport path continues to fire
+  `H3_STREAM_CREATION_ERROR` eagerly (verified by the existing
+  RFC 9114 §6.1 ¶3 conformance test). Locally-opened WT bidi
+  streams pre-register their `bidi_kind` and `wt_session_id` so
+  peer response bytes aren't mis-parsed as a fresh prefix.
+- Done: tightened `.buffer` policy. Buffered streams are now
+  tracked in a `wt_buffered_streams` insertion-ordered list (sorted
+  by stream id at replay time so events surface in the order the
+  peer opened the streams, not in hash-map order). `observeFin` on
+  a still-buffered stream parks the FIN as `wt_buffered_fin`; the
+  replay path emits `webtransport_stream_finished` after the
+  matching `_opened` and `_data` events instead of letting it race
+  ahead. Integration test exercises 8 streams open + write + FIN
+  before accept, verifies replay order matches client-open order
+  and per-stream open precedes data precedes finished.
+- Done: WebTransport flow-control enforcement
+  (draft-ietf-webtrans-http3 §5.6). Per-session `WTSessionFlowState`
+  carries peer-advertised `peer_max_data` /
+  `peer_max_streams_{bidi,uni}`, locally-advertised counterparts,
+  outbound counters (`local_data_sent`,
+  `local_streams_opened_*`), and BLOCKED-emission bookkeeping.
+  `openWebTransportUniStream` / `openWebTransportBidiStream` /
+  `writeWebTransportStream` gate against the peer's limits and
+  return `WebTransportStreamLimitExceeded` /
+  `WebTransportFlowControlExceeded`, auto-emitting `WT_STREAMS_BLOCKED_*` /
+  `WT_DATA_BLOCKED` capsules (deduplicated per limit value).
+  Inbound capsules flow through `observeWebTransportCapsule` —
+  applications iterate `.data` capsules out of CONNECT-stream
+  events and forward them, mirroring the existing CLOSE/DRAIN
+  pattern. Public API on `WebTransportClientStream` /
+  `WebTransportServerStream`: `flowState()`, `sendMaxData()`,
+  `sendMaxStreams{Bidi,Uni}()`, `observeCapsule()`,
+  `recordPeerDataReceived()`. Opt-in by default — null peer limits
+  mean no enforcement (preserves backward compatibility for
+  callers that don't care).
+- Done: connection-level WebTransport fuzz target
+  (`zig build run-fuzz-smoke -- webtransport-session`). Drives
+  fuzzer corpus through a wider, structured set of WebTransport
+  codec entry points than the existing transport-free
+  `webtransport` target: truncated WT_STREAM bidi/uni prefixes,
+  `CLOSE_WEBTRANSPORT_SESSION` with the 4-byte code + UTF-8 reason
+  boundary, malformed `DRAIN_WEBTRANSPORT_SESSION` with non-empty
+  values, all six flow-control capsules round-tripped through
+  encoder + `capsule.decode` + `classifyCapsule`, the capsule
+  iterator chained into `classifyCapsule`,
+  `parseAvailableProtocols`, `isOfferedProtocol`, and the
+  `appErrorToHttp3` / `http3ToAppError` round-trip across u32.
+- Done: external WebTransport interop harness
+  (`interop/external_wt/client.zig`, build target
+  `external-wt-client`, run target `run-external-wt-client`).
+  Mirrors the existing `external_h3` pattern — reads
+  `WT_INTEROP_URL` from the environment, opens a UDP socket, drives
+  a real `quic_zig.Connection` handshake (`--insecure` /
+  `--verify-system` flags), brings up `http3_zig.Session` with
+  WebTransport enabled, exchanges SETTINGS, opens a
+  `Client.startWebTransport`, sends a datagram + a uni stream + a
+  `CLOSE_WEBTRANSPORT_SESSION` capsule, and exits cleanly. When
+  `WT_INTEROP_URL` is unset, the harness prints a friendly skip
+  message and exits 0 — same convention as the other interop
+  harnesses.
+- Done: receive-side WebTransport flow-control adoption. The
+  session now auto-bumps `peer_data_received` and
+  `peer_streams_opened_{bidi,uni}` as it emits
+  `webtransport_stream_data` / `_opened` events — the explicit
+  `recordPeerDataReceived` call from the application is no longer
+  required for those counters. When the peer's bytes or stream
+  opens would push the relevant counter past our advertised
+  `local_max_data` / `local_max_streams_{bidi,uni}`, the offending
+  stream is reset with `WEBTRANSPORT_SESSION_GONE` (per
+  draft-ietf-webtrans-http3 §5.6) and a typed
+  `webtransport_flow_violated` event is emitted carrying the
+  violation `kind` and the limit value, so the application can
+  decide between session-close and per-stream rejection.
+- Done: external WebTransport interop **matrix** runner. New
+  `interop/external_wt/matrix.zig` + `wt-interop-matrix` build
+  step iterates over the URLs in `WT_INTEROP_MATRIX_URLS`
+  (newline- or comma-separated), runs the per-target client
+  against each, and exits non-zero only if **every** non-skipped
+  target failed — so a missing aioquic doesn't mask a working
+  webtransport-go. Skip-friendly when the env var is unset. The
+  third-party server now pinned in CI is webtransport-go; recipes
+  for other implementations stay documented in
+  [`interop/external_wt/README.md`](interop/external_wt/README.md)
+  but only webtransport-go is anchored in the workflow.
+- Done: GitHub Actions CI for http3-zig.
+  [`.github/workflows/test.yml`](.github/workflows/test.yml) gates
+  every push and PR with `zig build` + `zig build test --summary
+  all` on Ubuntu and macOS, mirroring quic-zig's setup
+  ([mise-pinned](mise.toml) toolchain).
+  [`.github/workflows/fuzz.yml`](.github/workflows/fuzz.yml) runs
+  the codec smoke corpus *and* the seeded `fuzz/corpus/` (~105
+  inputs across 16 targets) on each push.
+  [`.github/workflows/wt-interop.yml`](.github/workflows/wt-interop.yml)
+  runs the WebTransport interop matrix on a weekly cron + on
+  manual dispatch — by default it runs the skip path (no
+  `WT_INTEROP_MATRIX_URLS` configured), so a fresh checkout never
+  fails for lack of an external server; an operator can flip the
+  workflow inputs to point at real servers when ready.
+  [`.github/workflows/wt-interop-self-test.yml`](.github/workflows/wt-interop-self-test.yml)
+  brings up the in-tree WebTransport echo server
+  ([`interop/external_wt/server.zig`](interop/external_wt/server.zig))
+  on a real UDP socket and runs the matrix runner against it —
+  this is a per-push gate covering the real-socket pump path
+  (which the in-process integration tests don't reach), without
+  depending on a third-party server.
+- Done: seeded fuzz corpus
+  ([`fuzz/corpus/`](fuzz/corpus/), 105 hand-curated inputs across
+  16 codec targets). [`fuzz/seed.zig`](fuzz/seed.zig) regenerates
+  the corpus from the project's own encoders for well-formed cases
+  + hand-crafted boundary/malformed cases (truncated headers,
+  reserved-HTTP/2 frame types, RFC 7541 Huffman vectors,
+  non-minimal WebSocket lengths, WT error-code stride boundaries,
+  …). [`fuzz/corpus_main.zig`](fuzz/corpus_main.zig) walks the
+  directory at runtime and feeds each file through `runTarget`.
+  Coverage-guided fuzzers can drop new files into the same dirs to
+  extend coverage without code changes.
+- Done: in-tree WebTransport echo server harness for self-tests.
+  Mirrors the existing
+  [`interop/curl_h3/server.zig`](interop/curl_h3/server.zig)
+  pattern (real UDP socket, drive `quic_zig.Connection` +
+  `http3_zig.Session`, flush via `TransportEndpoint`) but with
+  WebTransport-specific application logic: accepts WT CONNECTs,
+  echoes datagrams back, opens server-initiated uni streams
+  carrying inbound payloads. Build / run targets:
+  `external-wt-server`, `run-external-wt-server`. The harness
+  exits cleanly after `--max-sessions` round-trips or the
+  `--max-lifetime-ms` cap fires, both knobs with sensible CI
+  defaults.
+- Done: third-party WebTransport server pinned in
+  [`wt-interop.yml`](.github/workflows/wt-interop.yml). The workflow
+  installs Go, builds the in-repo
+  [`interop/external_wt/server_go/`](interop/external_wt/server_go/)
+  echo server (using `quic-go/webtransport-go` master, which speaks
+  draft-15 — pre-tagged-release because v0.10.0 is still draft-13),
+  brings it up against `tests/data/test_cert.pem` on a kernel-chosen
+  port, parses the `READY <port>` line, and points the matrix runner
+  at `https://127.0.0.1:<port>/wt-go-interop`. Operators can stack
+  additional URLs on top via the `urls` workflow input. The peer
+  binary mirrors the in-tree Zig server's CLI (`--listen / --cert /
+  --key / --max-sessions / --max-lifetime-ms`) so the same workflow
+  scaffolding can drive either.
+- Done: draft-15 wire-format pin. The implementation now tracks
+  draft-ietf-webtrans-http3-15 (July 2025 revision). The most visible
+  change is the SETTINGS bootstrap: draft-13's numeric
+  `SETTINGS_WT_MAX_SESSIONS = 0x14e9cd29` was retired in favor of the
+  boolean `SETTINGS_WT_ENABLED = 0x2c7cf000`. `Settings.wt_enabled :
+  bool` replaces `Settings.wt_max_sessions : ?u64`, the
+  `ProductionOptions.wt_max_sessions` knob is gone (no SETTINGS-side
+  session count to advertise), and the corresponding N+1 server-side
+  rejection path was removed because there is no longer a numeric
+  limit to enforce. Conformance tests cite §9.2 of draft-15 and pin
+  the codepoint numerically so an accidental revision drift surfaces
+  loudly. webtransport-go's master branch (post-PR #254, 2026-03-12)
+  speaks the same revision; it advertises both `0x2b603742`
+  (draft-06, kept for backward compat) and `0x2c7cf000` (draft-15) so
+  http3-zig's draft-15-only client interoperates cleanly.
 
 ## Phase 5: Hardening
 
@@ -215,8 +471,24 @@ Datagrams / capsules), and the QUIC RFCs already tracked by `quic-zig`.
   values ignorable and unbuffered.
 - Partial: send-side stream buffering, outgoing capsule values, session event
   queues, tracker body accumulation, decoded QPACK field sections, and the
-  production session preset now have opt-in caps; broader sustained
-  resource-pressure coverage is still needed around long-lived streams,
-  flow-control stalls, and external-peer traffic patterns.
-- Remaining: broader corpus growth plus sustained memory/flow/resource-pressure cases.
-- Interop matrix across quic-go, ngtcp2, lsquic, aioquic, and Chromium/curl where practical.
+  production session preset now have opt-in caps. Long-lived-stream
+  pressure now has explicit coverage
+  (`tests/integration/webtransport.zig` — 64-cycle write+drain on a
+  WebTransport uni stream verifies the per-stream
+  `buffered_bytes` high-water mark stays bounded and quiesces to
+  zero between drains). Flow-control stalls are exercised by the
+  WebTransport flow-control suite (`writeStream` → BLOCKED →
+  unblock-on-MAX_DATA). External-peer traffic patterns still
+  require running servers; the matrix harness is in place
+  (`zig build wt-interop-matrix`) but real-server runs are
+  scheduled rather than gating.
+- Remaining: broader fuzz corpus growth (the smoke corpus is small;
+  long-running fuzz campaigns through `zig build fuzz-codecs` against
+  a larger seeded corpus are not yet automated).
+- Interop matrix across quic-go, ngtcp2, lsquic, aioquic, and
+  Chromium/curl where practical — the
+  [`wt-interop` workflow](.github/workflows/wt-interop.yml) and
+  per-server recipes in
+  [`interop/external_wt/README.md`](interop/external_wt/README.md)
+  set up the harness; standing up the actual servers in CI is the
+  open work.

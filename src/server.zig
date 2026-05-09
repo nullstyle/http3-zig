@@ -13,6 +13,7 @@ const qpack = @import("qpack/root.zig");
 const session_mod = @import("session.zig");
 const settings_mod = @import("settings.zig");
 const websocket_mod = @import("websocket.zig");
+const webtransport_mod = @import("webtransport.zig");
 
 pub const TlsOptions = struct {
     verify: boringssl.tls.VerifyMode = .none,
@@ -428,6 +429,144 @@ pub const WebSocketServerStream = struct {
     }
 };
 
+pub const WebTransportAcceptOptions = webtransport_mod.AcceptOptions;
+
+/// Server-side WebTransport session handle, layered over the Extended
+/// CONNECT response that accepted the session
+/// (draft-ietf-webtrans-http3-15 §3).
+///
+/// Mirrors `WebTransportClientStream` on the response side. The server
+/// can open both unidirectional and bidirectional WebTransport streams
+/// via `openUniStream` / `openBidiStream`. The bidi case is the
+/// WebTransport carve-out from RFC 9114 §6.1 ¶3 (which otherwise
+/// forbids server-initiated bidi streams in HTTP/3); see
+/// `openBidiStream` below for the per-call details.
+pub const WebTransportServerStream = struct {
+    writer: ResponseWriter,
+
+    pub fn streamId(self: *const WebTransportServerStream) u64 {
+        return self.writer.stream_id;
+    }
+
+    pub fn sessionId(self: *const WebTransportServerStream) u64 {
+        return self.writer.stream_id;
+    }
+
+    pub fn sendDatagram(self: *WebTransportServerStream, payload: []const u8) session_mod.Error!void {
+        try self.writer.datagram(payload);
+    }
+
+    pub fn sendDatagramTracked(self: *WebTransportServerStream, payload: []const u8) session_mod.Error!u64 {
+        return try self.writer.datagramTracked(payload);
+    }
+
+    pub fn openUniStream(self: *WebTransportServerStream) session_mod.Error!u64 {
+        return try self.writer.server.session.openWebTransportUniStream(self.sessionId());
+    }
+
+    /// Opens a server-initiated bidirectional WebTransport stream
+    /// (draft-ietf-webtrans-http3 §4.2). HTTP/3 normally forbids the
+    /// server from initiating bidi streams; the WebTransport extension
+    /// carves out exactly this case for cross-peer application
+    /// streams. The underlying QUIC stream id has the
+    /// server-initiated-bidi pattern (low bits `0b01`); the prefix
+    /// (frame type `0x41` + Session ID) is written automatically.
+    pub fn openBidiStream(self: *WebTransportServerStream) session_mod.Error!u64 {
+        return try self.writer.server.session.openWebTransportBidiStream(self.sessionId());
+    }
+
+    pub fn writeStream(
+        self: *WebTransportServerStream,
+        stream_id: u64,
+        bytes: []const u8,
+    ) session_mod.Error!void {
+        try self.writer.server.session.writeWebTransportStream(stream_id, bytes);
+    }
+
+    pub fn finishStream(self: *WebTransportServerStream, stream_id: u64) session_mod.Error!void {
+        try self.writer.server.session.finishWebTransportStream(stream_id);
+    }
+
+    pub fn resetStream(
+        self: *WebTransportServerStream,
+        stream_id: u64,
+        app_error_code: u32,
+    ) session_mod.Error!void {
+        try self.writer.server.session.resetWebTransportStream(stream_id, app_error_code);
+    }
+
+    pub fn resetStreamWithCode(
+        self: *WebTransportServerStream,
+        stream_id: u64,
+        wire_code: u64,
+    ) session_mod.Error!void {
+        try self.writer.server.session.resetWebTransportStreamWithCode(stream_id, wire_code);
+    }
+
+    pub fn sendDrain(self: *WebTransportServerStream) (session_mod.Error || webtransport_mod.Error)!void {
+        var buf: [16]u8 = undefined;
+        const n = try webtransport_mod.encodeDrainSession(&buf);
+        try self.writer.write(buf[0..n]);
+    }
+
+    /// Sends a WebTransport flow-control capsule (`WT_MAX_DATA`)
+    /// advertising a higher receive limit to the peer.
+    pub fn sendMaxData(self: *WebTransportServerStream, value: u64) session_mod.Error!void {
+        try self.writer.server.session.sendWebTransportMaxData(self.sessionId(), value);
+    }
+
+    /// Sends `WT_MAX_STREAMS_BIDI`.
+    pub fn sendMaxStreamsBidi(self: *WebTransportServerStream, value: u64) session_mod.Error!void {
+        try self.writer.server.session.sendWebTransportMaxStreams(self.sessionId(), .bidi, value);
+    }
+
+    /// Sends `WT_MAX_STREAMS_UNI`.
+    pub fn sendMaxStreamsUni(self: *WebTransportServerStream, value: u64) session_mod.Error!void {
+        try self.writer.server.session.sendWebTransportMaxStreams(self.sessionId(), .uni, value);
+    }
+
+    /// Folds an inbound capsule decoded from the CONNECT stream's body
+    /// into the per-session flow-control state. Mirror of
+    /// `WebTransportClientStream.observeCapsule`.
+    pub fn observeCapsule(
+        self: *WebTransportServerStream,
+        decoded: capsule_mod.Capsule,
+    ) session_mod.Error!void {
+        try self.writer.server.session.observeWebTransportCapsule(self.sessionId(), decoded);
+    }
+
+    pub fn flowState(self: *const WebTransportServerStream) ?session_mod.WTSessionFlowSnapshot {
+        return self.writer.server.session.webTransportFlowSnapshot(self.sessionId());
+    }
+
+    pub fn close(
+        self: *WebTransportServerStream,
+        code: u32,
+        reason: []const u8,
+    ) (session_mod.Error || webtransport_mod.Error)!void {
+        var stack_buf: [16 + 4 + webtransport_mod.max_close_reason_len]u8 = undefined;
+        const n = try webtransport_mod.encodeCloseSession(&stack_buf, code, reason);
+        try self.writer.write(stack_buf[0..n]);
+        try self.writer.finish();
+    }
+
+    pub fn finishSend(self: *WebTransportServerStream) session_mod.Error!void {
+        try self.writer.finish();
+    }
+
+    pub fn reset(self: *WebTransportServerStream, error_code: u64) session_mod.Error!void {
+        try self.writer.reset(error_code);
+    }
+
+    pub fn abort(self: *WebTransportServerStream) session_mod.Error!void {
+        try self.writer.abort();
+    }
+
+    pub fn responseWriter(self: *WebTransportServerStream) *ResponseWriter {
+        return &self.writer;
+    }
+};
+
 pub const RequestReader = struct {
     request: *const RequestState,
 
@@ -483,6 +622,21 @@ pub const RequestReader = struct {
         return self.request.isConnectUdp();
     }
 
+    pub fn isWebTransport(self: RequestReader) bool {
+        return self.request.isWebTransport();
+    }
+
+    pub fn webTransportAvailableProtocolsRaw(self: RequestReader) ?[]const u8 {
+        return self.request.webTransportAvailableProtocolsRaw();
+    }
+
+    pub fn webTransportSubprotocols(
+        self: RequestReader,
+        allocator: std.mem.Allocator,
+    ) (webtransport_mod.Error || std.mem.Allocator.Error)!webtransport_mod.ParsedAvailableProtocols {
+        return self.request.webTransportSubprotocols(allocator);
+    }
+
     pub fn capsuleProtocolEnabled(self: RequestReader) bool {
         return self.request.capsuleProtocolEnabled();
     }
@@ -527,6 +681,11 @@ pub const RequestEvent = union(enum) {
     rejected: RequestRejected,
     cancel_push: session_mod.CancelPushEvent,
     priority_update: PriorityUpdate,
+    webtransport_stream_opened: session_mod.WebTransportStreamOpenedEvent,
+    webtransport_stream_data: session_mod.WebTransportStreamDataEvent,
+    webtransport_stream_finished: session_mod.WebTransportStreamFinishedEvent,
+    webtransport_stream_reset: session_mod.WebTransportStreamResetEvent,
+    webtransport_flow_violated: session_mod.WebTransportFlowViolationEvent,
     goaway: u64,
     connection_closed: ConnectionClosed,
     ignored_unknown_frame: UnknownFrame,
@@ -570,6 +729,11 @@ pub const RequestEvent = union(enum) {
             .ignored_unknown_frame => |unknown| .{ .ignored_unknown_frame = unknown },
             .push_promise => null,
             .push_stream => null,
+            .webtransport_stream_opened => |opened| .{ .webtransport_stream_opened = opened },
+            .webtransport_stream_data => |data| .{ .webtransport_stream_data = data },
+            .webtransport_stream_finished => |finished| .{ .webtransport_stream_finished = finished },
+            .webtransport_stream_reset => |reset| .{ .webtransport_stream_reset = reset },
+            .webtransport_flow_violated => |v| .{ .webtransport_flow_violated = v },
         };
     }
 };
@@ -876,6 +1040,69 @@ pub const Server = struct {
         };
     }
 
+    /// Accepts a WebTransport session bootstrap (draft-ietf-webtrans-http3-15
+    /// §3.3) by sending a `2xx` response on the CONNECT stream. The peer
+    /// MUST advertise all three of `SETTINGS_WT_ENABLED`, `H3_DATAGRAM`,
+    /// and `ENABLE_CONNECT_PROTOCOL` per draft-15 §9.2; this method
+    /// enforces that eagerly so the server doesn't commit to a session
+    /// the client cannot drive.
+    ///
+    /// Errors:
+    /// - `error.PeerSettingsNotReceived` — the SETTINGS frame from the
+    ///   peer hasn't landed yet. Pump the session loop and retry.
+    /// - `error.PeerDidNotEnableWebTransport` — the peer's SETTINGS are
+    ///   present but missing one or more of the three required entries.
+    /// - `error.NotWebTransport` — the request itself isn't a WT CONNECT.
+    /// - `error.InvalidAcceptStatus` — `options.status` isn't 2xx.
+    ///
+    /// When `options.subprotocol` is non-null, the server must have advertised
+    /// the chosen token in the client's `wt-available-protocols` list — this
+    /// helper enforces that with `error.SubprotocolNotOffered` and emits the
+    /// `wt-protocol` response header on success.
+    pub fn acceptWebTransport(
+        self: *Server,
+        allocator: std.mem.Allocator,
+        request: RequestReader,
+        options: WebTransportAcceptOptions,
+    ) (session_mod.Error || webtransport_mod.Error)!WebTransportServerStream {
+        if (!request.isWebTransport()) return error.NotWebTransport;
+        if (!webtransport_mod.isAcceptedStatus(options.status)) return error.InvalidAcceptStatus;
+        const peer = self.session.peer_settings orelse return webtransport_mod.Error.PeerSettingsNotReceived;
+        if (!webtransport_mod.peerEnabled(peer)) return webtransport_mod.Error.PeerDidNotEnableWebTransport;
+
+        var writer: ResponseWriter = undefined;
+        if (options.subprotocol) |selected| {
+            try webtransport_mod.validateSubprotocolToken(selected);
+            const offered = request.webTransportAvailableProtocolsRaw() orelse "";
+            if (!webtransport_mod.isOfferedProtocol(offered, selected)) {
+                return error.SubprotocolNotOffered;
+            }
+            const combined = try allocator.alloc(qpack.FieldLine, options.headers.len + 1);
+            defer allocator.free(combined);
+            combined[0] = .{
+                .name = webtransport_mod.protocol_header,
+                .value = selected,
+            };
+            for (options.headers, 0..) |header, i| combined[i + 1] = header;
+            writer = try self.startResponse(allocator, request.streamId(), .{
+                .status = options.status,
+                .headers = combined,
+            });
+        } else {
+            writer = try self.startResponse(allocator, request.streamId(), .{
+                .status = options.status,
+                .headers = options.headers,
+            });
+        }
+
+        // Mark the CONNECT stream as a confirmed WebTransport session.
+        // Any peer-opened streams that arrive afterwards referencing this
+        // Session ID dispatch immediately; bytes already buffered for
+        // this session are replayed at the start of the next drain.
+        try self.session.confirmWebTransportSession(request.streamId());
+        return .{ .writer = writer };
+    }
+
     pub fn classify(self: *const Server, event: session_mod.Event) ?RequestEvent {
         _ = self;
         return RequestEvent.from(event);
@@ -947,6 +1174,30 @@ pub const RequestState = struct {
 
     pub fn isConnectUdp(self: *const RequestState) bool {
         return masque_mod.isConnectUdpRequest(self.headerFields());
+    }
+
+    pub fn isWebTransport(self: *const RequestState) bool {
+        return webtransport_mod.isRequest(self.headerFields());
+    }
+
+    /// Raw `wt-available-protocols` header value, or null if the client
+    /// did not offer subprotocols.
+    pub fn webTransportAvailableProtocolsRaw(self: *const RequestState) ?[]const u8 {
+        return webtransport_mod.requestAvailableProtocolsRaw(self.headerFields());
+    }
+
+    /// Parses the client-offered WebTransport subprotocols. Caller frees
+    /// the returned `tokens` slice via `ParsedAvailableProtocols.deinit`.
+    /// The token sub-slices borrow from the request state's headers, so
+    /// the request must outlive their use.
+    pub fn webTransportSubprotocols(
+        self: *const RequestState,
+        allocator: std.mem.Allocator,
+    ) (webtransport_mod.Error || std.mem.Allocator.Error)!webtransport_mod.ParsedAvailableProtocols {
+        const value = self.webTransportAvailableProtocolsRaw() orelse {
+            return .{ .tokens = try allocator.alloc([]const u8, 0) };
+        };
+        return webtransport_mod.parseAvailableProtocols(allocator, value);
     }
 
     pub fn capsuleProtocolEnabled(self: *const RequestState) bool {
@@ -1076,6 +1327,11 @@ pub const RequestTracker = struct {
             .goaway,
             .connection_closed,
             .ignored_unknown_frame,
+            .webtransport_stream_opened,
+            .webtransport_stream_data,
+            .webtransport_stream_finished,
+            .webtransport_stream_reset,
+            .webtransport_flow_violated,
             => return null,
         }
     }

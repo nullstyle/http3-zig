@@ -28,6 +28,11 @@ pub const BatchStats = struct {
     ignored_unknown_frames: usize = 0,
     state_updates: usize = 0,
     completions: usize = 0,
+    webtransport_streams_opened: usize = 0,
+    webtransport_stream_data: usize = 0,
+    webtransport_streams_finished: usize = 0,
+    webtransport_streams_reset: usize = 0,
+    webtransport_flow_violations: usize = 0,
 };
 
 pub const ClientObservation = union(enum) {
@@ -46,6 +51,11 @@ pub const ClientObservation = union(enum) {
     goaway: u64,
     connection_closed: client_mod.ConnectionClosed,
     ignored_unknown_frame: client_mod.UnknownFrame,
+    webtransport_stream_opened: session_mod.WebTransportStreamOpenedEvent,
+    webtransport_stream_data: session_mod.WebTransportStreamDataEvent,
+    webtransport_stream_finished: session_mod.WebTransportStreamFinishedEvent,
+    webtransport_stream_reset: session_mod.WebTransportStreamResetEvent,
+    webtransport_flow_violated: session_mod.WebTransportFlowViolationEvent,
 };
 
 pub const ServerObservation = union(enum) {
@@ -63,6 +73,11 @@ pub const ServerObservation = union(enum) {
     goaway: u64,
     connection_closed: server_mod.ConnectionClosed,
     ignored_unknown_frame: server_mod.UnknownFrame,
+    webtransport_stream_opened: session_mod.WebTransportStreamOpenedEvent,
+    webtransport_stream_data: session_mod.WebTransportStreamDataEvent,
+    webtransport_stream_finished: session_mod.WebTransportStreamFinishedEvent,
+    webtransport_stream_reset: session_mod.WebTransportStreamResetEvent,
+    webtransport_flow_violated: session_mod.WebTransportFlowViolationEvent,
 };
 
 pub const ClientRunnerConfig = struct {
@@ -170,6 +185,11 @@ pub const ClientRunner = struct {
                 const pushed = (try self.push_tracker.observe(event)) orelse return .ignored;
                 return .{ .pushed_response_complete = pushed };
             },
+            .webtransport_stream_opened => |opened| return .{ .webtransport_stream_opened = opened },
+            .webtransport_stream_data => |data| return .{ .webtransport_stream_data = data },
+            .webtransport_stream_finished => |finished| return .{ .webtransport_stream_finished = finished },
+            .webtransport_stream_reset => |reset| return .{ .webtransport_stream_reset = reset },
+            .webtransport_flow_violated => |v| return .{ .webtransport_flow_violated = v },
         }
     }
 
@@ -249,6 +269,11 @@ pub const ServerRunner = struct {
                 const request_state = (try self.tracker.observe(event)) orelse return .ignored;
                 return .{ .request_complete = request_state };
             },
+            .webtransport_stream_opened => |opened| return .{ .webtransport_stream_opened = opened },
+            .webtransport_stream_data => |data| return .{ .webtransport_stream_data = data },
+            .webtransport_stream_finished => |finished| return .{ .webtransport_stream_finished = finished },
+            .webtransport_stream_reset => |reset| return .{ .webtransport_stream_reset = reset },
+            .webtransport_flow_violated => |v| return .{ .webtransport_flow_violated = v },
         }
     }
 
@@ -291,6 +316,11 @@ fn noteClientObservation(
         .goaway => stats.goaways += 1,
         .connection_closed => stats.connection_closes += 1,
         .ignored_unknown_frame => stats.ignored_unknown_frames += 1,
+        .webtransport_stream_opened => stats.webtransport_streams_opened += 1,
+        .webtransport_stream_data => stats.webtransport_stream_data += 1,
+        .webtransport_stream_finished => stats.webtransport_streams_finished += 1,
+        .webtransport_stream_reset => stats.webtransport_streams_reset += 1,
+        .webtransport_flow_violated => stats.webtransport_flow_violations += 1,
     }
 }
 
@@ -319,5 +349,10 @@ fn noteServerObservation(
         .goaway => stats.goaways += 1,
         .connection_closed => stats.connection_closes += 1,
         .ignored_unknown_frame => stats.ignored_unknown_frames += 1,
+        .webtransport_stream_opened => stats.webtransport_streams_opened += 1,
+        .webtransport_stream_data => stats.webtransport_stream_data += 1,
+        .webtransport_stream_finished => stats.webtransport_streams_finished += 1,
+        .webtransport_stream_reset => stats.webtransport_streams_reset += 1,
+        .webtransport_flow_violated => stats.webtransport_flow_violations += 1,
     }
 }

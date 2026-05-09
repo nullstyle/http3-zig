@@ -7,7 +7,8 @@ pub const alpn_protocols = [_][]const u8{alpn_h3};
 
 pub const Role = enum { client, server };
 
-/// HTTP/3 frame type IDs (RFC 9114 §7.2, RFC 9218 §7.2).
+/// HTTP/3 frame type IDs (RFC 9114 §7.2, RFC 9218 §7.2,
+/// draft-ietf-webtrans-http3 §4.2).
 pub const FrameType = struct {
     pub const data: u64 = 0x00;
     pub const headers: u64 = 0x01;
@@ -22,23 +23,37 @@ pub const FrameType = struct {
     pub const max_push_id: u64 = 0x0d;
     pub const priority_update_request: u64 = 0x0f0700;
     pub const priority_update_push: u64 = 0x0f0701;
+    /// WebTransport bidirectional stream prefix (no length, payload runs
+    /// to end-of-stream).
+    pub const webtransport_bidi_stream: u64 = 0x41;
 };
 
-/// HTTP/3 unidirectional stream type IDs (RFC 9114 §6.2, RFC 9204 §4.2).
+/// HTTP/3 unidirectional stream type IDs (RFC 9114 §6.2, RFC 9204 §4.2,
+/// draft-ietf-webtrans-http3 §4.1).
 pub const StreamType = struct {
     pub const control: u64 = 0x00;
     pub const push: u64 = 0x01;
     pub const qpack_encoder: u64 = 0x02;
     pub const qpack_decoder: u64 = 0x03;
+    /// WebTransport unidirectional stream prefix; followed by varint Session ID.
+    pub const webtransport_uni_stream: u64 = 0x54;
 };
 
-/// HTTP/3 SETTINGS IDs (RFC 9114 §7.2.4, RFC 9204 §5, RFC 9220 §3, RFC 9297 §2.1).
+/// HTTP/3 SETTINGS IDs (RFC 9114 §7.2.4, RFC 9204 §5, RFC 9220 §3, RFC 9297 §2.1,
+/// draft-ietf-webtrans-http3-15 §9.2).
 pub const SettingId = struct {
     pub const qpack_max_table_capacity: u64 = 0x01;
     pub const max_field_section_size: u64 = 0x06;
     pub const qpack_blocked_streams: u64 = 0x07;
     pub const enable_connect_protocol: u64 = 0x08;
     pub const h3_datagram: u64 = 0x33;
+    /// `SETTINGS_WT_ENABLED` from draft-ietf-webtrans-http3-15 §9.2.
+    /// Boolean (0 or 1): both client and server MUST send this with a
+    /// value greater than 0 to advertise support for WebTransport over
+    /// HTTP/3. The codepoint is draft-revision-specific by design — each
+    /// draft revision gets its own codepoint so peers can negotiate
+    /// which version they support.
+    pub const wt_enabled: u64 = 0x2c7cf000;
 };
 
 /// HTTP/3, HTTP Datagrams, and QPACK error codes (RFC 9114 §8.1, RFC 9297 §5.2, RFC 9204 §6).

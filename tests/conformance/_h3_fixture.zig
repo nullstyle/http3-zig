@@ -69,6 +69,16 @@ fn initConnectedQuic(
     try client.setLocalScid(&ClientCid);
     try server.setPeerDcid(&ClientCid);
     try server.setLocalScid(&ServerCid);
+
+    // The `handshake` helper above uses an in-process outbox→inbox shim
+    // rather than real datagrams, so the server's primary path never
+    // sees an authenticated Handshake packet to flip its validated bit.
+    // Mark it validated here so the post-handshake state matches what
+    // RFC 9000 §8.1 / §8.1.4 promise on the wire (without this, the
+    // server's anti-amplification budget stays at 0 and outgoing
+    // CONNECTION_CLOSE per §10 is silently held back). Mirrors the
+    // same fix in `tests/integration/_fixtures.zig`.
+    _ = server.markPathValidated(server.activePathId());
 }
 
 pub fn clearSessionEvents(

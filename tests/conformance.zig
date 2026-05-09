@@ -46,4 +46,6 @@ test {
     _ = @import("conformance/rfc6455_websocket.zig");
     // RFC 9298 — Proxying UDP in HTTP (CONNECT-UDP)
     _ = @import("conformance/rfc9298_masque.zig");
+    // draft-ietf-webtrans-http3 — WebTransport over HTTP/3
+    _ = @import("conformance/draft_webtrans_http3.zig");
 }

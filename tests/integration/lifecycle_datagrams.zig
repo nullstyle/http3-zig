@@ -115,10 +115,14 @@ test "session exchanges HTTP/3 datagrams over quic_zig datagram frames" {
         clearSessionEvents(allocator, &server_events);
     }
 
+    // Classic CONNECT request: per RFC 9114 §4.4 ¶3, `:scheme`
+    // and `:path` are omitted on the wire. `buildRequestFields`
+    // auto-detects this when `:method = "CONNECT"` and no
+    // `:protocol` is set; we leave `path` at its default since
+    // the builder won't emit it.
     var writer = try h3_client.startRequest(allocator, .{
         .method = "CONNECT",
         .authority = "localhost",
-        .path = "/datagram",
     });
     const stream_id = writer.stream_id;
     const tracked_client_datagram_id = try writer.datagramTracked("from-client");

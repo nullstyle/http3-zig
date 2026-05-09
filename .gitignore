@@ -2,3 +2,17 @@
 zig-cache/
 zig-out/
 zig-pkg/
+
+# OS / IDE clutter
+.DS_Store
+.vscode/
+.idea/
+
+# Built interop peer binaries (cleared via `go clean` / `cargo clean`
+# but easy to commit by accident with `git add interop/`).
+interop/external_wt/server_go/server_go
+interop/external_wt/server_python/__pycache__/
+interop/external_wt/server_python/.venv/
+
+# CHANGELOG / release scratch
+CHANGELOG.draft

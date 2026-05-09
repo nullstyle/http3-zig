@@ -76,6 +76,23 @@ pub fn initConnectedQuic(
     try client.setLocalScid(&ClientCid);
     try server.setPeerDcid(&ClientCid);
     try server.setLocalScid(&ServerCid);
+
+    // The `handshake` helper completes TLS through an in-process
+    // outbox→inbox shim instead of real datagrams (see
+    // `Connection.advance` and `shuttleOutboxToPeer` in quic-zig). On the
+    // wire, RFC 9000 §8.1 / §8.1.4 promise that a server's primary path
+    // is implicitly validated by receipt of an authenticated Handshake
+    // packet from the client (`conn_recv_packet_handlers.zig` flips the
+    // validated bit there). Bypassing the wire skips that flip, leaving
+    // the server's path unvalidated with a 3*bytes_received anti-amp
+    // budget of 0 — which silently drops outgoing CONNECTION_CLOSE
+    // (RFC 9000 §10) and any other server-initiated 1-RTT bytes that
+    // run before the client's first packet lands. Mark it validated
+    // here so the fixture matches the post-handshake state real
+    // datagrams would have produced. The client's primary path is
+    // already validated in `Connection.initClient` per §8.1 (the
+    // client picked the destination address itself).
+    _ = server.markPathValidated(server.activePathId());
 }
 
 pub fn clearSessionEvents(

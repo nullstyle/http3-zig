@@ -12,6 +12,7 @@ test {
     _ = @import("integration/messages.zig");
     _ = @import("integration/facades.zig");
     _ = @import("integration/extended_connect.zig");
+    _ = @import("integration/webtransport.zig");
     _ = @import("integration/push.zig");
     _ = @import("integration/session_errors.zig");
     _ = @import("integration/budgets.zig");

@@ -1,8 +1,87 @@
 # http3-zig
 
 A Zig-first HTTP/3 implementation for Zig 0.16.0, built on top of
-[`quic-zig`](../quic-zig) for QUIC transport and [`boringssl-zig`](../boringssl-zig)
+[`quic-zig`](https://github.com/nullstyle/quic-zig) for QUIC transport
+and [`boringssl-zig`](https://github.com/nullstyle/boringssl-zig)
 for TLS 1.3 / ALPN configuration.
+
+**Wire-format pin:**
+
+| Spec | Revision |
+|---|---|
+| HTTP/3 | RFC 9114 |
+| QPACK | RFC 9204 |
+| HTTP Datagrams | RFC 9297 |
+| Extended CONNECT | RFC 9220 |
+| Priority | RFC 9218 |
+| WebSocket-over-H3 | RFC 8441 / 9220 |
+| CONNECT-UDP / MASQUE | RFC 9298 |
+| WebTransport | **draft-ietf-webtrans-http3-15** (`SETTINGS_WT_ENABLED = 0x2c7cf000`) |
+
+**License:** Apache 2.0 — see [`LICENSE`](LICENSE).
+**Security:** disclosure policy in [`SECURITY.md`](SECURITY.md).
+**Changelog:** [`CHANGELOG.md`](CHANGELOG.md).
+
+## Install
+
+http3-zig is a Zig package; consume it via `zig fetch`:
+
+```sh
+zig fetch --save https://github.com/nullstyle/http3-zig/archive/<commit-or-tag>.tar.gz
+```
+
+Then in your `build.zig`:
+
+```zig
+const http3_zig = b.dependency("http3_zig", .{
+    .target = target,
+    .optimize = optimize,
+});
+exe.root_module.addImport("http3_zig", http3_zig.module("http3_zig"));
+```
+
+http3-zig pulls in `quic-zig` and `boringssl-zig` as transitive
+dependencies; no extra wiring is required for those.
+
+## Quick example
+
+The simplest end-to-end shape is the in-process loopback under
+[`examples/loopback_get.zig`](examples/loopback_get.zig):
+
+```zig
+const std = @import("std");
+const http3_zig = @import("http3_zig");
+
+// 1. Bring up `quic_zig.Connection` instances on both sides
+//    (handshake, transport params, etc.).
+// 2. Build paired `http3_zig.Session` objects with the production
+//    config preset:
+const cfg = http3_zig.session.Config.production(.{
+    .max_field_section_size = 64 * 1024,
+});
+var client_session = http3_zig.Session.init(allocator, .client, &client_quic, cfg);
+defer client_session.deinit();
+var server_session = http3_zig.Session.init(allocator, .server, &server_quic, cfg);
+defer server_session.deinit();
+
+// 3. Wire `Client` / `Server` facades on top:
+var client = http3_zig.Client.init(&client_session);
+var server = http3_zig.Server.init(&server_session);
+
+// 4. Drive a request:
+var req = try client.startRequest(allocator, .{
+    .authority = "example.com",
+    .path = "/",
+});
+try req.finish();
+// ... pump packets, drain events, observe responses ...
+```
+
+See [`examples/loopback_get.zig`](examples/loopback_get.zig) for the
+full pump loop, and [`examples/loopback_wt.zig`](examples/loopback_wt.zig)
+for the WebTransport variant.
+
+## Status
 
 **Status: session scaffold.** The package now provides the stable protocol
 surfaces plus a first HTTP/3 session layer over `quic-zig.Connection`: HTTP/3

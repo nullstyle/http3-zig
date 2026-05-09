@@ -52,6 +52,20 @@ pub const TraceEventName = enum {
     qpack_decoder_instruction_received,
     flow_blocked,
     connection_ids_needed,
+    webtransport_stream_opened,
+    webtransport_stream_data_received,
+    webtransport_stream_finished,
+    webtransport_stream_reset_received,
+    /// Peer sent `WT_DATA_BLOCKED` (draft-ietf-webtrans-http3-15
+    /// §5.6.5). The application should consider raising
+    /// `local_max_data` via `Session.sendWebTransportMaxData`.
+    webtransport_peer_data_blocked,
+    /// Peer sent `WT_STREAMS_BLOCKED_BIDI` or `_UNI`
+    /// (§5.6.3). Application may want to raise the matching
+    /// `local_max_streams_*` via `Session.sendWebTransportMaxStreams`.
+    webtransport_peer_streams_blocked,
+    /// Peer sent `DRAIN_WEBTRANSPORT_SESSION` (§5.5).
+    webtransport_session_drain_received,
 };
 
 pub const TraceEvent = struct {
@@ -104,6 +118,10 @@ pub const Metrics = struct {
     datagrams_received: u64 = 0,
     datagrams_acked: u64 = 0,
     datagrams_lost: u64 = 0,
+    /// Inbound DATAGRAMs whose embedded stream id doesn't reference a
+    /// known session stream. Per RFC 9297 §5, these are silently
+    /// dropped rather than surfaced as `datagram` events.
+    datagrams_dropped_orphan: u64 = 0,
     datagram_bytes_sent: u64 = 0,
     datagram_bytes_received: u64 = 0,
 
@@ -127,6 +145,19 @@ pub const Metrics = struct {
 
     flow_blocked_events: u64 = 0,
     connection_ids_needed_events: u64 = 0,
+
+    webtransport_streams_opened: u64 = 0,
+    webtransport_stream_data_received: u64 = 0,
+    webtransport_stream_data_bytes_received: u64 = 0,
+    webtransport_streams_finished: u64 = 0,
+    webtransport_stream_resets_received: u64 = 0,
+    /// Inbound `WT_DATA_BLOCKED` capsules.
+    webtransport_peer_data_blocked: u64 = 0,
+    /// Inbound `WT_STREAMS_BLOCKED_BIDI` + `WT_STREAMS_BLOCKED_UNI`
+    /// capsules (combined).
+    webtransport_peer_streams_blocked: u64 = 0,
+    /// Inbound `DRAIN_WEBTRANSPORT_SESSION` capsules.
+    webtransport_session_drain_received: u64 = 0,
 
     pub fn observe(self: *Metrics, event: TraceEvent) void {
         switch (event.name) {
@@ -219,6 +250,16 @@ pub const Metrics = struct {
             .qpack_decoder_instruction_received => increment(&self.qpack_decoder_instructions_received),
             .flow_blocked => increment(&self.flow_blocked_events),
             .connection_ids_needed => increment(&self.connection_ids_needed_events),
+            .webtransport_stream_opened => increment(&self.webtransport_streams_opened),
+            .webtransport_stream_data_received => {
+                increment(&self.webtransport_stream_data_received);
+                addBytes(&self.webtransport_stream_data_bytes_received, event.bytes);
+            },
+            .webtransport_stream_finished => increment(&self.webtransport_streams_finished),
+            .webtransport_stream_reset_received => increment(&self.webtransport_stream_resets_received),
+            .webtransport_peer_data_blocked => increment(&self.webtransport_peer_data_blocked),
+            .webtransport_peer_streams_blocked => increment(&self.webtransport_peer_streams_blocked),
+            .webtransport_session_drain_received => increment(&self.webtransport_session_drain_received),
         }
     }
 };

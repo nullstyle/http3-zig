@@ -202,3 +202,80 @@ test "production session config advertises limits and enforces caps" {
     try std.testing.expectEqual(http3_zig.session.ShutdownState.closed, pair.server_h3.shutdownState());
     try expectLastCloseCode(&pair.server_h3, http3_zig.protocol.ErrorCode.message_error);
 }
+
+test "session caps concurrent peer-opened streams via max_concurrent_peer_streams" {
+    // Defense-in-depth: a peer that opens streams without finishing
+    // them should hit Config.max_concurrent_peer_streams and be
+    // rejected with STOP_SENDING(H3_REQUEST_REJECTED), rather than
+    // growing the session's `streams` map unboundedly.
+    const allocator = std.testing.allocator;
+
+    var pair: H3Pair = undefined;
+    try pair.initStarted(
+        allocator,
+        .{ .max_concurrent_peer_streams = 4 },
+        .{ .max_concurrent_peer_streams = 4 },
+    );
+    defer pair.deinit();
+    try exchangePairSettings(allocator, &pair);
+
+    var h3_client = http3_zig.Client.init(&pair.client_h3);
+
+    var client_events: std.ArrayList(http3_zig.session.Event) = .empty;
+    defer {
+        clearSessionEvents(allocator, &client_events);
+        client_events.deinit(allocator);
+    }
+    var server_events: std.ArrayList(http3_zig.session.Event) = .empty;
+    defer {
+        clearSessionEvents(allocator, &server_events);
+        server_events.deinit(allocator);
+    }
+
+    // Open many request streams without finishing any. The cap on the
+    // server side should reject the late ones via STOP_SENDING.
+    var opened: u32 = 0;
+    while (opened < 16) : (opened += 1) {
+        const req = h3_client.startRequest(allocator, .{
+            .authority = "localhost",
+            .path = "/abuse",
+        }) catch break;
+        _ = req;
+    }
+    try std.testing.expect(opened > 0);
+
+    // Pump: the server tracks each opened stream until it hits its cap,
+    // then rejects further ones. We just want to confirm the count
+    // doesn't grow unboundedly.
+    var now_us: u64 = 1_000_000;
+    var iters: u32 = 0;
+    while (iters < 5000) : (iters += 1) {
+        try fixt.pumpH3(
+            &pair.client,
+            &pair.server,
+            &pair.client_h3,
+            &pair.server_h3,
+            &client_events,
+            &server_events,
+            &now_us,
+        );
+        clearSessionEvents(allocator, &server_events);
+        clearSessionEvents(allocator, &client_events);
+        if (pair.server_h3.streams.count() >= 4) break;
+    }
+
+    // Server's tracked stream map MUST NOT exceed the cap. Without
+    // enforcement, count() would equal `opened` (plus any control
+    // streams). With enforcement, count is capped at 4.
+    try std.testing.expect(pair.server_h3.streams.count() <= 4);
+
+    // Cap rejection is per-stream, not a connection-killer.
+    try std.testing.expectEqual(
+        http3_zig.session.ShutdownState.active,
+        pair.server_h3.shutdownState(),
+    );
+    try std.testing.expectEqual(
+        http3_zig.session.ShutdownState.active,
+        pair.client_h3.shutdownState(),
+    );
+}

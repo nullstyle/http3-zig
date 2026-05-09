@@ -13,6 +13,7 @@ const qpack = @import("qpack/root.zig");
 const session_mod = @import("session.zig");
 const settings_mod = @import("settings.zig");
 const websocket_mod = @import("websocket.zig");
+const webtransport_mod = @import("webtransport.zig");
 
 pub const TlsOptions = struct {
     verify: boringssl.tls.VerifyMode = .system,
@@ -355,6 +356,159 @@ pub const WebSocketClientStream = struct {
     }
 };
 
+pub const WebTransportConnectOptions = webtransport_mod.ConnectOptions;
+
+/// Client-side WebTransport session handle, layered over the Extended
+/// CONNECT request stream that bootstrapped the session
+/// (draft-ietf-webtrans-http3 §3).
+///
+/// The handle exposes:
+///   - datagram send/receive via the existing HTTP/3 Datagram path,
+///   - WebTransport stream creation (uni + client-initiated bidi) with the
+///     mandatory stream-prefix written automatically,
+///   - DRAIN_WEBTRANSPORT_SESSION / CLOSE_WEBTRANSPORT_SESSION capsule sends,
+///   - underlying request-writer access for callers who need raw header /
+///     trailer / capsule control.
+pub const WebTransportClientStream = struct {
+    writer: RequestWriter,
+
+    pub fn streamId(self: *const WebTransportClientStream) u64 {
+        return self.writer.stream_id;
+    }
+
+    /// The WebTransport Session ID is the request stream ID of the CONNECT
+    /// request that opened the session (draft-ietf-webtrans-http3 §2.3).
+    pub fn sessionId(self: *const WebTransportClientStream) u64 {
+        return self.writer.stream_id;
+    }
+
+    pub fn sendDatagram(self: *WebTransportClientStream, payload: []const u8) session_mod.Error!void {
+        try self.writer.datagram(payload);
+    }
+
+    pub fn sendDatagramTracked(self: *WebTransportClientStream, payload: []const u8) session_mod.Error!u64 {
+        return try self.writer.datagramTracked(payload);
+    }
+
+    /// Opens a new client-initiated WebTransport unidirectional stream and
+    /// writes the WebTransport stream prefix. Returns the underlying QUIC
+    /// stream id for subsequent `writeStream` / `finishStream` /
+    /// `resetStream` calls.
+    pub fn openUniStream(self: *WebTransportClientStream) session_mod.Error!u64 {
+        return try self.writer.client.session.openWebTransportUniStream(self.sessionId());
+    }
+
+    /// Opens a new client-initiated WebTransport bidirectional stream and
+    /// writes the WebTransport bidi-frame prefix.
+    pub fn openBidiStream(self: *WebTransportClientStream) session_mod.Error!u64 {
+        return try self.writer.client.session.openWebTransportBidiStream(self.sessionId());
+    }
+
+    pub fn writeStream(
+        self: *WebTransportClientStream,
+        stream_id: u64,
+        bytes: []const u8,
+    ) session_mod.Error!void {
+        try self.writer.client.session.writeWebTransportStream(stream_id, bytes);
+    }
+
+    pub fn finishStream(self: *WebTransportClientStream, stream_id: u64) session_mod.Error!void {
+        try self.writer.client.session.finishWebTransportStream(stream_id);
+    }
+
+    pub fn resetStream(
+        self: *WebTransportClientStream,
+        stream_id: u64,
+        app_error_code: u32,
+    ) session_mod.Error!void {
+        try self.writer.client.session.resetWebTransportStream(stream_id, app_error_code);
+    }
+
+    pub fn resetStreamWithCode(
+        self: *WebTransportClientStream,
+        stream_id: u64,
+        wire_code: u64,
+    ) session_mod.Error!void {
+        try self.writer.client.session.resetWebTransportStreamWithCode(stream_id, wire_code);
+    }
+
+    /// Sends a `DRAIN_WEBTRANSPORT_SESSION` capsule on the CONNECT stream;
+    /// the peer is expected to stop opening new streams but may finish
+    /// in-flight work (draft-ietf-webtrans-http3 §5.5).
+    pub fn sendDrain(self: *WebTransportClientStream) (session_mod.Error || webtransport_mod.Error)!void {
+        var buf: [16]u8 = undefined;
+        const n = try webtransport_mod.encodeDrainSession(&buf);
+        try self.writer.write(buf[0..n]);
+    }
+
+    /// Sends a WebTransport flow-control capsule (`WT_MAX_DATA`)
+    /// advertising a higher receive limit to the peer. Updates
+    /// `flowState().local_max_data` to match.
+    pub fn sendMaxData(self: *WebTransportClientStream, value: u64) session_mod.Error!void {
+        try self.writer.client.session.sendWebTransportMaxData(self.sessionId(), value);
+    }
+
+    /// Sends `WT_MAX_STREAMS_BIDI`. Mirror of `sendMaxData` for the
+    /// peer's allowed concurrent bidi streams.
+    pub fn sendMaxStreamsBidi(self: *WebTransportClientStream, value: u64) session_mod.Error!void {
+        try self.writer.client.session.sendWebTransportMaxStreams(self.sessionId(), .bidi, value);
+    }
+
+    /// Sends `WT_MAX_STREAMS_UNI`.
+    pub fn sendMaxStreamsUni(self: *WebTransportClientStream, value: u64) session_mod.Error!void {
+        try self.writer.client.session.sendWebTransportMaxStreams(self.sessionId(), .uni, value);
+    }
+
+    /// Folds an inbound capsule decoded from the CONNECT stream's body
+    /// into the per-session flow-control state. Call this when
+    /// iterating capsules out of `response_updated.body()` events for
+    /// the CONNECT stream — the session uses the resulting state to
+    /// gate `writeStream` / `openUniStream` / `openBidiStream`.
+    /// Capsules outside the WebTransport family are ignored.
+    pub fn observeCapsule(
+        self: *WebTransportClientStream,
+        decoded: capsule_mod.Capsule,
+    ) session_mod.Error!void {
+        try self.writer.client.session.observeWebTransportCapsule(self.sessionId(), decoded);
+    }
+
+    /// Read-only snapshot of the per-session flow-control counters and
+    /// peer-advertised limits.
+    pub fn flowState(self: *const WebTransportClientStream) ?session_mod.WTSessionFlowSnapshot {
+        return self.writer.client.session.webTransportFlowSnapshot(self.sessionId());
+    }
+
+    /// Sends a `CLOSE_WEBTRANSPORT_SESSION` capsule and finishes the CONNECT
+    /// stream. After this call returns, the session MUST NOT carry further
+    /// application traffic (draft-ietf-webtrans-http3 §5.4).
+    pub fn close(
+        self: *WebTransportClientStream,
+        code: u32,
+        reason: []const u8,
+    ) (session_mod.Error || webtransport_mod.Error)!void {
+        var stack_buf: [16 + 4 + webtransport_mod.max_close_reason_len]u8 = undefined;
+        const n = try webtransport_mod.encodeCloseSession(&stack_buf, code, reason);
+        try self.writer.write(stack_buf[0..n]);
+        try self.writer.finish();
+    }
+
+    pub fn finishSend(self: *WebTransportClientStream) session_mod.Error!void {
+        try self.writer.finish();
+    }
+
+    pub fn reset(self: *WebTransportClientStream, error_code: u64) session_mod.Error!void {
+        try self.writer.reset(error_code);
+    }
+
+    pub fn abort(self: *WebTransportClientStream) session_mod.Error!void {
+        try self.writer.abort();
+    }
+
+    pub fn requestWriter(self: *WebTransportClientStream) *RequestWriter {
+        return &self.writer;
+    }
+};
+
 pub const PushPromise = struct {
     push_id: u64,
     field_section: []u8,
@@ -394,6 +548,14 @@ pub const ResponseReader = struct {
 
     pub fn connectUdpAccepted(self: ResponseReader) bool {
         return self.response.connectUdpAccepted();
+    }
+
+    pub fn webTransportAccepted(self: ResponseReader) bool {
+        return self.response.webTransportAccepted();
+    }
+
+    pub fn webTransportSubprotocol(self: ResponseReader) ?[]const u8 {
+        return self.response.webTransportSubprotocol();
     }
 
     pub fn capsuleProtocolEnabled(self: ResponseReader) bool {
@@ -437,6 +599,11 @@ pub const ResponseEvent = union(enum) {
     push_reset: StreamReset,
     finished: StreamFinished,
     reset: StreamReset,
+    webtransport_stream_opened: session_mod.WebTransportStreamOpenedEvent,
+    webtransport_stream_data: session_mod.WebTransportStreamDataEvent,
+    webtransport_stream_finished: session_mod.WebTransportStreamFinishedEvent,
+    webtransport_stream_reset: session_mod.WebTransportStreamResetEvent,
+    webtransport_flow_violated: session_mod.WebTransportFlowViolationEvent,
     goaway: u64,
     connection_closed: ConnectionClosed,
     ignored_unknown_frame: UnknownFrame,
@@ -494,6 +661,11 @@ pub const ResponseEvent = union(enum) {
             .ignored_unknown_frame => |unknown| .{ .ignored_unknown_frame = unknown },
             .request_rejected => null,
             .priority_update => null,
+            .webtransport_stream_opened => |opened| .{ .webtransport_stream_opened = opened },
+            .webtransport_stream_data => |data| .{ .webtransport_stream_data = data },
+            .webtransport_stream_finished => |finished| .{ .webtransport_stream_finished = finished },
+            .webtransport_stream_reset => |reset| .{ .webtransport_stream_reset = reset },
+            .webtransport_flow_violated => |v| .{ .webtransport_flow_violated = v },
         };
     }
 };
@@ -548,6 +720,18 @@ pub const ResponseState = struct {
 
     pub fn connectUdpAccepted(self: *const ResponseState) bool {
         return masque_mod.responseAccepted(self.headerFields());
+    }
+
+    pub fn webTransportAccepted(self: *const ResponseState) bool {
+        return webtransport_mod.responseAccepted(self.headerFields());
+    }
+
+    /// Server-selected WebTransport subprotocol from the response's
+    /// `wt-protocol` header. Returns null if the server did not select
+    /// one. Borrows from the headers slice — keep the response state
+    /// alive while the slice is in use.
+    pub fn webTransportSubprotocol(self: *const ResponseState) ?[]const u8 {
+        return webtransport_mod.responseSelectedProtocolRaw(self.headerFields());
     }
 
     pub fn capsuleProtocolEnabled(self: *const ResponseState) bool {
@@ -704,6 +888,11 @@ pub const ResponseTracker = struct {
             .goaway,
             .connection_closed,
             .ignored_unknown_frame,
+            .webtransport_stream_opened,
+            .webtransport_stream_data,
+            .webtransport_stream_finished,
+            .webtransport_stream_reset,
+            .webtransport_flow_violated,
             => return null,
         }
     }
@@ -1254,6 +1443,71 @@ pub const Client = struct {
         };
     }
 
+    /// Bootstraps a WebTransport session (draft-ietf-webtrans-http3-15 §3.2)
+    /// over an Extended CONNECT request. The peer MUST advertise all three
+    /// of `SETTINGS_WT_ENABLED`, `H3_DATAGRAM`, and
+    /// `ENABLE_CONNECT_PROTOCOL` per draft-15 §9.2; this method enforces
+    /// that eagerly so the application doesn't commit to a session the
+    /// peer cannot drive.
+    ///
+    /// Errors:
+    /// - `error.PeerSettingsNotReceived` — the SETTINGS frame from the
+    ///   peer hasn't landed yet. Pump the session loop and retry.
+    /// - `error.PeerDidNotEnableWebTransport` — the peer's SETTINGS are
+    ///   present but missing one or more of the three required entries.
+    ///
+    /// When `options.subprotocols` is non-empty, a `wt-available-protocols`
+    /// header is added to the request carrying the comma-separated list of
+    /// offered subprotocols. The server's choice (if any) is surfaced on the
+    /// response via `ResponseReader.webTransportSubprotocol()`.
+    pub fn startWebTransport(
+        self: *Client,
+        allocator: std.mem.Allocator,
+        options: WebTransportConnectOptions,
+    ) (session_mod.Error || webtransport_mod.Error)!WebTransportClientStream {
+        const peer = self.session.peer_settings orelse return webtransport_mod.Error.PeerSettingsNotReceived;
+        if (!webtransport_mod.peerEnabled(peer)) return webtransport_mod.Error.PeerDidNotEnableWebTransport;
+
+        var writer: RequestWriter = undefined;
+        if (options.subprotocols.len == 0) {
+            writer = try self.startRequest(allocator, .{
+                .method = "CONNECT",
+                .scheme = options.scheme,
+                .authority = options.authority,
+                .path = options.path,
+                .connect_protocol = webtransport_mod.protocol_token,
+                .headers = options.headers,
+            });
+        } else {
+            const available_value = try webtransport_mod.allocAvailableProtocols(allocator, options.subprotocols);
+            defer allocator.free(available_value);
+
+            const combined = try allocator.alloc(qpack.FieldLine, options.headers.len + 1);
+            defer allocator.free(combined);
+            combined[0] = .{
+                .name = webtransport_mod.available_protocols_header,
+                .value = available_value,
+            };
+            for (options.headers, 0..) |header, i| combined[i + 1] = header;
+
+            writer = try self.startRequest(allocator, .{
+                .method = "CONNECT",
+                .scheme = options.scheme,
+                .authority = options.authority,
+                .path = options.path,
+                .connect_protocol = webtransport_mod.protocol_token,
+                .headers = combined,
+            });
+        }
+
+        // Register the CONNECT stream as a pending WebTransport session.
+        // The session moves to `.established` when the client observes a
+        // 2xx response on this stream (handled in
+        // session.processMessageState).
+        try self.session.markWebTransportSessionPending(writer.stream_id);
+        return .{ .writer = writer };
+    }
+
     pub fn classify(self: *const Client, event: session_mod.Event) ?ResponseEvent {
         _ = self;
         return ResponseEvent.from(event);
@@ -1264,13 +1518,27 @@ fn buildRequestFields(
     allocator: std.mem.Allocator,
     options: RequestHeadOptions,
 ) session_mod.Error![]qpack.FieldLine {
+    // RFC 9114 §4.4 ¶3: classic CONNECT (`:method = "CONNECT"`,
+    // no `:protocol`) MUST omit `:scheme` and `:path`. Extended
+    // CONNECT (with `:protocol`) keeps both. Auto-detect rather
+    // than expose another knob — the caller can still pass empty
+    // strings if they prefer to be explicit; this just stops us
+    // from emitting fields the validator would (correctly) reject.
+    const is_classic_connect = std.mem.eql(u8, options.method, "CONNECT") and
+        options.connect_protocol == null;
+    const pseudo_count: usize = if (is_classic_connect) 2 else 4;
     const protocol_len: usize = if (options.connect_protocol != null) 1 else 0;
-    const fields = try allocator.alloc(qpack.FieldLine, 4 + protocol_len + options.headers.len);
+    const fields = try allocator.alloc(qpack.FieldLine, pseudo_count + protocol_len + options.headers.len);
     fields[0] = .{ .name = ":method", .value = options.method };
-    fields[1] = .{ .name = ":scheme", .value = options.scheme };
-    fields[2] = .{ .name = ":path", .value = options.path };
-    fields[3] = .{ .name = ":authority", .value = options.authority };
-    var pos: usize = 4;
+    var pos: usize = 1;
+    if (!is_classic_connect) {
+        fields[pos] = .{ .name = ":scheme", .value = options.scheme };
+        pos += 1;
+        fields[pos] = .{ .name = ":path", .value = options.path };
+        pos += 1;
+    }
+    fields[pos] = .{ .name = ":authority", .value = options.authority };
+    pos += 1;
     if (options.connect_protocol) |connect_protocol| {
         fields[pos] = .{ .name = ":protocol", .value = connect_protocol };
         pos += 1;

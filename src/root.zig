@@ -1,4 +1,27 @@
 //! http3_zig — HTTP/3 for Zig, layered above quic_zig and boringssl-zig.
+//!
+//! ## Concurrency model
+//!
+//! `http3_zig.Session` and the `Client` / `Server` facades layered on
+//! top are **single-threaded, drain-in-batches**. Pin one
+//! `Session` to one thread; the public API has no internal locking,
+//! atomic counters, or concurrent-safe data structures. Each public
+//! operation (open*, send*, drain, close, …) mutates session state
+//! directly.
+//!
+//! The expected usage shape is:
+//!
+//!   1. Pump packets in / out of the underlying `quic_zig.Connection`.
+//!   2. Call `Session.drain(&events)` to emit a batch of typed events.
+//!   3. Process events; call back into `Session` to act on them.
+//!   4. Free each event with `event.deinit(allocator)` (the same
+//!      allocator the `Session` was constructed with).
+//!   5. Repeat.
+//!
+//! For multi-connection servers, run one `Session` per connection on
+//! a single dispatch thread (or one thread per shard, with each shard
+//! owning a disjoint set of sessions). Two threads operating on the
+//! same `Session` simultaneously is undefined behavior.
 
 const std = @import("std");
 const boringssl = @import("boringssl");
@@ -19,15 +42,21 @@ pub const driver = @import("driver.zig");
 pub const runner = @import("runner.zig");
 pub const observability = @import("observability.zig");
 pub const websocket = @import("websocket.zig");
+pub const webtransport = @import("webtransport.zig");
 pub const masque = @import("masque.zig");
 pub const session = @import("session.zig");
-pub const connection = @import("connection.zig");
+// Internal: `connection.zig` is a deprecated parallel API to
+// `Session`. It survives in the tree as a transitional helper but is
+// NOT part of the public package surface — `Session` is the
+// supported way to layer HTTP/3 on top of `quic_zig.Connection`.
+const connection = @import("connection.zig");
 pub const client = @import("client.zig");
 pub const server = @import("server.zig");
 
 pub const Session = session.Session;
 pub const SessionConfig = session.Config;
 pub const SessionProductionOptions = session.ProductionOptions;
+pub const SessionBufferedStreamPolicy = session.BufferedStreamPolicy;
 pub const ShutdownState = session.ShutdownState;
 pub const Client = client.Client;
 pub const Server = server.Server;
@@ -40,6 +69,8 @@ pub const PushedResponseState = client.PushedResponseState;
 pub const PushedResponseReader = client.PushedResponseReader;
 pub const WebSocketConnectOptions = client.WebSocketConnectOptions;
 pub const WebSocketClientStream = client.WebSocketClientStream;
+pub const WebTransportConnectOptions = client.WebTransportConnectOptions;
+pub const WebTransportClientStream = client.WebTransportClientStream;
 pub const ResponseTracker = client.ResponseTracker;
 pub const ResponseTrackerConfig = client.ResponseTrackerConfig;
 pub const ResponseTrackerError = client.ResponseTrackerError;
@@ -61,6 +92,23 @@ pub const RequestState = server.RequestState;
 pub const RequestReader = server.RequestReader;
 pub const WebSocketAcceptOptions = server.WebSocketAcceptOptions;
 pub const WebSocketServerStream = server.WebSocketServerStream;
+pub const WebTransportAcceptOptions = server.WebTransportAcceptOptions;
+pub const WebTransportServerStream = server.WebTransportServerStream;
+pub const WebTransportCloseSession = webtransport.CloseSession;
+pub const WebTransportParsedAvailableProtocols = webtransport.ParsedAvailableProtocols;
+pub const WebTransportCapsuleEvent = webtransport.CapsuleEvent;
+pub const WebTransportStreamHeader = webtransport.StreamHeader;
+pub const WebTransportStreamHeaderDecoded = webtransport.StreamHeaderDecoded;
+pub const WebTransportStreamKind = webtransport.StreamKind;
+pub const WebTransportStreamOpenedEvent = session.WebTransportStreamOpenedEvent;
+pub const WebTransportStreamDataEvent = session.WebTransportStreamDataEvent;
+pub const WebTransportStreamFinishedEvent = session.WebTransportStreamFinishedEvent;
+pub const WebTransportStreamResetEvent = session.WebTransportStreamResetEvent;
+pub const WebTransportFlowViolationEvent = session.WebTransportFlowViolationEvent;
+pub const WebTransportFlowViolationKind = session.WebTransportFlowViolationKind;
+pub const WTSessionFlowState = session.WTSessionFlowState;
+pub const WTSessionFlowSnapshot = session.WTSessionFlowSnapshot;
+pub const WTStreamDirection = session.WTStreamDirection;
 pub const WebSocketOpcode = websocket.frame.Opcode;
 pub const WebSocketFrame = websocket.frame.Frame;
 pub const WebSocketOwnedFrame = websocket.frame.OwnedFrame;
@@ -100,7 +148,6 @@ pub const RequestTracker = server.RequestTracker;
 pub const RequestTrackerConfig = server.RequestTrackerConfig;
 pub const RequestTrackerError = server.RequestTrackerError;
 pub const ConnectionClosedEvent = session.ConnectionClosedEvent;
-pub const Connection = connection.Connection;
 pub const Settings = settings.Settings;
 pub const Frame = frame.Frame;
 pub const FieldLine = qpack.FieldLine;
@@ -156,7 +203,7 @@ pub const ConnectionError = errors.ConnectionError;
 pub const StreamError = errors.StreamError;
 
 pub fn version() []const u8 {
-    return "0.0.0";
+    return "0.1.0";
 }
 
 test {
@@ -177,6 +224,7 @@ test {
     _ = runner;
     _ = observability;
     _ = websocket;
+    _ = webtransport;
     _ = masque;
     _ = session;
     _ = connection;
@@ -185,6 +233,6 @@ test {
 }
 
 test "package metadata" {
-    try std.testing.expectEqualStrings("0.0.0", version());
+    try std.testing.expectEqualStrings("0.1.0", version());
     try std.testing.expectEqualStrings("h3", protocol.alpn_h3);
 }

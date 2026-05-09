@@ -11,6 +11,11 @@ pub const Kind = union(enum) {
     push,
     qpack_encoder,
     qpack_decoder,
+    /// Peer-opened WebTransport unidirectional stream
+    /// (draft-ietf-webtrans-http3 §4.1). The Session ID varint that follows
+    /// the stream type on the wire is parsed at the session layer; this
+    /// variant only carries the discriminator.
+    webtransport_uni,
     unknown: u64,
 };
 
@@ -53,6 +58,7 @@ pub fn kindFromType(stream_type: u64) Kind {
         protocol.StreamType.push => .push,
         protocol.StreamType.qpack_encoder => .qpack_encoder,
         protocol.StreamType.qpack_decoder => .qpack_decoder,
+        protocol.StreamType.webtransport_uni_stream => .webtransport_uni,
         else => .{ .unknown = stream_type },
     };
 }

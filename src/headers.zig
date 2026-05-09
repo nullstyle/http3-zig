@@ -93,6 +93,10 @@ pub fn validateRequestWithOptions(fields: []const FieldLine, options: RequestVal
         if (!pseudo) {
             seen_regular = true;
             if (isConnectionSpecific(field.name)) return Error.ConnectionSpecificField;
+            // RFC 9114 §4.2 ¶3: `te` is connection-specific in HTTP/3
+            // EXCEPT when its value is exactly "trailers". Reject any
+            // other value (e.g. `te: gzip`, `te: trailers, deflate`).
+            if (isForbiddenTeValue(field.name, field.value)) return Error.ConnectionSpecificField;
             continue;
         }
 
@@ -272,6 +276,16 @@ fn isConnectionSpecific(name: []const u8) bool {
         std.ascii.eqlIgnoreCase(name, "proxy-connection") or
         std.ascii.eqlIgnoreCase(name, "transfer-encoding") or
         std.ascii.eqlIgnoreCase(name, "upgrade");
+}
+
+/// RFC 9114 §4.2 ¶3: the `te` header field is connection-specific UNLESS
+/// its value is exactly "trailers" (case-insensitive). HTTP/3 endpoints
+/// MAY include `te: trailers` in requests; any other value is forbidden.
+/// Returns true when the field should be rejected; false when it's
+/// either not `te` or the spec-allowed `te: trailers` form.
+fn isForbiddenTeValue(name: []const u8, value: []const u8) bool {
+    if (!std.ascii.eqlIgnoreCase(name, "te")) return false;
+    return !std.ascii.eqlIgnoreCase(value, "trailers");
 }
 
 // RFC 9110 §6.5.1: trailers MUST NOT contain fields that affect message

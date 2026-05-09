@@ -17,6 +17,12 @@ pub const Settings = struct {
     max_field_section_size: ?u64 = null,
     enable_connect_protocol: bool = false,
     h3_datagram: bool = false,
+    /// `SETTINGS_WT_ENABLED` from draft-ietf-webtrans-http3-15 §9.2.
+    /// Boolean: when true, the endpoint advertises support for
+    /// WebTransport over HTTP/3 with the codepoint specific to the
+    /// draft revision this implementation pins to (`0x2c7cf000`).
+    /// Both peers MUST send this for a session to bootstrap.
+    wt_enabled: bool = false,
 
     pub fn encodedLen(self: Settings) usize {
         var n: usize = 0;
@@ -30,6 +36,9 @@ pub const Settings = struct {
         }
         if (self.h3_datagram) {
             n += settingEncodedLen(protocol.SettingId.h3_datagram, 1);
+        }
+        if (self.wt_enabled) {
+            n += settingEncodedLen(protocol.SettingId.wt_enabled, 1);
         }
         return n;
     }
@@ -47,6 +56,9 @@ pub const Settings = struct {
         if (self.h3_datagram) {
             pos += try put(dst[pos..], protocol.SettingId.h3_datagram, 1);
         }
+        if (self.wt_enabled) {
+            pos += try put(dst[pos..], protocol.SettingId.wt_enabled, 1);
+        }
         return pos;
     }
 
@@ -57,6 +69,7 @@ pub const Settings = struct {
         var seen_max_field = false;
         var seen_enable_connect_protocol = false;
         var seen_h3_datagram = false;
+        var seen_wt_enabled = false;
 
         var pos: usize = 0;
         while (pos < src.len) {
@@ -97,6 +110,16 @@ pub const Settings = struct {
                     seen_h3_datagram = true;
                     out.h3_datagram = value == 1;
                 },
+                protocol.SettingId.wt_enabled => {
+                    if (seen_wt_enabled) return Error.DuplicateSetting;
+                    // Draft-15 §3.2 ¶? defines this as a boolean: any
+                    // value > 0 advertises support. We keep the >1
+                    // bytes legal so peers can pin to the same
+                    // codepoint with future-tagged values without us
+                    // failing the connection.
+                    seen_wt_enabled = true;
+                    out.wt_enabled = value >= 1;
+                },
                 else => {},
             }
         }
@@ -123,6 +146,7 @@ test "SETTINGS round-trip" {
         .max_field_section_size = 65536,
         .enable_connect_protocol = true,
         .h3_datagram = true,
+        .wt_enabled = true,
     };
     var buf: [64]u8 = undefined;
     const n = try s.encode(&buf);
@@ -133,4 +157,5 @@ test "SETTINGS round-trip" {
     try std.testing.expectEqual(@as(?u64, 65536), got.max_field_section_size);
     try std.testing.expect(got.enable_connect_protocol);
     try std.testing.expect(got.h3_datagram);
+    try std.testing.expect(got.wt_enabled);
 }
