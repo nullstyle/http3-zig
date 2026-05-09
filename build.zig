@@ -334,4 +334,33 @@ pub fn build(b: *std.Build) void {
     const run_loopback_wt = b.addRunArtifact(loopback_wt);
     const run_loopback_wt_step = b.step("run-example-loopback-wt", "Run the in-process HTTP/3 WebTransport loopback example");
     run_loopback_wt_step.dependOn(&run_loopback_wt.step);
+
+    // WebTransport baseline microbenchmark. Drives an in-process H3 +
+    // QUIC pair through the loopback shim and reports p50/p99/mean/max
+    // for session establishment, datagram round-trip, and uni stream
+    // round-trip. See `docs/perf-baseline.md` for the published
+    // numbers — this step is the source for that report.
+    //
+    // The benchmark sits outside `tests/` deliberately: it's a runtime
+    // executable, not a `zig test` artifact, so it can use plain
+    // wall-clock timing and stable stdout formatting.
+    const wt_bench_mod = b.createModule(.{
+        .root_source_file = b.path("bench/wt_bench.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    wt_bench_mod.addImport("http3_zig", http3_zig_mod);
+    wt_bench_mod.addImport("quic_zig", quic_zig_mod);
+    wt_bench_mod.addImport("boringssl", boringssl_mod);
+    const wt_bench = b.addExecutable(.{
+        .name = "http3-zig-wt-bench",
+        .root_module = wt_bench_mod,
+    });
+    const install_wt_bench = b.addInstallArtifact(wt_bench, .{});
+    const wt_bench_step = b.step("bench-build", "Build the WebTransport baseline benchmark");
+    wt_bench_step.dependOn(&install_wt_bench.step);
+
+    const run_wt_bench = b.addRunArtifact(wt_bench);
+    const bench_step = b.step("bench", "Run the WebTransport baseline benchmark (use -Doptimize=ReleaseFast for published numbers)");
+    bench_step.dependOn(&run_wt_bench.step);
 }

@@ -593,6 +593,131 @@ fn seedWebTransport(io: std.Io, root: std.Io.Dir, buf: []u8) !void {
 
     // 15-malformed-close — too-small value (< 4 bytes).
     try writeSeed(io, root, "webtransport", "15-bad-close", &[_]u8{ 0x68, 0x43, 0x02, 0x00, 0x01 });
+
+    // -------------------------------------------------------------- adversarial
+    // Single-input cases that the WebTransport machinery MUST refuse without
+    // crashing. Each is hand-crafted bytes (the project's encoders refuse to
+    // produce them).
+
+    // 16-close-oversized-reason — a CLOSE_WEBTRANSPORT_SESSION whose declared
+    // length exceeds `4 + max_close_reason_len = 1028`. capsule.decode unpacks
+    // the envelope, then `decodeCloseSessionValue` rejects with
+    // `error.InvalidCloseCapsule`. Reason length here is 1100 bytes.
+    {
+        // value_len = 4 + 1100 = 1104; encoded length varint below is 0x44 0x50.
+        var pos: usize = 0;
+        // capsule type 0x2843 (close_session) — 2-byte varint.
+        buf[pos] = 0x68;
+        pos += 1;
+        buf[pos] = 0x43;
+        pos += 1;
+        // length varint: 1104 fits in a 2-byte (14-bit prefix) varint.
+        // 0x4000 | 1104 -> 0x4450
+        buf[pos] = 0x44;
+        pos += 1;
+        buf[pos] = 0x50;
+        pos += 1;
+        // 4-byte error code.
+        @memset(buf[pos .. pos + 4], 0);
+        pos += 4;
+        // 1100 bytes of reason (well over the 1024 limit).
+        @memset(buf[pos .. pos + 1100], 'x');
+        pos += 1100;
+        try writeSeed(io, root, "webtransport", "16-close-oversized-reason", buf[0..pos]);
+    }
+
+    // 17-close-truncated-reason — declared length 100 but only 50 reason
+    // bytes actually follow. capsule.decode itself rejects with
+    // `error.LengthMismatch` (or similar) when the buffer is short.
+    {
+        var pos: usize = 0;
+        buf[pos] = 0x68;
+        pos += 1;
+        buf[pos] = 0x43;
+        pos += 1;
+        // length 100 = 0x40 0x64 (2-byte varint).
+        buf[pos] = 0x40;
+        pos += 1;
+        buf[pos] = 0x64;
+        pos += 1;
+        // 4 bytes code + 50 bytes of reason (need 96, have 50 -> short by 46).
+        @memset(buf[pos .. pos + 4], 0);
+        pos += 4;
+        @memset(buf[pos .. pos + 50], 'a');
+        pos += 50;
+        try writeSeed(io, root, "webtransport", "17-close-truncated-reason", buf[0..pos]);
+    }
+
+    // 18-max-data-overlong-varint — WT_MAX_DATA wrapper claims a 10-byte
+    // value, where a QUIC varint is at most 8. capsule.decode succeeds
+    // (it just slices the value); decodeMaxDataValue then sees a 10-byte
+    // value where varint.decode reads only 8, leaving trailing bytes ->
+    // `error.InvalidCloseCapsule`.
+    {
+        var pos: usize = 0;
+        // WT_MAX_DATA capsule type 0x190b4d3d — 4-byte varint.
+        // 0x80 prefix | 0x190b4d3d.
+        buf[pos] = 0x80 | 0x19;
+        pos += 1;
+        buf[pos] = 0x0b;
+        pos += 1;
+        buf[pos] = 0x4d;
+        pos += 1;
+        buf[pos] = 0x3d;
+        pos += 1;
+        // length 10 = single-byte varint 0x0a.
+        buf[pos] = 0x0a;
+        pos += 1;
+        // 10 value bytes: a leading 0xff (=> 8-byte varint per QUIC §16),
+        // followed by 9 trailing 0x00 bytes. varint.decode consumes 8,
+        // 2 bytes remain, decoder rejects.
+        buf[pos] = 0xff;
+        pos += 1;
+        @memset(buf[pos .. pos + 9], 0);
+        pos += 9;
+        try writeSeed(io, root, "webtransport", "18-max-data-overlong-varint", buf[0..pos]);
+    }
+
+    // 19-close-invalid-utf8 — well-formed envelope, valid 4-byte code,
+    // reason bytes that are NOT valid UTF-8 (per draft-15 §5.4 reason
+    // MUST be UTF-8). decodeCloseSessionValue returns
+    // `error.InvalidCloseCapsule`.
+    {
+        var pos: usize = 0;
+        buf[pos] = 0x68;
+        pos += 1;
+        buf[pos] = 0x43;
+        pos += 1;
+        // length 8: 4 code + 4 reason bytes.
+        buf[pos] = 0x08;
+        pos += 1;
+        // 4-byte error code.
+        std.mem.writeInt(u32, buf[pos..][0..4], 1, .big);
+        pos += 4;
+        // 4 invalid UTF-8 bytes (lone continuation bytes).
+        buf[pos + 0] = 0xff;
+        buf[pos + 1] = 0xfe;
+        buf[pos + 2] = 0xfd;
+        buf[pos + 3] = 0xfc;
+        pos += 4;
+        try writeSeed(io, root, "webtransport", "19-close-invalid-utf8", buf[0..pos]);
+    }
+
+    // 20-streams-blocked-bidi-u62-max — WT_STREAMS_BLOCKED_BIDI carrying
+    // (1 << 62) - 1, the largest legal QUIC varint. Encoder must accept,
+    // decoder must accept, no overflow.
+    {
+        const u62_max: u64 = (@as(u64, 1) << 62) - 1;
+        const len = try http3_zig.webtransport.encodeStreamsBlockedBidi(buf, u62_max);
+        try writeSeed(io, root, "webtransport", "20-streams-blocked-bidi-u62-max", buf[0..len]);
+    }
+
+    // 21-streams-blocked-uni-u62-max — same shape as 20, uni flavor.
+    {
+        const u62_max: u64 = (@as(u64, 1) << 62) - 1;
+        const len = try http3_zig.webtransport.encodeStreamsBlockedUni(buf, u62_max);
+        try writeSeed(io, root, "webtransport", "21-streams-blocked-uni-u62-max", buf[0..len]);
+    }
 }
 
 fn seedWebTransportSession(io: std.Io, root: std.Io.Dir, buf: []u8) !void {
@@ -645,4 +770,89 @@ fn seedWebTransportSession(io: std.Io, root: std.Io.Dir, buf: []u8) !void {
 
     // 07-empty
     try writeSeed(io, root, "webtransport-session", "07-empty", "");
+
+    // -------------------------------------------------------------- adversarial
+    // Multi-frame sequences. Each is a concatenation of capsules in one
+    // input buffer. The session target's `capsule.iter` walks them and
+    // hands each to `classifyCapsule`. The receiver layer (above this
+    // codec) is expected to drop frames after a CLOSE, etc., but the
+    // bare classifier MUST not crash on any of these shapes.
+
+    // 08-datagram-context-id-overflow — DATAGRAM capsule (type 0x00) whose
+    // value is a single varint that WOULD decode with continuation bits
+    // beyond 8 bytes. Because varint.max_len is 8, the masque /
+    // datagram-context decoder must reject without overflowing u64.
+    // Hand-crafted: capsule type 0x00, length 10, then 10 bytes whose
+    // first byte signals an 8-byte varint plus 2 stray bytes that no
+    // legal varint can absorb.
+    {
+        var p: usize = 0;
+        // capsule type 0x00 (DATAGRAM, RFC 9297) — 1-byte varint.
+        buf[p] = 0x00;
+        p += 1;
+        // length 10 (single-byte varint).
+        buf[p] = 0x0a;
+        p += 1;
+        // 10 bytes: 0xff signals 8-byte varint, then enough garbage to
+        // overflow what any varint length can hold.
+        buf[p + 0] = 0xff;
+        buf[p + 1] = 0xff;
+        buf[p + 2] = 0xff;
+        buf[p + 3] = 0xff;
+        buf[p + 4] = 0xff;
+        buf[p + 5] = 0xff;
+        buf[p + 6] = 0xff;
+        buf[p + 7] = 0xff;
+        buf[p + 8] = 0xff;
+        buf[p + 9] = 0xff;
+        p += 10;
+        try writeSeed(io, root, "webtransport-session", "08-datagram-context-overflow", buf[0..p]);
+    }
+
+    // 09-close-then-max-data — CLOSE_WEBTRANSPORT_SESSION immediately
+    // followed by WT_MAX_DATA. Spec-compliant receivers drop the
+    // post-close capsule; the parser layer must walk both without
+    // crashing.
+    {
+        var p: usize = 0;
+        p += try http3_zig.webtransport.encodeCloseSession(buf[p..], 0, "bye");
+        p += try http3_zig.webtransport.encodeMaxData(buf[p..], 65536);
+        try writeSeed(io, root, "webtransport-session", "09-close-then-max-data", buf[0..p]);
+    }
+
+    // 10-drain-twice — DRAIN_WEBTRANSPORT_SESSION sent twice. Receiver
+    // semantics treat the second as a no-op; the codec must classify
+    // both as `.drain_session` events.
+    {
+        var p: usize = 0;
+        p += try http3_zig.webtransport.encodeDrainSession(buf[p..]);
+        p += try http3_zig.webtransport.encodeDrainSession(buf[p..]);
+        try writeSeed(io, root, "webtransport-session", "10-drain-twice", buf[0..p]);
+    }
+
+    // 11-max-data-regression — three WT_MAX_DATA capsules whose values
+    // strictly decrease (1 MiB, 512 KiB, 256 KiB). Per
+    // draft-ietf-webtrans-http3-13 §5.6.4 the limit MUST be
+    // monotonically increasing; the codec layer parses all three
+    // successfully and leaves the policy decision to the session
+    // state machine.
+    {
+        var p: usize = 0;
+        p += try http3_zig.webtransport.encodeMaxData(buf[p..], 1 << 20);
+        p += try http3_zig.webtransport.encodeMaxData(buf[p..], 1 << 19);
+        p += try http3_zig.webtransport.encodeMaxData(buf[p..], 1 << 18);
+        try writeSeed(io, root, "webtransport-session", "11-max-data-regression", buf[0..p]);
+    }
+
+    // 12-blocked-then-grant — WT_DATA_BLOCKED at 4096 followed by
+    // WT_MAX_DATA at exactly 4096. The peer signals it stalled, then
+    // the local side grants exactly the blocked amount. Codec must
+    // surface both events; receiver decides whether to release the
+    // sender.
+    {
+        var p: usize = 0;
+        p += try http3_zig.webtransport.encodeDataBlocked(buf[p..], 4096);
+        p += try http3_zig.webtransport.encodeMaxData(buf[p..], 4096);
+        try writeSeed(io, root, "webtransport-session", "12-blocked-then-grant", buf[0..p]);
+    }
 }

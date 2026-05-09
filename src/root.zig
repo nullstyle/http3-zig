@@ -267,7 +267,7 @@ pub const ConnectionError = errors.ConnectionError;
 pub const StreamError = errors.StreamError;
 
 pub fn version() []const u8 {
-    return "0.1.0";
+    return "0.3.0";
 }
 
 test {
@@ -297,6 +297,6 @@ test {
 }
 
 test "package metadata" {
-    try std.testing.expectEqualStrings("0.1.0", version());
+    try std.testing.expectEqualStrings("0.3.0", version());
     try std.testing.expectEqualStrings("h3", protocol.alpn_h3);
 }

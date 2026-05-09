@@ -7,6 +7,134 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 once it reaches 1.0. Until then, any release in the `0.x` line may include
 breaking changes; see notes per release.
 
+## [Unreleased] — v0.3.0 candidate
+
+### Added (correctness)
+
+- **`Session.observeWebTransportCapsule` is now tolerant of just-torn-down
+  sessions.** A capsule that arrived on the wire BEFORE a close
+  (CLOSE_WEBTRANSPORT_SESSION or implicit FIN of CONNECT) often surfaces
+  to the application AFTER the session's local state has been
+  destroyed — a single drain pass emits the body bytes and the close
+  event together. Calling `observeCapsule` for a `.none` session now
+  returns silently rather than `Error.UnknownWebTransportSession`. The
+  capsule's value is lost (no flow state to fold it into) but the
+  application's drain loop doesn't crash mid-close. Regression:
+  `WebTransport: CLOSE_WT capsule interleaved with WT_MAX_DATA`.
+
+- **`gateWebTransportStreamOpen` distinguishes `.none` from `.pending`.**
+  Previously a null lookup in `webTransportFlowMut` was treated as a
+  silent no-op (allowing opens to silently succeed against a dead
+  session id). The gate now explicitly switches:
+  - `.none` → `Error.UnknownWebTransportSession` (caller bug — session
+    never existed or was torn down)
+  - `.pending` → allow, gating not applicable yet (bootstrap race —
+    application is opening streams before the session is confirmed)
+  - `.established` → apply per-session limit / drain checks.
+  Regression:
+  `WebTransport: peer FIN of CONNECT while local mid-send on three streams`.
+
+### Added (interop / wire format)
+
+- **Six previously-missing WebTransport wire constants** from the
+  draft-15 audit (no behavioral change — applications now have names
+  for spec-defined values they may need to inspect):
+  - `protocol.SettingId.wt_initial_max_data` = `0x2b61` (re-exported as
+    `webtransport.SettingId.wt_initial_max_data`).
+  - `protocol.SettingId.wt_initial_max_streams_uni` = `0x2b64`.
+  - `protocol.SettingId.wt_initial_max_streams_bidi` = `0x2b65`.
+  - `webtransport.flow_control_error_code` = `0x045d4487`.
+  - `webtransport.alpn_error_code` = `0x0817b3dd`.
+  - `webtransport.requirements_not_met_code` = `0x212c0d48`.
+  Audit doc: [`docs/error-code-audit-v0.2.md`](docs/error-code-audit-v0.2.md).
+
+### Added (test coverage)
+
+- **WebTransport multiplexing tests** at
+  [`tests/integration/webtransport_multiplexing.zig`](tests/integration/webtransport_multiplexing.zig).
+  Four scenarios verify N concurrent WT sessions on one QUIC connection
+  route correctly: 5 sessions × 10 uni streams (no cross-session bleed),
+  3 sessions where one DRAINs while others stay active, 3 sessions
+  with independent datagram delivery, per-session
+  `WT_MAX_STREAMS_UNI` enforcement.
+
+- **WebTransport race / interleaving tests** at
+  [`tests/integration/webtransport_races.zig`](tests/integration/webtransport_races.zig).
+  Four scenarios cover ordering corner cases: DRAIN in the same drain
+  batch as 50 peer-opened streams; CLOSE_WT interleaved with WT_MAX_DATA
+  (regression for the tolerance fix above); peer FIN of CONNECT during
+  local mid-send on three streams (regression for the gate fix above);
+  peer RESET of CONNECT while buffered streams are pending under the
+  `.buffer` policy.
+
+- **Eleven adversarial WebTransport fuzz seeds** added under
+  [`fuzz/corpus/webtransport/`](fuzz/corpus/webtransport/) and
+  [`fuzz/corpus/webtransport-session/`](fuzz/corpus/webtransport-session/).
+  Multi-frame sequences (CLOSE-then-MAX_DATA, DRAIN-twice, MAX_DATA
+  regression, BLOCKED-then-grant) plus single-frame malformed inputs
+  (oversized close reason, truncated reason, overlong varint, invalid
+  UTF-8 reason, u62-max bidi/uni limits). Zero panics surfaced.
+
+### Documentation
+
+- **[`docs/webtransport-tour.md`](docs/webtransport-tour.md)** —
+  application-author walkthrough (683 lines) covering session
+  establishment, streams, datagrams, flow control, closing, draining,
+  error handling, and seven common pitfalls. Pulls real code from the
+  integration tests.
+
+- **[`docs/perf-baseline.md`](docs/perf-baseline.md)** — three
+  performance numbers measured in-process (loopback shim, no sockets):
+  WT session establishment, datagram round-trip, 1 KiB stream
+  round-trip. Apple M5 Max, ReleaseFast, Zig 0.16.0. Published as a
+  baseline for regression tracking, not optimization targets.
+  Run via `zig build bench -Doptimize=ReleaseFast`.
+
+- **[`docs/error-code-audit-v0.2.md`](docs/error-code-audit-v0.2.md)** —
+  exhaustive comparison of our wire constants vs.
+  draft-ietf-webtrans-http3-15 §9. 17 items audited; 6 drift items
+  (now closed by the additions above); zero codepoint mismatches on
+  the values we emit.
+
+- **[`docs/api-narrowing-proposal.md`](docs/api-narrowing-proposal.md)** —
+  audit of duplicate / redundant API paths with v0.3 / v0.4
+  recommendations. Identifies five clusters (datagram sends, lifecycle
+  verbs, stream-open paths, trackers vs raw events, re-exports).
+
+### Deprecated
+
+- **`finishSend` on `WebTransportClientStream`,
+  `WebTransportServerStream`, `WebSocketClientStream`,
+  `WebSocketServerStream`, `ConnectUdpClientStream`,
+  `ConnectUdpServerStream` is deprecated.** Each type now has a
+  canonical `finish` method with identical wire effect; `finishSend`
+  remains as an alias and will be removed in v0.4. Migration is a
+  one-character rename. Rationale:
+  [`docs/api-narrowing-proposal.md`](docs/api-narrowing-proposal.md).
+
+- **`WTStreamDirection` is deprecated, now an alias for
+  `webtransport.StreamKind`.** Will be removed in v0.4. Migration:
+  use `webtransport.StreamKind` (re-exported as
+  `WebTransportStreamKind`) directly. Note: the underlying enum order
+  is `{ uni, bidi }`, the reverse of the original
+  `WTStreamDirection { bidi, uni }` declaration. No call site in this
+  repo serialized the enum via `@intFromEnum`, so the rename is
+  source-compatible at the switch / constant-construction level.
+
+### Performance
+
+- **`zig build bench` step** runs the new in-process WebTransport
+  benchmark and prints per-operation p50 / p99 / mean / max.
+
+## [0.2.0]
+
+(Tagged at commit `2ce728f`.)
+
+The Unreleased section below documents Round 4 + Round 5 work folded
+into v0.1.0 and v0.2.0; the precise per-tag attribution is best read
+from `git log v0.1.0..v0.2.0` until this CHANGELOG is restructured to
+match the actual release cadence.
+
 ## [Unreleased]
 
 ### Added

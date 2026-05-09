@@ -54,6 +54,19 @@ pub const SettingId = struct {
     /// draft revision gets its own codepoint so peers can negotiate
     /// which version they support.
     pub const wt_enabled: u64 = 0x2c7cf000;
+    /// `SETTINGS_WT_INITIAL_MAX_DATA` from draft-ietf-webtrans-http3-15 §9.2.
+    /// Initial value (in bytes) for `WT_MAX_DATA` — saves the round-trip of
+    /// an explicit capsule when the peer's first session opens.
+    pub const wt_initial_max_data: u64 = 0x2b61;
+    /// `SETTINGS_WT_INITIAL_MAX_STREAMS_UNI` from draft-ietf-webtrans-http3-15
+    /// §9.2. Initial limit for peer-initiated unidirectional WebTransport
+    /// streams; same purpose as `WT_MAX_STREAMS_UNI` capsule but at session
+    /// bootstrap.
+    pub const wt_initial_max_streams_uni: u64 = 0x2b64;
+    /// `SETTINGS_WT_INITIAL_MAX_STREAMS_BIDI` from draft-ietf-webtrans-http3-15
+    /// §9.2. Initial limit for peer-initiated bidirectional WebTransport
+    /// streams.
+    pub const wt_initial_max_streams_bidi: u64 = 0x2b65;
 };
 
 /// HTTP/3, HTTP Datagrams, and QPACK error codes (RFC 9114 §8.1, RFC 9297 §5.2, RFC 9204 §6).

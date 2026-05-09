@@ -63,8 +63,38 @@ pub const buffered_stream_rejected_code: u64 = 0x3994bd84;
 /// exists with this code (draft-ietf-webtrans-http3 §4.6).
 pub const session_gone_code: u64 = 0x170d7b68;
 
+/// `WT_FLOW_CONTROL_ERROR` from draft-ietf-webtrans-http3-15 §9.5.
+/// Sent by an endpoint that detects a flow-control violation in the
+/// session (peer sent more bytes than `local_max_data`, or opened more
+/// streams than `local_max_streams_*`). Maps to a WebTransport
+/// application error code via `appErrorToHttp3`.
+pub const flow_control_error_code: u64 = 0x045d4487;
+
+/// `WT_ALPN_ERROR` from draft-ietf-webtrans-http3-15 §9.5.
+/// Sent on the CONNECT stream's RESET when application-protocol
+/// negotiation (the `wt-available-protocols` / `wt-protocol` exchange)
+/// fails — e.g. the server can't honor any client-offered subprotocol.
+pub const alpn_error_code: u64 = 0x0817b3dd;
+
+/// `WT_REQUIREMENTS_NOT_MET` from draft-ietf-webtrans-http3-15 §9.5.
+/// Sent when the peer's SETTINGS or transport parameters fail to meet
+/// a requirement the application needed (e.g. a WT extension setting
+/// the peer didn't advertise). The session-bootstrap path returns
+/// `error.WebTransportSettingsMissing` internally; this is the
+/// matching wire code for closing in that scenario.
+pub const requirements_not_met_code: u64 = 0x212c0d48;
+
 pub const SettingId = struct {
     pub const wt_enabled: u64 = protocol.SettingId.wt_enabled;
+    /// Initial peer-bound `WT_MAX_DATA` value (bytes). See
+    /// `protocol.SettingId.wt_initial_max_data`.
+    pub const wt_initial_max_data: u64 = protocol.SettingId.wt_initial_max_data;
+    /// Initial peer-bound `WT_MAX_STREAMS_UNI` value. See
+    /// `protocol.SettingId.wt_initial_max_streams_uni`.
+    pub const wt_initial_max_streams_uni: u64 = protocol.SettingId.wt_initial_max_streams_uni;
+    /// Initial peer-bound `WT_MAX_STREAMS_BIDI` value. See
+    /// `protocol.SettingId.wt_initial_max_streams_bidi`.
+    pub const wt_initial_max_streams_bidi: u64 = protocol.SettingId.wt_initial_max_streams_bidi;
 };
 
 pub const StreamPrefix = struct {

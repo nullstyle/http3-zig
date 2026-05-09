@@ -232,8 +232,15 @@ pub const ConnectUdpClientStream = struct {
         try self.writer.capsule(capsule_type, value);
     }
 
-    pub fn finishSend(self: *ConnectUdpClientStream) session_mod.Error!void {
+    /// Sends a QUIC FIN on the send side. Identical wire effect to
+    /// `RequestWriter.finish` on the underlying writer.
+    pub fn finish(self: *ConnectUdpClientStream) session_mod.Error!void {
         try self.writer.finish();
+    }
+
+    /// Deprecated: use `finish`. Will be removed in v0.3.
+    pub fn finishSend(self: *ConnectUdpClientStream) session_mod.Error!void {
+        try self.finish();
     }
 
     pub fn reset(self: *ConnectUdpClientStream, error_code: u64) session_mod.Error!void {
@@ -339,8 +346,15 @@ pub const WebSocketClientStream = struct {
         try self.writer.write(buf);
     }
 
-    pub fn finishSend(self: *WebSocketClientStream) session_mod.Error!void {
+    /// Sends a QUIC FIN on the send side. The receive side may keep
+    /// delivering frames until the peer FINs / RESETs.
+    pub fn finish(self: *WebSocketClientStream) session_mod.Error!void {
         try self.writer.finish();
+    }
+
+    /// Deprecated: use `finish`. Will be removed in v0.3.
+    pub fn finishSend(self: *WebSocketClientStream) session_mod.Error!void {
+        try self.finish();
     }
 
     pub fn reset(self: *WebSocketClientStream, error_code: u64) session_mod.Error!void {
@@ -492,8 +506,18 @@ pub const WebTransportClientStream = struct {
         try self.writer.finish();
     }
 
-    pub fn finishSend(self: *WebTransportClientStream) session_mod.Error!void {
+    /// Sends a QUIC FIN on the CONNECT control stream's send side —
+    /// implicit close per draft-ietf-webtrans-http3-15 §5.4. After this
+    /// returns, the local WT registry entry is also torn down (see
+    /// `Session.finishStream`). For an explicit close with code +
+    /// reason, prefer `close(code, reason)`.
+    pub fn finish(self: *WebTransportClientStream) session_mod.Error!void {
         try self.writer.finish();
+    }
+
+    /// Deprecated: use `finish`. Will be removed in v0.3.
+    pub fn finishSend(self: *WebTransportClientStream) session_mod.Error!void {
+        try self.finish();
     }
 
     pub fn reset(self: *WebTransportClientStream, error_code: u64) session_mod.Error!void {

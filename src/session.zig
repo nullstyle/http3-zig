@@ -960,7 +960,15 @@ pub const WTSessionFlowSnapshot = struct {
     }
 };
 
-pub const WTStreamDirection = enum { bidi, uni };
+/// Deprecated alias for `webtransport.StreamKind` — kept for v0.2 source
+/// compatibility, removed in v0.3. New call sites should use
+/// `webtransport.StreamKind` (re-exported as `WebTransportStreamKind`)
+/// directly. Note: the underlying enum order is `{ uni, bidi }`, which
+/// is the reverse of the original `WTStreamDirection { bidi, uni }`
+/// declaration. No call site in this repo serialized the enum via
+/// `@intFromEnum`, so the rename is source-compatible at the switch /
+/// constant-construction level.
+pub const WTStreamDirection = webtransport_mod.StreamKind;
 
 pub const Session = struct {
     allocator: std.mem.Allocator,
@@ -1236,6 +1244,28 @@ pub const Session = struct {
         session_id: u64,
         direction: WTStreamDirection,
     ) Error!void {
+        // Distinguish three lifecycle states:
+        //   * `.none`   — session never existed or has been torn down
+        //                 (peer FIN/RESET of CONNECT, local close,
+        //                 or `endWebTransportSession` ran). Opens
+        //                 against this state are caller bugs — the
+        //                 stream prefix would point at a session id
+        //                 the peer has no context for, so surface
+        //                 `UnknownWebTransportSession`.
+        //   * `.pending` — session is in flight (CONNECT sent, 2xx
+        //                  not yet observed). Flow state hasn't been
+        //                  created yet, so the peer-limit / drain
+        //                  gating below doesn't apply. The open is
+        //                  allowed; bytes get buffered server-side via
+        //                  `BufferedStreamPolicy` until the session
+        //                  is confirmed.
+        //   * `.established` — flow state is present, fall through
+        //                      to the limit / drain checks.
+        switch (self.webTransportSessionState(session_id)) {
+            .none => return Error.UnknownWebTransportSession,
+            .pending => return,
+            .established => {},
+        }
         const flow = self.webTransportFlowMut(session_id) orelse return;
         // draft-ietf-webtrans-http3-15 §5.5: after receiving DRAIN,
         // an endpoint MUST NOT open new WebTransport streams. The
@@ -1481,12 +1511,26 @@ pub const Session = struct {
     /// body — the same way it already calls `webtransport.classifyCapsule`
     /// for CLOSE / DRAIN. Capsules outside the WebTransport family are
     /// ignored.
+    ///
+    /// **Tolerance for just-torn-down sessions:** capsules that arrived
+    /// on the wire BEFORE a close (CLOSE_WEBTRANSPORT_SESSION or implicit
+    /// FIN of CONNECT) often surface to the application AFTER the
+    /// session's local state has been destroyed — a single drain pass
+    /// emits the body bytes and the close event together, and the
+    /// application processes them in event-list order. To keep this
+    /// natural app loop ergonomic, observing a capsule for a session
+    /// that's already in `.none` state is a silent no-op rather than an
+    /// `UnknownWebTransportSession` error. The capsule's value is lost
+    /// (no flow state to fold it into) but the close fires cleanly.
     pub fn observeWebTransportCapsule(
         self: *Session,
         session_id: u64,
         decoded: capsule_mod.Capsule,
     ) Error!void {
-        const flow = self.webTransportFlowMut(session_id) orelse return Error.UnknownWebTransportSession;
+        const flow = self.webTransportFlowMut(session_id) orelse {
+            if (self.webTransportSessionState(session_id) == .none) return;
+            return Error.UnknownWebTransportSession;
+        };
         switch (decoded.capsule_type) {
             webtransport_mod.CapsuleType.max_data => {
                 const value = webtransport_mod.decodeMaxDataValue(decoded.value) catch return;

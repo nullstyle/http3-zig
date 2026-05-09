@@ -13,6 +13,8 @@ test {
     _ = @import("integration/facades.zig");
     _ = @import("integration/extended_connect.zig");
     _ = @import("integration/webtransport.zig");
+    _ = @import("integration/webtransport_multiplexing.zig");
+    _ = @import("integration/webtransport_races.zig");
     _ = @import("integration/push.zig");
     _ = @import("integration/session_errors.zig");
     _ = @import("integration/budgets.zig");

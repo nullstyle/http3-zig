@@ -79,7 +79,9 @@ try req.finish();
 
 See [`examples/loopback_get.zig`](examples/loopback_get.zig) for the
 full pump loop, and [`examples/loopback_wt.zig`](examples/loopback_wt.zig)
-for the WebTransport variant.
+for the WebTransport variant. For an application-author walkthrough of
+the WebTransport API (handshake, streams, datagrams, flow control, drain,
+close), see [`docs/webtransport-tour.md`](docs/webtransport-tour.md).
 
 ## Status
 
