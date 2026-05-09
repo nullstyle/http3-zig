@@ -14,6 +14,8 @@ pub const Error = error{
     InvalidPseudoHeader,
     ExtendedConnectNotEnabled,
     ConnectionSpecificField,
+    InvalidContentLength,
+    ContentLengthMismatch,
 };
 
 pub const RequestValidationOptions = struct {
@@ -26,6 +28,47 @@ pub fn validateTrailers(fields: []const FieldLine) Error!void {
         if (field.name[0] == ':') return Error.InvalidPseudoHeader;
         if (isConnectionSpecific(field.name)) return Error.ConnectionSpecificField;
     }
+}
+
+/// Parse and validate the `content-length` header field, if present.
+///
+/// RFC 9114 §4.1.2 / RFC 9110 §8.6: a request or response that contains a
+/// `content-length` header field with a value that does not match the length
+/// of the message content MUST be treated as malformed. Receivers also reject
+/// multiple `content-length` headers with conflicting values, non-decimal
+/// values, and negative values.
+///
+/// Returns:
+/// - `null` if no `content-length` header is present.
+/// - The parsed unsigned value otherwise.
+///
+/// Errors:
+/// - `InvalidContentLength` if the value is non-decimal, negative, overflows
+///   u64, or if multiple `content-length` headers carry different values.
+pub fn parseContentLength(fields: []const FieldLine) Error!?u64 {
+    var seen: ?u64 = null;
+    for (fields) |field| {
+        if (!std.mem.eql(u8, field.name, "content-length")) continue;
+        const parsed = try parseContentLengthValue(field.value);
+        if (seen) |prev| {
+            if (prev != parsed) return Error.InvalidContentLength;
+        } else {
+            seen = parsed;
+        }
+    }
+    return seen;
+}
+
+fn parseContentLengthValue(value: []const u8) Error!u64 {
+    if (value.len == 0) return Error.InvalidContentLength;
+    var acc: u64 = 0;
+    for (value) |c| {
+        if (c < '0' or c > '9') return Error.InvalidContentLength;
+        const digit: u64 = c - '0';
+        acc = std.math.mul(u64, acc, 10) catch return Error.InvalidContentLength;
+        acc = std.math.add(u64, acc, digit) catch return Error.InvalidContentLength;
+    }
+    return acc;
 }
 
 pub fn validateRequest(fields: []const FieldLine) Error!void {
@@ -98,6 +141,12 @@ pub fn validateRequestWithOptions(fields: []const FieldLine, options: RequestVal
         if (!std.mem.eql(u8, method, "CONNECT")) return Error.InvalidPseudoHeader;
         if (value.len == 0) return Error.InvalidPseudoHeader;
     }
+
+    // RFC 9114 §4.1.2 / RFC 9110 §8.6: if `content-length` is present, it
+    // MUST be a non-negative decimal integer. Multiple values must agree.
+    // Cross-checking it against actual body length happens at the decoder
+    // (Decoder.observeBytes / Decoder.finish).
+    _ = try parseContentLength(fields);
 }
 
 pub fn requestProtocol(fields: []const FieldLine) ?[]const u8 {
@@ -132,6 +181,11 @@ pub fn validateResponse(fields: []const FieldLine) Error!void {
     // ASCII digits, no whitespace, no sign. Anything else is malformed
     // (§4.6 → H3_MESSAGE_ERROR).
     if (!isValidStatus(status)) return Error.InvalidPseudoHeader;
+
+    // RFC 9114 §4.1.2 / RFC 9110 §8.6: validate `content-length` syntax on
+    // responses too. The body-length cross-check is performed by the
+    // decoder against accumulated DATA frame bytes.
+    _ = try parseContentLength(fields);
 }
 
 fn validateName(name: []const u8) Error!void {

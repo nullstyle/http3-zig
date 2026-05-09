@@ -57,6 +57,9 @@
 //!   RFC9114 §4.5   ¶?   NORMATIVE  trailer field section permitted after response body
 //!   RFC9114 §4.5   ¶?   MUST NOT   include any pseudo-header in trailers
 //!   RFC9114 §4.5   ¶?   MUST NOT   include connection-specific fields in trailers
+//!   RFC9114 §4.1.2 ¶?   MUST       reject content-length whose value mismatches DATA bytes
+//!   RFC9114 §4.1.2 ¶?   MUST       reject non-decimal / negative content-length
+//!   RFC9114 §4.1.2 ¶?   MUST       reject duplicate / conflicting content-length
 //!   RFC9114 §4.5   ¶?   MUST NOT   send DATA after trailers (request)
 //!   RFC9114 §4.1   ¶7   MUST NOT   send DATA after trailers (response)
 //!   RFC9114 §4.5   ¶?   MUST NOT   send a second HEADERS section after trailers
@@ -949,4 +952,208 @@ test "MUST validate :status is exactly three ASCII digits [RFC9114 §4.4 ¶?]" {
         .{ .name = ":status", .value = "" },
     };
     try std.testing.expectError(headers.Error.InvalidPseudoHeader, headers.validateResponse(&empty));
+}
+
+// ---------------------------------------------------------------- §4.1.2 content-length
+
+test "MUST reject non-decimal content-length [RFC9114 §4.1.2 ¶?]" {
+    // §4.1.2: "A request or response that contains a content-length header
+    // field with a value that does not match the length of the message
+    // content MUST be treated as malformed." RFC 9110 §8.6 also requires
+    // that the value parses as a non-negative decimal integer.
+    const fields = [_]FieldLine{
+        .{ .name = ":method", .value = "GET" },
+        .{ .name = ":scheme", .value = "https" },
+        .{ .name = ":path", .value = "/" },
+        .{ .name = ":authority", .value = "example.com" },
+        .{ .name = "content-length", .value = "5x" },
+    };
+    try std.testing.expectError(
+        headers.Error.InvalidContentLength,
+        headers.validateRequest(&fields),
+    );
+}
+
+test "MUST reject negative content-length [RFC9114 §4.1.2 ¶?]" {
+    // The grammar in RFC 9110 §8.6 is `1*DIGIT` — no sign.
+    const fields = [_]FieldLine{
+        .{ .name = ":method", .value = "GET" },
+        .{ .name = ":scheme", .value = "https" },
+        .{ .name = ":path", .value = "/" },
+        .{ .name = ":authority", .value = "example.com" },
+        .{ .name = "content-length", .value = "-5" },
+    };
+    try std.testing.expectError(
+        headers.Error.InvalidContentLength,
+        headers.validateRequest(&fields),
+    );
+}
+
+test "MUST reject conflicting duplicate content-length [RFC9114 §4.1.2 ¶?]" {
+    // RFC 9110 §8.6: "A recipient MUST either reject the message ... or
+    // act as if it received a single Content-Length header field with the
+    // common value." Conflicting values are rejected.
+    const fields = [_]FieldLine{
+        .{ .name = ":method", .value = "GET" },
+        .{ .name = ":scheme", .value = "https" },
+        .{ .name = ":path", .value = "/" },
+        .{ .name = ":authority", .value = "example.com" },
+        .{ .name = "content-length", .value = "5" },
+        .{ .name = "content-length", .value = "10" },
+    };
+    try std.testing.expectError(
+        headers.Error.InvalidContentLength,
+        headers.validateRequest(&fields),
+    );
+}
+
+test "MUST accept agreeing duplicate content-length [RFC9110 §8.6]" {
+    // Two content-length headers with the same value are equivalent to one
+    // such header.
+    const fields = [_]FieldLine{
+        .{ .name = ":method", .value = "GET" },
+        .{ .name = ":scheme", .value = "https" },
+        .{ .name = ":path", .value = "/" },
+        .{ .name = ":authority", .value = "example.com" },
+        .{ .name = "content-length", .value = "5" },
+        .{ .name = "content-length", .value = "5" },
+    };
+    try headers.validateRequest(&fields);
+    try std.testing.expectEqual(@as(?u64, 5), try headers.parseContentLength(&fields));
+}
+
+test "MUST accept well-formed content-length [RFC9114 §4.1.2 ¶?]" {
+    const fields = [_]FieldLine{
+        .{ .name = ":method", .value = "POST" },
+        .{ .name = ":scheme", .value = "https" },
+        .{ .name = ":path", .value = "/upload" },
+        .{ .name = ":authority", .value = "example.com" },
+        .{ .name = "content-length", .value = "42" },
+    };
+    try headers.validateRequest(&fields);
+    try std.testing.expectEqual(@as(?u64, 42), try headers.parseContentLength(&fields));
+}
+
+test "MUST reject content-length > body bytes (under-length DATA) [RFC9114 §4.1.2 ¶?]" {
+    // §4.1.2: "A request or response that contains a content-length header
+    // field with a value that does not match the length of the message
+    // content MUST be treated as malformed." Under-length is detected at
+    // finish() (or trailer arrival).
+    const allocator = std.testing.allocator;
+    const fields = [_]FieldLine{
+        .{ .name = ":method", .value = "POST" },
+        .{ .name = ":scheme", .value = "https" },
+        .{ .name = ":path", .value = "/" },
+        .{ .name = ":authority", .value = "example.com" },
+        .{ .name = "content-length", .value = "10" },
+    };
+
+    var buf: [256]u8 = undefined;
+    var enc = MessageEncoder.init(.request, .{});
+    var pos: usize = 0;
+    pos += try enc.encodeHeaders(buf[pos..], &fields);
+    pos += try enc.encodeData(buf[pos..], "abc"); // only 3 bytes; advertised 10
+
+    var dec = MessageDecoder.init(.request, .{});
+    var events = std.ArrayList(message.Event).empty;
+    defer {
+        for (events.items) |e| e.deinit(allocator);
+        events.deinit(allocator);
+    }
+    try dec.observeBytes(allocator, buf[0..pos], &events);
+    try std.testing.expectError(message.Error.ContentLengthMismatch, dec.finish());
+}
+
+test "MUST reject content-length < body bytes (over-length DATA) [RFC9114 §4.1.2 ¶?]" {
+    // Over-length is caught as soon as DATA bytes exceed the advertised
+    // content-length, so observeBytes returns the error.
+    const allocator = std.testing.allocator;
+    const fields = [_]FieldLine{
+        .{ .name = ":method", .value = "POST" },
+        .{ .name = ":scheme", .value = "https" },
+        .{ .name = ":path", .value = "/" },
+        .{ .name = ":authority", .value = "example.com" },
+        .{ .name = "content-length", .value = "5" },
+    };
+
+    var buf: [256]u8 = undefined;
+    var enc = MessageEncoder.init(.request, .{});
+    var pos: usize = 0;
+    pos += try enc.encodeHeaders(buf[pos..], &fields);
+    pos += try enc.encodeData(buf[pos..], "abcdefghij"); // 10 bytes; advertised 5
+
+    var dec = MessageDecoder.init(.request, .{});
+    var events = std.ArrayList(message.Event).empty;
+    defer {
+        for (events.items) |e| e.deinit(allocator);
+        events.deinit(allocator);
+    }
+    try std.testing.expectError(
+        message.Error.ContentLengthMismatch,
+        dec.observeBytes(allocator, buf[0..pos], &events),
+    );
+}
+
+test "MUST reject body-length mismatch when trailers arrive [RFC9114 §4.1.2 ¶?]" {
+    // The trailer field section closes the message body. If the
+    // accumulated body bytes don't match the advertised content-length at
+    // that point, the message is malformed.
+    const allocator = std.testing.allocator;
+    const fields = [_]FieldLine{
+        .{ .name = ":method", .value = "POST" },
+        .{ .name = ":scheme", .value = "https" },
+        .{ .name = ":path", .value = "/" },
+        .{ .name = ":authority", .value = "example.com" },
+        .{ .name = "content-length", .value = "10" },
+    };
+    const trailers = [_]FieldLine{.{ .name = "x-trailer", .value = "v" }};
+
+    var buf: [256]u8 = undefined;
+    var enc = MessageEncoder.init(.request, .{});
+    var pos: usize = 0;
+    pos += try enc.encodeHeaders(buf[pos..], &fields);
+    pos += try enc.encodeData(buf[pos..], "abc");
+    pos += try enc.encodeTrailers(buf[pos..], &trailers);
+
+    var dec = MessageDecoder.init(.request, .{});
+    var events = std.ArrayList(message.Event).empty;
+    defer {
+        for (events.items) |e| e.deinit(allocator);
+        events.deinit(allocator);
+    }
+    try std.testing.expectError(
+        message.Error.ContentLengthMismatch,
+        dec.observeBytes(allocator, buf[0..pos], &events),
+    );
+}
+
+test "MUST accept body whose length matches content-length [RFC9114 §4.1.2 ¶?]" {
+    // When DATA bytes equal the advertised content-length, the message
+    // decodes cleanly through HEADERS, DATA, trailers, and finish().
+    const allocator = std.testing.allocator;
+    const fields = [_]FieldLine{
+        .{ .name = ":method", .value = "POST" },
+        .{ .name = ":scheme", .value = "https" },
+        .{ .name = ":path", .value = "/" },
+        .{ .name = ":authority", .value = "example.com" },
+        .{ .name = "content-length", .value = "5" },
+    };
+    const trailers = [_]FieldLine{.{ .name = "x-trailer", .value = "ok" }};
+
+    var buf: [256]u8 = undefined;
+    var enc = MessageEncoder.init(.request, .{});
+    var pos: usize = 0;
+    pos += try enc.encodeHeaders(buf[pos..], &fields);
+    pos += try enc.encodeData(buf[pos..], "hello");
+    pos += try enc.encodeTrailers(buf[pos..], &trailers);
+
+    var dec = MessageDecoder.init(.request, .{});
+    var events = std.ArrayList(message.Event).empty;
+    defer {
+        for (events.items) |e| e.deinit(allocator);
+        events.deinit(allocator);
+    }
+    try dec.observeBytes(allocator, buf[0..pos], &events);
+    try dec.finish();
+    try std.testing.expectEqual(@as(usize, 3), events.items.len);
 }

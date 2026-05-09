@@ -170,6 +170,8 @@ pub fn codeForError(err: anyerror) u64 {
         error.InvalidPseudoHeader,
         error.ExtendedConnectNotEnabled,
         error.ConnectionSpecificField,
+        error.InvalidContentLength,
+        error.ContentLengthMismatch,
         error.DecodedFieldSectionTooLarge,
         error.TooManyFieldLines,
         => protocol.ErrorCode.message_error,

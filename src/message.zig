@@ -130,6 +130,15 @@ pub const Decoder = struct {
     validator: stream_mod.FrameValidator,
     seen_headers: bool = false,
     seen_trailers: bool = false,
+    /// Parsed `content-length` from the initial HEADERS field section, if
+    /// present. RFC 9114 §4.1.2 / RFC 9110 §8.6 require the receiver to
+    /// treat any mismatch with the actual message-content length as a
+    /// malformed message.
+    expected_body_len: ?u64 = null,
+    /// Running tally of DATA frame payload bytes observed since the
+    /// initial HEADERS section. Compared to `expected_body_len` at trailer
+    /// arrival and at `finish()`.
+    body_bytes: u64 = 0,
 
     pub fn init(kind: Kind, options: DecodeOptions) Decoder {
         return .{
@@ -152,6 +161,11 @@ pub const Decoder = struct {
                 try self.validator.observe(frame_mod.frameType(f));
                 if (!self.seen_headers) return Error.DataBeforeHeaders;
                 if (self.seen_trailers) return Error.DataAfterTrailers;
+                self.body_bytes = std.math.add(u64, self.body_bytes, bytes.len) catch
+                    return Error.ContentLengthMismatch;
+                if (self.expected_body_len) |expected| {
+                    if (self.body_bytes > expected) return Error.ContentLengthMismatch;
+                }
                 return .{ .data = bytes };
             },
             .push_promise => |promise| {
@@ -219,10 +233,17 @@ pub const Decoder = struct {
         if (self.seen_trailers) return Error.DuplicateHeaders;
         if (!self.seen_headers) {
             try validateFields(self.kind, fields, self.options);
+            self.expected_body_len = try headers_mod.parseContentLength(fields);
             self.seen_headers = true;
             return .{ .headers = fields };
         }
         try headers_mod.validateTrailers(fields);
+        // RFC 9114 §4.1.2: at trailer arrival, the body is complete. If a
+        // content-length was advertised, the accumulated body length must
+        // match exactly.
+        if (self.expected_body_len) |expected| {
+            if (self.body_bytes != expected) return Error.ContentLengthMismatch;
+        }
         self.seen_trailers = true;
         return .{ .trailers = fields };
     }
@@ -246,6 +267,12 @@ pub const Decoder = struct {
 
     pub fn finish(self: *const Decoder) Error!void {
         if (!self.seen_headers) return Error.MissingHeaders;
+        // RFC 9114 §4.1.2: an under-length body (DATA bytes < advertised
+        // content-length) is just as malformed as an over-length body. The
+        // over-length case is already caught at observe-time.
+        if (self.expected_body_len) |expected| {
+            if (self.body_bytes != expected) return Error.ContentLengthMismatch;
+        }
     }
 };
 
