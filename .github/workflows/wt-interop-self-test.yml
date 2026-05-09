@@ -1,0 +1,82 @@
+name: wt-interop-self-test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# In-tree WebTransport interop check: bring up the http3-zig
+# WebTransport echo server on a real UDP socket (Ubuntu's loopback,
+# unlike a sandboxed dev host, has no restrictions on inter-process
+# UDP) and run the matrix runner against it. This catches regressions
+# in the real-socket pump path that the in-process integration tests
+# don't reach.
+#
+# The third-party WebTransport interop matrix
+# (`wt-interop.yml`, scheduled weekly) covers the cross-implementation
+# story; this workflow stays as the per-push real-socket gate and
+# uses only http3-zig binaries so it doesn't depend on any external
+# server staying alive.
+jobs:
+  self-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout http3-zig
+        uses: actions/checkout@v4
+
+      - name: Set up mise (zig 0.16.0 + project tools)
+        uses: jdx/mise-action@v2
+        with:
+          install: true
+          cache: true
+
+      - name: Install server + matrix runner + per-target client
+        run: zig build install-wt-interop-matrix external-wt-server
+
+      - name: Start the WT echo server in the background
+        run: |
+          set -euo pipefail
+          ./zig-out/bin/http3-zig-external-wt-server \
+            --listen 127.0.0.1:0 \
+            --max-sessions 1 \
+            --max-lifetime-ms 60000 \
+            > "${{ runner.temp }}/wt-server.log" 2>&1 &
+          echo "$!" > "${{ runner.temp }}/wt-server.pid"
+
+      - name: Wait for the server's READY line
+        run: |
+          set -euo pipefail
+          for i in $(seq 1 200); do
+            if grep -q "^READY " "${{ runner.temp }}/wt-server.log"; then
+              break
+            fi
+            sleep 0.05
+          done
+          if ! grep -q "^READY " "${{ runner.temp }}/wt-server.log"; then
+            echo "::error::Server never reported READY"
+            cat "${{ runner.temp }}/wt-server.log"
+            exit 2
+          fi
+          PORT=$(awk '/^READY / {print $2; exit}' "${{ runner.temp }}/wt-server.log")
+          echo "WT_SERVER_PORT=$PORT" >> "$GITHUB_ENV"
+          echo "server listening on 127.0.0.1:$PORT"
+
+      - name: Run the matrix against the in-tree server
+        env:
+          WT_INTEROP_MATRIX_URLS: "https://127.0.0.1:${{ env.WT_SERVER_PORT }}/wt-self-test"
+        run: zig build wt-interop-matrix
+
+      - name: Tear down the server
+        if: always()
+        run: |
+          if [ -f "${{ runner.temp }}/wt-server.pid" ]; then
+            PID=$(cat "${{ runner.temp }}/wt-server.pid")
+            kill "$PID" 2>/dev/null || true
+            wait "$PID" 2>/dev/null || true
+          fi
+
+      - name: Server log (for debugging)
+        if: always()
+        run: cat "${{ runner.temp }}/wt-server.log" || true

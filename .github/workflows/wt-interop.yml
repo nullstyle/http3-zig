@@ -1,0 +1,229 @@
+name: wt-interop
+
+on:
+  schedule:
+    # Sunday 06:30 UTC — interop is environment-sensitive and slow,
+    # so run weekly rather than on every push. The test workflow
+    # (test.yml) is the actual CI gate.
+    - cron: "30 6 * * 0"
+  workflow_dispatch:
+    inputs:
+      urls:
+        description: |
+          Newline- or comma-separated list of WT_INTEROP_URL values
+          to run the matrix against, IN ADDITION to the two in-repo
+          third-party peers this workflow always brings up
+          (webtransport-go and pywebtransport). Leave blank to run
+          only against the in-repo peers.
+        required: false
+        default: ""
+      timeout_ms:
+        description: "Per-target wallclock timeout (ms)"
+        required: false
+        default: "30000"
+
+# WebTransport interop runs are intentionally tolerant: a regression
+# here is a signal to investigate, not a hard merge gate. The matrix
+# always exercises two third-party servers in different language /
+# library stacks so a regression in either is easier to localize:
+#
+#   * webtransport-go (Go), pinned via `server_go/go.mod`;
+#   * pywebtransport (Python over a Rust core), pinned via
+#     `server_python/requirements.txt`.
+#
+# Operators can point the matrix at additional URLs via the `urls`
+# workflow input.
+jobs:
+  matrix:
+    name: WT interop (http3-zig as client)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    timeout-minutes: 30
+    env:
+      TIMEOUT_MS: ${{ github.event.inputs.timeout_ms || '30000' }}
+      EXTRA_URLS: ${{ github.event.inputs.urls }}
+    steps:
+      - name: Checkout http3-zig
+        uses: actions/checkout@v4
+
+      - name: Set up mise (zig 0.16.0 + project tools)
+        uses: jdx/mise-action@v2
+        with:
+          install: true
+          cache: true
+
+      - name: Set up Go (for the webtransport-go peer)
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+          # Cache the module download for the third-party peer.
+          # `go-version-file` is only set when there's a top-level
+          # go.mod, so we point the cache at the server's go.sum
+          # explicitly.
+          cache-dependency-path: interop/external_wt/server_go/go.sum
+
+      - name: Set up Python (for the pywebtransport peer)
+        uses: actions/setup-python@v5
+        with:
+          # pywebtransport requires CPython >= 3.12. We pin to 3.12
+          # so a future runtime bump on `ubuntu-latest` doesn't
+          # silently change the Python flavor under the peer.
+          python-version: "3.12"
+          # Cache pip's wheel cache off `requirements.txt` so a
+          # rebuild of the interop image doesn't redownload (or in
+          # the worst case rebuild from Rust source).
+          cache: "pip"
+          cache-dependency-path: interop/external_wt/server_python/requirements.txt
+
+      - name: Build the http3-zig matrix runner + client
+        run: zig build install-wt-interop-matrix
+
+      - name: Build the webtransport-go peer
+        working-directory: interop/external_wt/server_go
+        run: |
+          set -euo pipefail
+          # `go mod tidy` is a no-op on a clean checkout; we run
+          # `go mod download` instead so a stale go.sum produces a
+          # hard failure here rather than mutating the lockfile in
+          # CI.
+          go mod download
+          go build -o "${{ runner.temp }}/wt-go-server" .
+
+      - name: Install the pywebtransport peer
+        run: |
+          set -euo pipefail
+          # The `pip install` call here is the equivalent of `go mod
+          # download` for the Go peer above: the version is pinned
+          # exactly in `requirements.txt`, so any drift produces a
+          # hard failure in CI rather than silently picking up a
+          # newer pywebtransport.
+          #
+          # As of v0.17.1 pywebtransport ships zero Python runtime
+          # dependencies (the QUIC + HTTP/3 stack lives in its Rust
+          # core), so this install is a single wheel download.
+          python -m pip install --upgrade pip
+          python -m pip install -r interop/external_wt/server_python/requirements.txt
+
+      - name: Start the webtransport-go peer in the background
+        run: |
+          set -euo pipefail
+          "${{ runner.temp }}/wt-go-server" \
+            --listen 127.0.0.1:0 \
+            --cert tests/data/test_cert.pem \
+            --key tests/data/test_key.pem \
+            --max-sessions 1 \
+            --max-lifetime-ms 60000 \
+            > "${{ runner.temp }}/wt-go-server.log" 2>&1 &
+          echo "$!" > "${{ runner.temp }}/wt-go-server.pid"
+
+      - name: Wait for the webtransport-go peer's READY line
+        run: |
+          set -euo pipefail
+          for i in $(seq 1 200); do
+            if grep -q "^READY " "${{ runner.temp }}/wt-go-server.log"; then
+              break
+            fi
+            sleep 0.05
+          done
+          if ! grep -q "^READY " "${{ runner.temp }}/wt-go-server.log"; then
+            echo "::error::webtransport-go peer never reported READY"
+            cat "${{ runner.temp }}/wt-go-server.log"
+            exit 2
+          fi
+          PORT=$(awk '/^READY / {print $2; exit}' "${{ runner.temp }}/wt-go-server.log")
+          echo "WT_GO_PORT=$PORT" >> "$GITHUB_ENV"
+          echo "webtransport-go listening on 127.0.0.1:$PORT"
+
+      - name: Start the pywebtransport peer in the background
+        run: |
+          set -euo pipefail
+          # `python -u` flushes stdout immediately so the workflow's
+          # READY-line grep doesn't race against block buffering.
+          python -u interop/external_wt/server_python/main.py \
+            --listen 127.0.0.1:0 \
+            --cert tests/data/test_cert.pem \
+            --key tests/data/test_key.pem \
+            --max-sessions 1 \
+            --max-lifetime-ms 60000 \
+            > "${{ runner.temp }}/wt-py-server.log" 2>&1 &
+          echo "$!" > "${{ runner.temp }}/wt-py-server.pid"
+
+      - name: Wait for the pywebtransport peer's READY line
+        run: |
+          set -euo pipefail
+          # The Python peer can take a beat longer than the Go one to
+          # bring up its Tokio reactor / pyo3 FFI bindings on a cold
+          # runner, so we let it have ~10s (200 * 0.05s) before
+          # giving up — same shape as the Go wait, just sized for the
+          # heavier startup path.
+          for i in $(seq 1 200); do
+            if grep -q "^READY " "${{ runner.temp }}/wt-py-server.log"; then
+              break
+            fi
+            sleep 0.05
+          done
+          if ! grep -q "^READY " "${{ runner.temp }}/wt-py-server.log"; then
+            echo "::error::pywebtransport peer never reported READY"
+            cat "${{ runner.temp }}/wt-py-server.log"
+            exit 2
+          fi
+          PORT=$(awk '/^READY / {print $2; exit}' "${{ runner.temp }}/wt-py-server.log")
+          echo "WT_PY_PORT=$PORT" >> "$GITHUB_ENV"
+          echo "pywebtransport listening on 127.0.0.1:$PORT"
+
+      - name: Compose the matrix URL list
+        run: |
+          set -euo pipefail
+          GO_URL="https://127.0.0.1:${WT_GO_PORT}/wt-go-interop"
+          PY_URL="https://127.0.0.1:${WT_PY_PORT}/wt-py-interop"
+          # Pin order: Go peer first (the lightest and oldest peer in
+          # the matrix), Python peer second, operator-supplied URLs
+          # last. The matrix runner's per-target failures show the
+          # URL, so order is purely cosmetic here; consistent ordering
+          # makes diff'ing CI logs across runs easier.
+          BASE_URLS=$(printf '%s\n%s' "$GO_URL" "$PY_URL")
+          if [ -n "${EXTRA_URLS:-}" ]; then
+            URLS=$(printf '%s\n%s' "$BASE_URLS" "$EXTRA_URLS")
+          else
+            URLS="$BASE_URLS"
+          fi
+          {
+            echo 'WT_INTEROP_MATRIX_URLS<<EOF'
+            echo "$URLS"
+            echo 'EOF'
+          } >> "$GITHUB_ENV"
+          echo "matrix targets:"
+          echo "$URLS"
+
+      - name: Run the matrix
+        # `wt-interop-matrix` exits 0 when at least one target passes
+        # and 1 when every non-skipped target fails. That plus
+        # `continue-on-error: true` keeps a single broken peer from
+        # masking the whole signal.
+        run: zig build wt-interop-matrix -- --timeout-ms "${TIMEOUT_MS}"
+
+      - name: Tear down the webtransport-go peer
+        if: always()
+        run: |
+          if [ -f "${{ runner.temp }}/wt-go-server.pid" ]; then
+            PID=$(cat "${{ runner.temp }}/wt-go-server.pid")
+            kill "$PID" 2>/dev/null || true
+            wait "$PID" 2>/dev/null || true
+          fi
+
+      - name: Tear down the pywebtransport peer
+        if: always()
+        run: |
+          if [ -f "${{ runner.temp }}/wt-py-server.pid" ]; then
+            PID=$(cat "${{ runner.temp }}/wt-py-server.pid")
+            kill "$PID" 2>/dev/null || true
+            wait "$PID" 2>/dev/null || true
+          fi
+
+      - name: webtransport-go peer log (for debugging)
+        if: always()
+        run: cat "${{ runner.temp }}/wt-go-server.log" || true
+
+      - name: pywebtransport peer log (for debugging)
+        if: always()
+        run: cat "${{ runner.temp }}/wt-py-server.log" || true

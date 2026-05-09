@@ -1,0 +1,40 @@
+# Pinned third-party WebTransport interop server (Python).
+#
+# As of 2026-05-09 the most popular pure-Rust WebTransport library
+# (BiagioFesta/wtransport, latest tag v0.7.1) and the most popular
+# Python QUIC stack (aiortc/aioquic, latest 1.3.0) both still emit
+# only the legacy draft-06 SETTINGS codepoint
+# (`0x2b603742`). pywebtransport is currently the only third-party
+# library besides webtransport-go's master branch that explicitly
+# implements the `SETTINGS_WT_ENABLED = 0x2c7cf000` codepoint
+# http3-zig pins to in `src/protocol.zig` (see its v0.16.0 changelog
+# entry from 2026-03-13 and the `SETTINGS_WT_ENABLED: u64 =
+# 0x2C7C_F000` constant in its Rust core at
+# `crates/src/common/constants.rs`).
+#
+# We therefore pin the exact 0.17.1 release here; when a tagged
+# release of `wtransport` (Rust) or `aioquic` (Python pure-stack)
+# ships draft-15 support, swap the second peer for it so we keep
+# language and library diversity in the matrix.
+#
+# To verify your pin still speaks draft-15 after a bump, look for:
+#
+#   pub(crate) const SETTINGS_WT_ENABLED: u64 = 0x2C7C_F000;
+#
+# in `crates/src/common/constants.rs` of the resolved sdist; that
+# constant disappeared/changed in *every* prior wire-format draft
+# bump and is the cleanest single signal that the wire format has
+# not silently regressed.
+#
+# Notes for CI:
+#
+#   * The `pywebtransport` wheel ships as a maturin-built CPython
+#     extension and supports CPython 3.12+. The wt-interop workflow
+#     installs Python 3.12 (the LTS-aligned minimum) before pip-
+#     installing this file.
+#
+#   * If pip can't find a prebuilt wheel for the runner platform it
+#     will fall back to a Rust source build. That requires a stable
+#     Rust toolchain on PATH, which the GitHub Actions
+#     `ubuntu-latest` image ships out of the box.
+pywebtransport==0.17.1

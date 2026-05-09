@@ -1,0 +1,54 @@
+name: fuzz
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Codec fuzz smoke is cheap (~12 inputs across all codec targets) and
+# tractable as a per-push gate — it confirms the fuzz harness compiles
+# clean and the smoke corpus doesn't crash any decoder.
+#
+# The corpus job is a heavier follow-up: it walks every file under
+# `fuzz/corpus/<target>/` (~100 hand-curated seeds across all
+# targets) and reports per-target case + fail counts. Still
+# tractable as a per-push gate; long-running fuzz campaigns are out
+# of scope and would run through `zig build fuzz-codecs` manually
+# with longer corpora.
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout http3-zig
+        uses: actions/checkout@v4
+
+      - name: Set up mise (zig 0.16.0 + project tools)
+        uses: jdx/mise-action@v2
+        with:
+          install: true
+          cache: true
+
+      - name: Build the fuzz harness
+        run: zig build fuzz-codecs
+
+      - name: Run the codec smoke corpus
+        run: zig build run-fuzz-smoke
+
+  corpus:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout http3-zig
+        uses: actions/checkout@v4
+
+      - name: Set up mise (zig 0.16.0 + project tools)
+        uses: jdx/mise-action@v2
+        with:
+          install: true
+          cache: true
+
+      - name: Build the corpus runner
+        run: zig build fuzz-corpus
+
+      - name: Run every file in fuzz/corpus/
+        run: zig build run-fuzz-corpus
