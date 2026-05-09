@@ -61,6 +61,9 @@
 //!   RFC9114 §4.1.2 ¶?   MUST       reject non-decimal / negative content-length
 //!   RFC9114 §4.1.2 ¶?   MUST       reject duplicate / conflicting content-length
 //!   RFC9114 §4.3.1 ¶?   MUST       reject empty :authority (when explicitly present)
+//!   RFC9114 §4.4   ¶3   MUST       classic CONNECT omits :scheme and :path
+//!   RFC9114 §4.4   ¶3   MUST       classic CONNECT requires non-empty :authority
+//!   RFC9114 §4.4   ¶3   MUST       classic CONNECT may not carry :protocol
 //!   RFC9114 §4.5   ¶?   MUST NOT   send DATA after trailers (request)
 //!   RFC9114 §4.1   ¶7   MUST NOT   send DATA after trailers (response)
 //!   RFC9114 §4.5   ¶?   MUST NOT   send a second HEADERS section after trailers
@@ -87,9 +90,6 @@
 //!                                as connection-specific-with-exception is unimplemented
 //!   RFC9114 §4.3.1 ¶? MUST      :authority and Host header MUST contain the same value
 //!                                — validator does not cross-check pseudo against regular field
-//!   RFC9114 §4.4   ¶3 MUST      classic CONNECT (omit :scheme and :path)
-//!                                — validator demands :scheme + :path for every request;
-//!                                  classic CONNECT is rejected as MissingPseudoHeader
 //!   RFC9114 §4.4   ¶8 MUST      after CONNECT completes, only DATA frames permitted
 //!                                — frame-context concern → rfc9114_streams.zig
 //!   RFC9114 §4.1   ¶13 MUST     client closes stream-for-sending after request
@@ -1184,4 +1184,84 @@ test "MUST accept a request with non-empty :authority [RFC9114 §4.3.1 ¶?]" {
         .{ .name = ":authority", .value = "example.com" },
     };
     try headers.validateRequest(&fields);
+}
+
+// ---------------------------------------------------------------- §4.4 classic CONNECT
+
+test "MUST accept classic CONNECT with :authority only [RFC9114 §4.4 ¶3]" {
+    // §4.4 ¶3: "The :scheme and :path pseudo-header fields MUST be
+    // omitted." For Classic CONNECT (RFC 9110 §9.3.6) the request consists
+    // of :method=CONNECT and a non-empty :authority of the form
+    // "host:port"; no :scheme, no :path, no :protocol.
+    const fields = [_]FieldLine{
+        .{ .name = ":method", .value = "CONNECT" },
+        .{ .name = ":authority", .value = "example.com:443" },
+    };
+    try headers.validateRequest(&fields);
+}
+
+test "MUST reject classic CONNECT carrying :scheme [RFC9114 §4.4 ¶3]" {
+    // §4.4 ¶3: ":scheme" MUST be omitted on Classic CONNECT.
+    const fields = [_]FieldLine{
+        .{ .name = ":method", .value = "CONNECT" },
+        .{ .name = ":scheme", .value = "https" },
+        .{ .name = ":authority", .value = "example.com:443" },
+    };
+    try std.testing.expectError(
+        headers.Error.InvalidPseudoHeader,
+        headers.validateRequest(&fields),
+    );
+}
+
+test "MUST reject classic CONNECT carrying :path [RFC9114 §4.4 ¶3]" {
+    // §4.4 ¶3: ":path" MUST be omitted on Classic CONNECT.
+    const fields = [_]FieldLine{
+        .{ .name = ":method", .value = "CONNECT" },
+        .{ .name = ":path", .value = "/" },
+        .{ .name = ":authority", .value = "example.com:443" },
+    };
+    try std.testing.expectError(
+        headers.Error.InvalidPseudoHeader,
+        headers.validateRequest(&fields),
+    );
+}
+
+test "MUST reject classic CONNECT missing :authority [RFC9114 §4.4 ¶3]" {
+    // §4.4 ¶3: ":authority" MUST be present (and non-empty) on Classic
+    // CONNECT — the authority is the tunnel target.
+    const fields = [_]FieldLine{
+        .{ .name = ":method", .value = "CONNECT" },
+    };
+    try std.testing.expectError(
+        headers.Error.MissingPseudoHeader,
+        headers.validateRequest(&fields),
+    );
+}
+
+test "MUST reject classic CONNECT with empty :authority [RFC9114 §4.4 ¶3]" {
+    // §4.4 ¶3 + §4.3.1: ":authority" present but empty is malformed — the
+    // tunnel has no target.
+    const fields = [_]FieldLine{
+        .{ .name = ":method", .value = "CONNECT" },
+        .{ .name = ":authority", .value = "" },
+    };
+    try std.testing.expectError(
+        headers.Error.MalformedAuthority,
+        headers.validateRequest(&fields),
+    );
+}
+
+test "NORMATIVE Extended CONNECT keeps :scheme and :path [RFC9114 §4.3.2]" {
+    // §4.3.2 / RFC 8441 / RFC 9220: Extended CONNECT (a CONNECT carrying
+    // :protocol) restores the :scheme/:path shape because the tunnel
+    // target is a sub-protocol URI. This is the counter-example to
+    // Classic CONNECT's "must omit" rule.
+    const fields = [_]FieldLine{
+        .{ .name = ":method", .value = "CONNECT" },
+        .{ .name = ":scheme", .value = "https" },
+        .{ .name = ":path", .value = "/chat" },
+        .{ .name = ":authority", .value = "example.com" },
+        .{ .name = ":protocol", .value = "websocket" },
+    };
+    try headers.validateRequestWithOptions(&fields, .{ .enable_connect_protocol = true });
 }

@@ -115,6 +115,35 @@ pub fn validateRequestWithOptions(fields: []const FieldLine, options: RequestVal
     }
 
     const method = method_value orelse return Error.MissingPseudoHeader;
+
+    // RFC 9114 §4.4 ¶3 — Classic CONNECT (RFC 9110 §9.3.6) has its own
+    // pseudo-header schema:
+    //   - The ":scheme" and ":path" pseudo-header fields MUST be omitted.
+    //   - The ":authority" pseudo-header field MUST be present and
+    //     MUST contain the host and port to connect to (form
+    //     "host:port", per RFC 9110 §9.3.6).
+    //   - The ":protocol" pseudo-header field MUST NOT be present
+    //     (that variant is Extended CONNECT, RFC 8441 / §4.3.2).
+    // Extended CONNECT (a CONNECT request that carries ":protocol")
+    // re-introduces ":scheme" and ":path" because the protocol-tunneled
+    // semantics need a target URI; that path is taken below the
+    // is_classic_connect branch.
+    const is_connect = std.mem.eql(u8, method, "CONNECT");
+    const is_classic_connect = is_connect and protocol_value == null;
+
+    if (is_classic_connect) {
+        if (scheme_value != null) return Error.InvalidPseudoHeader;
+        if (path_value != null) return Error.InvalidPseudoHeader;
+        const authority = authority_value orelse return Error.MissingPseudoHeader;
+        if (authority.len == 0) return Error.MalformedAuthority;
+        try validateAuthority(authority);
+        // Classic CONNECT skips the scheme/path-shape rules; content-length
+        // validation still applies (CONNECT requests may not carry a body
+        // beyond the tunnel, but the syntactic check is independent).
+        _ = try parseContentLength(fields);
+        return;
+    }
+
     const scheme = scheme_value orelse return Error.MissingPseudoHeader;
     const path = path_value orelse return Error.MissingPseudoHeader;
 
@@ -141,7 +170,7 @@ pub fn validateRequestWithOptions(fields: []const FieldLine, options: RequestVal
 
     if (protocol_value) |value| {
         if (!options.enable_connect_protocol) return Error.ExtendedConnectNotEnabled;
-        if (!std.mem.eql(u8, method, "CONNECT")) return Error.InvalidPseudoHeader;
+        if (!is_connect) return Error.InvalidPseudoHeader;
         if (value.len == 0) return Error.InvalidPseudoHeader;
     }
 
