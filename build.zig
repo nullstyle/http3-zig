@@ -178,6 +178,37 @@ pub fn build(b: *std.Build) void {
     );
     run_fuzz_corpus_step.dependOn(&run_fuzz_corpus.step);
 
+    // WebTransport interleaved-operations fuzz target. Drives a real
+    // H3Pair through random sequences of WT ops (open / send / drain /
+    // close / reset) interpreted from the corpus byte stream. See
+    // `fuzz/wt_interleaved.zig` for the bytecode and invariants.
+    const fuzz_wt_interleaved_mod = b.createModule(.{
+        .root_source_file = b.path("fuzz/wt_interleaved_main.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    fuzz_wt_interleaved_mod.addImport("http3_zig", http3_zig_mod);
+    fuzz_wt_interleaved_mod.addImport("quic_zig", quic_zig_mod);
+    fuzz_wt_interleaved_mod.addImport("boringssl", boringssl_mod);
+    const fuzz_wt_interleaved = b.addExecutable(.{
+        .name = "http3-zig-fuzz-wt-interleaved",
+        .root_module = fuzz_wt_interleaved_mod,
+    });
+    const install_fuzz_wt_interleaved = b.addInstallArtifact(fuzz_wt_interleaved, .{});
+    const fuzz_wt_interleaved_step = b.step(
+        "fuzz-wt-interleaved",
+        "Build the WebTransport interleaved-operations fuzz harness",
+    );
+    fuzz_wt_interleaved_step.dependOn(&install_fuzz_wt_interleaved.step);
+
+    const run_fuzz_wt_interleaved = b.addRunArtifact(fuzz_wt_interleaved);
+    run_fuzz_wt_interleaved.addArgs(b.args orelse &[_][]const u8{});
+    const run_fuzz_wt_interleaved_step = b.step(
+        "run-fuzz-wt-interleaved",
+        "Run the WT interleaved fuzz harness over fuzz/corpus/wt-interleaved/",
+    );
+    run_fuzz_wt_interleaved_step.dependOn(&run_fuzz_wt_interleaved.step);
+
     const curl_h3_server_mod = b.createModule(.{
         .root_source_file = b.path("interop/curl_h3/server.zig"),
         .target = target,
@@ -363,4 +394,131 @@ pub fn build(b: *std.Build) void {
     const run_wt_bench = b.addRunArtifact(wt_bench);
     const bench_step = b.step("bench", "Run the WebTransport baseline benchmark (use -Doptimize=ReleaseFast for published numbers)");
     bench_step.dependOn(&run_wt_bench.step);
+
+    // Long-running-session memory profile. Same loopback shim as
+    // `bench/wt_bench.zig`, but the binary is dedicated to detecting
+    // monotonic allocator growth across many drains on a single
+    // WebTransport session. Always built ReleaseSafe regardless of the
+    // top-level `-Doptimize` setting — the `DebugAllocator` leak
+    // detector and the counting allocator we layer on top are the
+    // whole point of this binary, and they only function with safety
+    // on.
+    //
+    // Builds private boringssl + quic_zig + http3_zig module
+    // instances at the same `.ReleaseSafe` mode so the link-time
+    // ubsan handler symbols match across the C++ archives and the Zig
+    // root. Mirrors the pattern `wt-load` uses for its own pinned
+    // optimize. See `docs/memory-profile.md` for the published
+    // numbers.
+    const mem_profile_optimize: std.builtin.OptimizeMode = .ReleaseSafe;
+    const boringssl_safe_dep = b.dependency("boringssl_zig", .{
+        .target = target,
+        .optimize = mem_profile_optimize,
+    });
+    const boringssl_safe_mod = boringssl_safe_dep.module("boringssl");
+    const quic_zig_safe_dep = b.dependency("quic_zig", .{
+        .target = target,
+        .optimize = mem_profile_optimize,
+    });
+    const quic_zig_safe_mod = b.createModule(.{
+        .root_source_file = quic_zig_safe_dep.path("src/root.zig"),
+        .target = target,
+        .optimize = mem_profile_optimize,
+    });
+    quic_zig_safe_mod.addImport("boringssl", boringssl_safe_mod);
+    const http3_zig_safe_mod = b.createModule(.{
+        .root_source_file = b.path("src/root.zig"),
+        .target = target,
+        .optimize = mem_profile_optimize,
+    });
+    http3_zig_safe_mod.addImport("quic_zig", quic_zig_safe_mod);
+    http3_zig_safe_mod.addImport("boringssl", boringssl_safe_mod);
+    const wt_memory_mod = b.createModule(.{
+        .root_source_file = b.path("bench/wt_memory.zig"),
+        .target = target,
+        .optimize = mem_profile_optimize,
+    });
+    wt_memory_mod.addImport("http3_zig", http3_zig_safe_mod);
+    wt_memory_mod.addImport("quic_zig", quic_zig_safe_mod);
+    wt_memory_mod.addImport("boringssl", boringssl_safe_mod);
+    const wt_memory = b.addExecutable(.{
+        .name = "http3-zig-wt-memory",
+        .root_module = wt_memory_mod,
+    });
+    const install_wt_memory = b.addInstallArtifact(wt_memory, .{});
+    const mem_profile_build_step = b.step(
+        "mem-profile-build",
+        "Build the WebTransport long-running memory profiler (always ReleaseSafe)",
+    );
+    mem_profile_build_step.dependOn(&install_wt_memory.step);
+
+    const run_wt_memory = b.addRunArtifact(wt_memory);
+    const mem_profile_step = b.step(
+        "mem-profile",
+        "Run the WebTransport long-running memory profiler (always ReleaseSafe)",
+    );
+    mem_profile_step.dependOn(&run_wt_memory.step);
+
+    // WebTransport concurrent-session load test. Spins up 100 WT
+    // sessions on a single QUIC connection and exercises uni
+    // streams, bidirectional datagrams, and per-session WT_MAX_DATA
+    // bumps under the same in-process loopback shim as `bench`. The
+    // goal is finding scaling cliffs (allocator pressure, dispatch
+    // hot path, drain-budget firing repeatedly) — not optimization.
+    // See `docs/load-baseline.md` for the published numbers.
+    //
+    // Pinned to ReleaseFast regardless of the top-level
+    // `-Doptimize` setting so successive runs publish comparable
+    // numbers. Invariants (session-state checks, per-stream
+    // attribution, lastCloseError == null) are asserted on every
+    // iteration regardless of the optimize mode — the load test
+    // returns explicit error tags rather than relying on `assert`.
+    const wt_load_optimize: std.builtin.OptimizeMode = .ReleaseFast;
+    const boringssl_release_dep = b.dependency("boringssl_zig", .{
+        .target = target,
+        .optimize = wt_load_optimize,
+    });
+    const boringssl_release_mod = boringssl_release_dep.module("boringssl");
+    const quic_zig_release_dep = b.dependency("quic_zig", .{
+        .target = target,
+        .optimize = wt_load_optimize,
+    });
+    const quic_zig_release_mod = b.createModule(.{
+        .root_source_file = quic_zig_release_dep.path("src/root.zig"),
+        .target = target,
+        .optimize = wt_load_optimize,
+    });
+    quic_zig_release_mod.addImport("boringssl", boringssl_release_mod);
+    const http3_zig_release_mod = b.createModule(.{
+        .root_source_file = b.path("src/root.zig"),
+        .target = target,
+        .optimize = wt_load_optimize,
+    });
+    http3_zig_release_mod.addImport("quic_zig", quic_zig_release_mod);
+    http3_zig_release_mod.addImport("boringssl", boringssl_release_mod);
+    const wt_load_mod = b.createModule(.{
+        .root_source_file = b.path("bench/wt_load.zig"),
+        .target = target,
+        .optimize = wt_load_optimize,
+    });
+    wt_load_mod.addImport("http3_zig", http3_zig_release_mod);
+    wt_load_mod.addImport("quic_zig", quic_zig_release_mod);
+    wt_load_mod.addImport("boringssl", boringssl_release_mod);
+    const wt_load = b.addExecutable(.{
+        .name = "http3-zig-wt-load",
+        .root_module = wt_load_mod,
+    });
+    const install_wt_load = b.addInstallArtifact(wt_load, .{});
+    const wt_load_build_step = b.step(
+        "wt-load-build",
+        "Build the WebTransport concurrent-session load test (always ReleaseFast)",
+    );
+    wt_load_build_step.dependOn(&install_wt_load.step);
+
+    const run_wt_load = b.addRunArtifact(wt_load);
+    const wt_load_step = b.step(
+        "wt-load",
+        "Run the 100-session WebTransport load test (always ReleaseFast)",
+    );
+    wt_load_step.dependOn(&run_wt_load.step);
 }

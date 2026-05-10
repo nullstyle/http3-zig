@@ -143,18 +143,34 @@ pub const RequestWriter = struct {
         return try self.client.canSendData(self.stream_id, data_len);
     }
 
+    /// Sends an HTTP/3 Datagram (RFC 9297 §2) over a QUIC DATAGRAM frame —
+    /// the unreliable, low-latency path. Gated on the QUIC transport
+    /// parameter `max_datagram_frame_size > 0` AND
+    /// `SETTINGS_H3_DATAGRAM = 1`. This is the WebTransport-spec'd path
+    /// for WT datagrams; for CONNECT-UDP / MASQUE multiplexing prefer
+    /// `datagramWithContext`. For the reliable on-stream fallback see
+    /// `datagramCapsule`. See README's `## Datagram sends` section for
+    /// the comparison table.
     pub fn datagram(self: *RequestWriter, payload: []const u8) session_mod.Error!void {
         try self.client.sendDatagram(self.stream_id, payload);
     }
 
+    /// Tracked variant of `datagram` — returns the QUIC datagram-id for
+    /// later correlation with `datagram_acked` / `datagram_lost` events.
     pub fn datagramTracked(self: *RequestWriter, payload: []const u8) session_mod.Error!u64 {
         return try self.client.sendDatagramTracked(self.stream_id, payload);
     }
 
+    /// Same as `datagram` but with an HTTP Datagram Context-ID prefix
+    /// (RFC 9297 §2.1 / draft-ietf-masque-h3-datagram). Used by MASQUE
+    /// CONNECT-UDP (context-id 0) and any other context-id-multiplexed
+    /// protocol. NOT used by WebTransport (which has no context-id).
+    /// See README's `## Datagram sends` section.
     pub fn datagramWithContext(self: *RequestWriter, context_id: u64, payload: []const u8) session_mod.Error!void {
         try self.client.sendDatagramWithContext(self.stream_id, context_id, payload);
     }
 
+    /// Tracked variant of `datagramWithContext`.
     pub fn datagramWithContextTracked(
         self: *RequestWriter,
         context_id: u64,
@@ -167,10 +183,22 @@ pub const RequestWriter = struct {
         try self.client.sendCapsule(self.stream_id, capsule_type, value);
     }
 
+    /// Sends an HTTP Datagram via the Capsule Protocol fallback (RFC 9297
+    /// §3.4) — wraps the payload in a `DATAGRAM` capsule on the request
+    /// stream. Reliable, ordered with stream bytes, gated only on
+    /// `SETTINGS_H3_DATAGRAM = 1`. Useful when QUIC DATAGRAM frames are
+    /// dropped by middleboxes or when `max_datagram_frame_size = 0` but
+    /// the peer still set `SETTINGS_H3_DATAGRAM = 1`. NOT the
+    /// WebTransport-spec'd path for WT datagrams (the draft mandates
+    /// QUIC DATAGRAM); use `datagram` for WT. See README's
+    /// `## Datagram sends` section.
     pub fn datagramCapsule(self: *RequestWriter, payload: []const u8) session_mod.Error!void {
         try self.client.sendDatagramCapsule(self.stream_id, payload);
     }
 
+    /// Same as `datagramCapsule` but with an HTTP Datagram Context-ID
+    /// prefix — the MASQUE-style multiplexing path on the reliable
+    /// capsule fallback. See README's `## Datagram sends` section.
     pub fn datagramContextCapsule(
         self: *RequestWriter,
         context_id: u64,
@@ -528,6 +556,19 @@ pub const WebTransportClientStream = struct {
         try self.writer.abort();
     }
 
+    /// Pragmatic escape hatch for advanced operations on the underlying
+    /// CONNECT request writer — `updatePriority`, raw `capsule` emit,
+    /// `sendState` / `canBuffer` / `canWrite` plumbing.
+    ///
+    /// WARNING: calling `datagramCapsule` / `datagramContextCapsule`
+    /// through the returned writer is NOT a valid WebTransport datagram
+    /// send — the WebTransport draft mandates the QUIC-DATAGRAM path.
+    /// Use `WebTransportClientStream.sendDatagram` /
+    /// `sendDatagramTracked` for WT datagrams. Capsule sends through
+    /// this accessor are out-of-spec for WT (they target the CONNECT
+    /// stream's body, not WT's per-session datagram channel) and only
+    /// make sense in non-WT contexts. See README's `## Datagram sends`
+    /// section for the full comparison.
     pub fn requestWriter(self: *WebTransportClientStream) *RequestWriter {
         return &self.writer;
     }
@@ -835,6 +876,23 @@ pub const ResponseTrackerError = std.mem.Allocator.Error || error{
     DuplicatePushStream,
 };
 
+/// Owned per-stream HTTP response state that outlives the drained
+/// event batch — buffered headers, body, trailers, push promises, plus
+/// `complete` / `reset` flags addressed by request stream id.
+///
+/// Scope: the tracker accumulates state for the **HTTP request/response
+/// exchange on a request stream**. That includes a normal HTTP
+/// request/response and the **CONNECT bootstrap exchange** for an
+/// extended-CONNECT tunnel (WebTransport, WebSocket, CONNECT-UDP) — the
+/// CONNECT request and its 2xx response are HTTP messages and surface
+/// through the tracker.
+///
+/// Out of scope: WebTransport substream data, peer-opened WT streams,
+/// `webtransport_stream_*` events, and per-WT-stream lifecycle. The
+/// tracker's `observe` switch has explicit no-op arms for these — they
+/// are NOT tracker bugs. Applications that want to buffer a WT
+/// substream's data need their own per-substream state, driven by
+/// `webtransport_stream_data` events on the raw event stream.
 pub const ResponseTracker = struct {
     allocator: std.mem.Allocator,
     config: ResponseTrackerConfig = .{},
@@ -1127,6 +1185,20 @@ pub const PushedResponseTrackerConfig = struct {
     max_promise_field_section_bytes: ?usize = null,
 };
 
+/// Owned per-push state that outlives the drained event batch —
+/// promise field section, response headers, body, trailers, completion
+/// flag, reset/cancel records, addressed by `push_id` (with a
+/// `push_id_by_stream` index for stream-id lookups).
+///
+/// Scope: like `ResponseTracker`, this accumulates state for an
+/// **HTTP request/response exchange** — specifically the
+/// PUSH_PROMISE / push-stream pairing (RFC 9114 §4.6). That is an
+/// HTTP message exchange, and the tracker is the right place for it.
+///
+/// Out of scope: WebTransport substreams (server push and WT live on
+/// different stream classes; the WT carve-out of server-initiated
+/// bidi streams from RFC 9114 §6.1 ¶3 is unrelated to push). For WT
+/// substream data accumulation see `webtransport_stream_data` events.
 pub const PushedResponseTracker = struct {
     allocator: std.mem.Allocator,
     config: PushedResponseTrackerConfig = .{},

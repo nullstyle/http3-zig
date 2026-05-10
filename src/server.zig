@@ -586,6 +586,19 @@ pub const WebTransportServerStream = struct {
         try self.writer.abort();
     }
 
+    /// Pragmatic escape hatch for advanced operations on the underlying
+    /// CONNECT response writer — raw `capsule` emit,
+    /// `sendState` / `canBuffer` / `canWrite` plumbing.
+    ///
+    /// WARNING: calling `datagramCapsule` / `datagramContextCapsule`
+    /// through the returned writer is NOT a valid WebTransport datagram
+    /// send — the WebTransport draft mandates the QUIC-DATAGRAM path.
+    /// Use `WebTransportServerStream.sendDatagram` /
+    /// `sendDatagramTracked` for WT datagrams. Capsule sends through
+    /// this accessor are out-of-spec for WT (they target the CONNECT
+    /// stream's body, not WT's per-session datagram channel) and only
+    /// make sense in non-WT contexts. See README's `## Datagram sends`
+    /// section for the full comparison.
     pub fn responseWriter(self: *WebTransportServerStream) *ResponseWriter {
         return &self.writer;
     }
@@ -1401,6 +1414,23 @@ pub const RequestTrackerError = std.mem.Allocator.Error || error{
     BodyTooLarge,
 };
 
+/// Owned per-stream HTTP request state that outlives the drained
+/// event batch — buffered headers, body, trailers, plus `complete` /
+/// `reset` flags addressed by request stream id.
+///
+/// Scope: the tracker accumulates state for the **HTTP request
+/// message on a request stream**. That includes a normal HTTP request
+/// and the **CONNECT bootstrap request** for an extended-CONNECT
+/// tunnel (WebTransport, WebSocket, CONNECT-UDP) — the CONNECT
+/// request itself is an HTTP message and surfaces through the
+/// tracker.
+///
+/// Out of scope: WebTransport substream data, peer-opened WT streams,
+/// `webtransport_stream_*` events, and per-WT-stream lifecycle. The
+/// tracker's `observe` switch has explicit no-op arms for these — they
+/// are NOT tracker bugs. Applications that want to buffer a WT
+/// substream's data need their own per-substream state, driven by
+/// `webtransport_stream_data` events on the raw event stream.
 pub const RequestTracker = struct {
     allocator: std.mem.Allocator,
     config: RequestTrackerConfig = .{},

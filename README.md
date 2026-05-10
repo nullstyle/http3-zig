@@ -83,6 +83,76 @@ for the WebTransport variant. For an application-author walkthrough of
 the WebTransport API (handshake, streams, datagrams, flow control, drain,
 close), see [`docs/webtransport-tour.md`](docs/webtransport-tour.md).
 
+## Datagram sends
+
+http3-zig exposes three transport paths for HTTP Datagram payloads.
+They are not equivalent — the QUIC-DATAGRAM path is unreliable and
+fast; the capsule fallback is reliable and ordered with stream bytes;
+the context-id variants add MASQUE-style multiplexing on either path.
+Pick the row that matches your protocol contract:
+
+| Path | Method (writer) | Method (handle) | Wire shape | Reliability | Ordering | Gating | WebTransport-spec? |
+|---|---|---|---|---|---|---|---|
+| QUIC-DATAGRAM (raw) | `RequestWriter.datagram` / `datagramTracked` | `Client.sendDatagram` / `Server.sendDatagram` / `WebTransportClientStream.sendDatagram` / `WebTransportServerStream.sendDatagram` | RFC 9297 §2: `[quarter-stream-id, payload]` in a QUIC DATAGRAM frame | unreliable, may be lost | unordered | `SETTINGS_H3_DATAGRAM = 1` AND QUIC `max_datagram_frame_size > 0` | yes (the only WT-spec path) |
+| QUIC-DATAGRAM (with context-id) | `RequestWriter.datagramWithContext` / `datagramWithContextTracked` | `Client.sendDatagramWithContext` / `Server.sendDatagramWithContext` | RFC 9297 §2.1 / draft-masque: above + `context-id` varint | unreliable | unordered | same as above | no (CONNECT-UDP / MASQUE only) |
+| Capsule (request/response body) | `RequestWriter.datagramCapsule` | `Client.sendDatagramCapsule` / `Server.sendDatagramCapsule` | RFC 9297 §3.4: `DATAGRAM` capsule on the request stream | reliable, ordered | ordered with stream bytes | `SETTINGS_H3_DATAGRAM = 1` only | no (out-of-spec for WT datagrams) |
+| Capsule (with context-id) | `RequestWriter.datagramContextCapsule` | `Client.sendDatagramContextCapsule` / `Server.sendDatagramContextCapsule` | DATAGRAM capsule + context-id varint | reliable, ordered | ordered | `SETTINGS_H3_DATAGRAM = 1` only | no (MASQUE multiplexing on the reliable fallback) |
+
+The `Tracked` suffix on the QUIC-DATAGRAM variants returns the QUIC
+datagram-id (a `u64`) for later correlation with `datagram_acked` /
+`datagram_lost` events. The untracked variants discard that id.
+
+For WebTransport specifically: only the QUIC-DATAGRAM path
+(`sendDatagram` / `sendDatagramTracked` on `WebTransportClientStream` /
+`WebTransportServerStream`) is correct. The WebTransport draft mandates
+QUIC DATAGRAM. The capsule path (and its context-id sibling) is
+exposed on the underlying writer accessible via `requestWriter()` /
+`responseWriter()`, but calling those for a WT datagram is out of spec —
+they target the CONNECT stream's body, not WT's per-session datagram
+channel. Use the capsule paths only for pure RFC 9297 datagram-on-stream
+cases or non-WT MASQUE multiplexing.
+
+## Stream lifecycle
+
+Five named verbs cover the stream-end vocabulary across `RequestWriter`,
+`ResponseWriter`, `Client`, `Server`, and the typed wrappers
+(`WebTransport*Stream`, `WebSocket*Stream`, `ConnectUdp*Stream`). Each
+has a distinct wire effect:
+
+| Verb | Wire effect | Side | Meaning |
+|---|---|---|---|
+| `finish` | QUIC FIN on send side | outbound | clean half-close, no error code |
+| `finishStream` | QUIC FIN on a *WT substream* | outbound | WT-only; routes through `Session.finishWebTransportStream` |
+| `reset(code)` | RESET_STREAM with `error_code` | outbound | drop our own buffered/in-flight bytes |
+| `resetStream(code)` / `resetStreamWithCode(wire)` | RESET_STREAM on a *WT substream* | outbound | WT-only; first variant runs an app-code through draft §4.6 mapping, second takes a wire code raw |
+| `abort()` | RESET_STREAM with default code | outbound | convenience: client default `request_cancelled`, server default `internal_error` |
+| `cancel()` | STOP_SENDING with `request_cancelled` | inbound | ask peer to stop sending; client-only on `RequestWriter` |
+| `close(code, reason)` | `CLOSE_WEBTRANSPORT_SESSION` capsule + FIN | both | WT-session-level, distinct from stream lifecycle |
+
+Decision rule:
+
+- **outbound abort** (we want to drop our send side with a reason) →
+  `reset(code)` for a specific code, or `abort()` for the role-default
+  code.
+- **inbound abort** (we want the peer to stop sending us) → `cancel()`
+  on the client side. (`ResponseWriter` has no symmetric `cancel`
+  because the server cannot ask the client to stop sending the
+  request body without a RESET, which is what `reset` already does.)
+- **bidirectional abort** (both sides) → `try self.abort(); try
+  self.cancel();`. A future `bidiAbort()` helper is on the v0.4
+  roadmap.
+
+For the WebTransport-specific subset (CONNECT control stream vs WT
+substream vs WT-session-level capsule close) see
+[`docs/webtransport-tour.md`](docs/webtransport-tour.md).
+
+`finishSend` exists as a deprecated alias for `finish` on
+`WebTransportClientStream`, `WebTransportServerStream`,
+`WebSocketClientStream`, `WebSocketServerStream`,
+`ConnectUdpClientStream`, and `ConnectUdpServerStream`. It will be
+removed in v0.4 — see [CHANGELOG.md](CHANGELOG.md) and
+[`docs/api-narrowing-proposal.md`](docs/api-narrowing-proposal.md).
+
 ## Status
 
 **Status: session scaffold.** The package now provides the stable protocol
@@ -210,6 +280,13 @@ just external-h3-interop
   reader state that can outlive the drained event batch, with optional maximum
   accumulated body bytes. `ClientRunner` and `ServerRunner` wrap the trackers
   for applications that want batch-oriented event processing.
+  Tracker scope is **HTTP request/response messages on a request stream**
+  — including the CONNECT bootstrap exchange for WebTransport,
+  WebSocket, and CONNECT-UDP tunnels. Trackers do **not** accumulate
+  WebTransport substream data; for that, process
+  `webtransport_stream_data` events directly. See
+  [`docs/webtransport-tour.md`](docs/webtransport-tour.md) for the WT
+  substream event flow.
   `RequestHeadOptions.connect_protocol` opens the Extended CONNECT path once
   the peer advertises support, and `RequestReader.protocol` exposes the
   received protocol token. `Client.startWebSocket` and `Server.acceptWebSocket`

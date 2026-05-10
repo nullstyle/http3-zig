@@ -797,9 +797,34 @@ const StreamState = struct {
     recv_finished: bool = false,
     recv_reset_seen: bool = false,
     locally_rejected: bool = false,
+    /// True once we've called `quic.streamFinish` or `quic.streamReset`
+    /// on this stream — i.e. the local send side is closed. Combined
+    /// with `recv_finished` / `recv_reset_seen` (peer-side closure)
+    /// drives the per-drain GC pass that reclaims `Session.streams`
+    /// entries. Tracked separately from QUIC's send-state because
+    /// quic-zig retains its own stream entry until the connection
+    /// teardown — http3-zig handles its registry independently.
+    locally_finished: bool = false,
 
     fn deinit(self: *StreamState, allocator: std.mem.Allocator) void {
         self.rx.deinit(allocator);
+    }
+
+    /// True when no further events will surface for this stream — the
+    /// receive side is closed (FIN observed or RESET seen) AND the
+    /// local send side is closed (or the stream is unidirectional with
+    /// only one applicable direction). Used by `Session.gcClosedStreams`.
+    fn isFullyClosed(self: *const StreamState) bool {
+        const recv_done = self.recv_finished or self.recv_reset_seen;
+        // Peer-opened uni: classified by `uni_kind` set during inbound
+        // dispatch. Receive-only — `recv_done` is sufficient.
+        if (self.uni_kind != null) return recv_done;
+        // Locally-opened unidirectional: peer never sends back, so
+        // `locally_finished` alone closes the lifecycle.
+        if (stream_mod.isUnidirectional(self.id)) return self.locally_finished;
+        // Bidi (request, response, push, WT CONNECT, WT bidi):
+        // both directions must be closed.
+        return self.locally_finished and recv_done;
     }
 
     /// Returns `.uni` if this is a WebTransport unidirectional stream,
@@ -1850,6 +1875,7 @@ pub const Session = struct {
     pub fn finishStream(self: *Session, stream_id: u64) Error!void {
         if (self.shutdown_state == .closed) return Error.SessionClosed;
         try self.quic.streamFinish(stream_id);
+        if (self.streams.get(stream_id)) |state| state.locally_finished = true;
         if (self.webTransportSessionExists(stream_id)) {
             self.endWebTransportSession(stream_id);
         }
@@ -1922,6 +1948,7 @@ pub const Session = struct {
     pub fn resetStream(self: *Session, stream_id: u64, application_error_code: u64) Error!void {
         self.qpack_encoder_state.cancelStream(stream_id);
         try self.quic.streamReset(stream_id, application_error_code);
+        if (self.streams.get(stream_id)) |state| state.locally_finished = true;
         self.trace(.{
             .name = .stream_reset_sent,
             .role = self.role,
@@ -2139,6 +2166,50 @@ pub const Session = struct {
                 if (!isLocalDrainBudgetError(err)) self.closeForError(err);
                 return err;
             };
+        }
+
+        self.gcClosedStreams();
+    }
+
+    /// Reclaims `Session.streams` entries whose lifecycle is fully
+    /// closed (both directions terminated). Called at the tail of every
+    /// `drain` so a long-lived session that opens many streams doesn't
+    /// accumulate `StreamState` indefinitely.
+    ///
+    /// Decision is via `StreamState.isFullyClosed`, which combines the
+    /// peer-side flags (`recv_finished` / `recv_reset_seen`, set by the
+    /// observe paths) with the new local-side flag (`locally_finished`,
+    /// set by `finishStream` / `resetStream`). The underlying quic-zig
+    /// `Connection.streams` map is independent and out of scope here —
+    /// quic-zig retains its entries through the QUIC connection's
+    /// lifetime; this GC frees the http3-side state once we no longer
+    /// need it (no further drains will surface events for this stream).
+    ///
+    /// Critical streams (control / QPACK encoder / QPACK decoder)
+    /// stay alive because their `recv_finished` only flips on peer
+    /// FIN of the critical stream, which itself is a connection-level
+    /// error (RFC 9114 §6.2) — the session is closing anyway.
+    ///
+    /// Iteration safety: HashMap iteration invalidates on mutation, so
+    /// we collect ids in a small fixed-size buffer per pass. If more
+    /// than `batch.len` streams are reclaimable in one drain (rare),
+    /// the surplus rolls to the next drain — still bounded, just not
+    /// in one shot.
+    fn gcClosedStreams(self: *Session) void {
+        var batch: [128]u64 = undefined;
+        var n: usize = 0;
+        var it = self.streams.iterator();
+        while (it.next()) |entry| {
+            const state = entry.value_ptr.*;
+            if (!state.isFullyClosed()) continue;
+            if (n == batch.len) break;
+            batch[n] = state.id;
+            n += 1;
+        }
+        for (batch[0..n]) |stream_id| {
+            const removed = self.streams.fetchRemove(stream_id) orelse continue;
+            removed.value.deinit(self.allocator);
+            self.allocator.destroy(removed.value);
         }
     }
 

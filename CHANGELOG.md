@@ -9,6 +9,69 @@ breaking changes; see notes per release.
 
 ## [Unreleased] — v0.3.0 candidate
 
+### Performance / correctness (memory)
+
+- **`Session.streams` is now garbage-collected at the tail of every
+  `drain`.** Previously the per-stream `StreamState` map was effectively
+  monotonic — a long-lived session that opens many streams accumulated
+  O(N) heap whether or not those streams had finished. New mechanism:
+  `StreamState.locally_finished` flips when `finishStream` /
+  `resetStream` runs, paired with the existing `recv_finished` /
+  `recv_reset_seen` flags. `Session.gcClosedStreams` removes any
+  StreamState whose `isFullyClosed()` returns true (peer-uni: receive
+  side closed; local-uni: locally_finished; bidi: both). Iteration
+  safety via fixed-size 128-id batch buffer; surplus rolls to the next
+  drain. Per-iteration cost in the long-running profile dropped from
+  ≈ 2 755 → ≈ 2 239 bytes (≈ 19 % reduction).
+  - **Caveat (v0.4 follow-up):** the residual ~2 239 B/iter lives in
+    the underlying `quic_zig.Connection.streams` map which has no
+    cleanup of its own. A matching pass in quic-zig (or a public
+    compaction API we can call from here) is the cross-repo follow-up.
+    Documented in [`docs/memory-profile.md`](docs/memory-profile.md).
+
+### Added (test infrastructure)
+
+- **`bench/wt_memory.zig` + `zig build mem-profile`** — long-running
+  WebTransport session profiler that runs N iterations of a fixed
+  unit of work (open uni stream + 256 B + finish + datagram round-trip
+  + drain to quiescence) and reports `bytes_in_use` / `max_bytes_ever`
+  at three checkpoints. Wraps a 0.16 `DebugAllocator` with a custom
+  `CountingAllocator`. ReleaseSafe build keeps allocator safety on for
+  leak detection. See [`docs/memory-profile.md`](docs/memory-profile.md).
+
+- **`bench/wt_load.zig` + `zig build wt-load`** — concurrent-session
+  load test exercising N parallel WebTransport sessions on one QUIC
+  connection. Establishes the dispatch routing is correct and surfaces
+  any hidden cross-session contention. See
+  [`docs/load-baseline.md`](docs/load-baseline.md) for the baseline
+  numbers (M5 Max, ReleaseFast, 100 sessions: 7.89 ms median,
+  ≈ 12.6 k sessions/sec).
+
+- **`fuzz/wt_interleaved.zig` + `fuzz/wt_interleaved_main.zig`** —
+  property-based fuzz harness that interprets random bytes as a
+  sequence of WebTransport operations (open / write / finish / reset /
+  datagram / capsule) and runs them on an H3Pair. 20 hand-written
+  corpus seeds at `fuzz/corpus/wt-interleaved/`. Wired into `build.zig`
+  with the standard fuzz-target pattern. Zero panics surfaced on the
+  initial sweep — but the harness is the actual deliverable; the seeds
+  are the floor, not the ceiling.
+
+### Documentation
+
+- **README:** new `## Datagram sends` and `## Stream lifecycle` index
+  sections (per V7 narrowing rec #2 and #3). Each is a short
+  decision-tree pointing at the canonical methods.
+
+- **Doc comments** on `WebTransportClientStream.requestWriter()` /
+  `WebTransportServerStream.responseWriter()` warning that
+  `datagramCapsule` / `datagramContextCapsule` invoked through the
+  underlying writer are NOT valid WebTransport sends (per V7 rec #6).
+
+- **Tracker doc clarification** that `ResponseTracker` /
+  `RequestTracker` / `PushedResponseTracker` cover the CONNECT-message
+  body only — they do not accumulate WebTransport substream data,
+  which surfaces via `webtransport_stream_data` events (per V7 rec #4).
+
 ### Added (correctness)
 
 - **`Session.observeWebTransportCapsule` is now tolerant of just-torn-down
