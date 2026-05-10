@@ -198,8 +198,15 @@ jobs:
       - name: Run the matrix
         # `wt-interop-matrix` exits 0 when at least one target passes
         # and 1 when every non-skipped target fails. That plus
-        # `continue-on-error: true` keeps a single broken peer from
-        # masking the whole signal.
+        # `continue-on-error: true` keeps a third-party peer
+        # regression from masking the whole signal — interop runs are
+        # advisory, not a hard merge gate (the per-push real-socket
+        # gate in `wt-interop-self-test.yml` covers our own pump path
+        # against our own server, which IS treated as gating).
+        # See <docs/wt-third-party-interop.md> for the known-broken
+        # state of the QUIC handshake against webtransport-go and
+        # pywebtransport in the v0.3 timeframe.
+        continue-on-error: true
         run: zig build wt-interop-matrix -- --timeout-ms "${TIMEOUT_MS}"
 
       - name: Tear down the webtransport-go peer

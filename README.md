@@ -146,13 +146,6 @@ For the WebTransport-specific subset (CONNECT control stream vs WT
 substream vs WT-session-level capsule close) see
 [`docs/webtransport-tour.md`](docs/webtransport-tour.md).
 
-`finishSend` exists as a deprecated alias for `finish` on
-`WebTransportClientStream`, `WebTransportServerStream`,
-`WebSocketClientStream`, `WebSocketServerStream`,
-`ConnectUdpClientStream`, and `ConnectUdpServerStream`. It will be
-removed in v0.4 — see [CHANGELOG.md](CHANGELOG.md) and
-[`docs/api-narrowing-proposal.md`](docs/api-narrowing-proposal.md).
-
 ## Status
 
 **Status: session scaffold.** The package now provides the stable protocol

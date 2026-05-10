@@ -507,10 +507,10 @@ while (try it.next()) |decoded| {
 }
 ```
 
-### 2. Implicit close: `finishSend()`
+### 2. Implicit close: `finish()`
 
 ```zig
-try server_wt.finishSend();
+try server_wt.finish();
 ```
 
 FINs the CONNECT stream **without** a `CLOSE_WEBTRANSPORT_SESSION` capsule

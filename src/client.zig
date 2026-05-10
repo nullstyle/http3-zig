@@ -266,11 +266,6 @@ pub const ConnectUdpClientStream = struct {
         try self.writer.finish();
     }
 
-    /// Deprecated: use `finish`. Will be removed in v0.3.
-    pub fn finishSend(self: *ConnectUdpClientStream) session_mod.Error!void {
-        try self.finish();
-    }
-
     pub fn reset(self: *ConnectUdpClientStream, error_code: u64) session_mod.Error!void {
         try self.writer.reset(error_code);
     }
@@ -378,11 +373,6 @@ pub const WebSocketClientStream = struct {
     /// delivering frames until the peer FINs / RESETs.
     pub fn finish(self: *WebSocketClientStream) session_mod.Error!void {
         try self.writer.finish();
-    }
-
-    /// Deprecated: use `finish`. Will be removed in v0.3.
-    pub fn finishSend(self: *WebSocketClientStream) session_mod.Error!void {
-        try self.finish();
     }
 
     pub fn reset(self: *WebSocketClientStream, error_code: u64) session_mod.Error!void {
@@ -541,11 +531,6 @@ pub const WebTransportClientStream = struct {
     /// reason, prefer `close(code, reason)`.
     pub fn finish(self: *WebTransportClientStream) session_mod.Error!void {
         try self.writer.finish();
-    }
-
-    /// Deprecated: use `finish`. Will be removed in v0.3.
-    pub fn finishSend(self: *WebTransportClientStream) session_mod.Error!void {
-        try self.finish();
     }
 
     pub fn reset(self: *WebTransportClientStream, error_code: u64) session_mod.Error!void {

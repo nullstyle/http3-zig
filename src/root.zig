@@ -172,7 +172,6 @@ pub const WebTransportFlowViolationKind = session.WebTransportFlowViolationKind;
 // `WTSessionFlowState` (mutable per-session flow accounting) is intentionally
 // internal — applications only see the read-only snapshot below.
 pub const WTSessionFlowSnapshot = session.WTSessionFlowSnapshot;
-pub const WTStreamDirection = session.WTStreamDirection;
 pub const WebSocketOpcode = websocket.frame.Opcode;
 pub const WebSocketFrame = websocket.frame.Frame;
 pub const WebSocketOwnedFrame = websocket.frame.OwnedFrame;

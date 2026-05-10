@@ -414,7 +414,7 @@ test "WebTransport: peer FIN of CONNECT while local mid-send on three streams" {
     }
 
     // Server FINs the CONNECT stream WITHOUT sending CLOSE_WT.
-    try server_wt.?.finishSend();
+    try server_wt.?.finish();
 
     // Pump until the client observes the peer FIN and runs
     // `endWebTransportSession` on its side (flowState becomes null).

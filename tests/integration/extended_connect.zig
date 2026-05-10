@@ -191,7 +191,7 @@ test "WebSocket over HTTP/3 helper opens tunnel and streams bytes" {
     });
     const stream_id = client_ws.streamId();
     try client_ws.writeMessage(.text, "ping", .{ 1, 2, 3, 4 });
-    try client_ws.finishSend();
+    try client_ws.finish();
 
     var client_runner = http3_zig.ClientRunner.init(allocator);
     defer client_runner.deinit();
@@ -240,7 +240,7 @@ test "WebSocket over HTTP/3 helper opens tunnel and streams bytes" {
 
                         var server_ws = try h3_server.acceptWebSocket(allocator, request, .{});
                         try server_ws.writeMessage(.text, "pong");
-                        try server_ws.finishSend();
+                        try server_ws.finish();
                         accepted = true;
                     }
 

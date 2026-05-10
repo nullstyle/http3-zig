@@ -198,7 +198,7 @@ fn runHarness(allocator: std.mem.Allocator, io: std.Io, options: Options) !void 
     std.debug.print("external_wt: phase 1 — waiting for SETTINGS exchange\n", .{});
     while (h3.peer_settings == null) : (iters += 1) {
         if (now_us >= deadline_us or iters >= options.max_iterations) return error.SettingsExchangeTimedOut;
-        try pumpOnce(allocator, io, &endpoint, &events, sock, remote_addr, &rx, &tx, now_us);
+        try pumpOnce(allocator, io, &endpoint, &events, sock, remote_addr, &rx, &tx, now_us, &conn);
         try endpoint.tick(now_us);
         clearEvents(allocator, &events);
         now_us += http3_zig.driver.default_step_us;
@@ -234,7 +234,7 @@ fn runHarness(allocator: std.mem.Allocator, io: std.Io, options: Options) !void 
             return error.ConnectionClosedEarly;
         }
 
-        try pumpOnce(allocator, io, &endpoint, &events, sock, remote_addr, &rx, &tx, now_us);
+        try pumpOnce(allocator, io, &endpoint, &events, sock, remote_addr, &rx, &tx, now_us, &conn);
 
         for (events.items) |event| {
             const observation = try runner.observe(event);
@@ -333,9 +333,22 @@ fn pumpOnce(
     rx: []u8,
     tx: []u8,
     now_us: u64,
+    conn: *quic_zig.Connection,
 ) !void {
     _ = allocator;
     _ = events;
+
+    // Drive the QUIC handshake state machine. `conn.advance` is a
+    // no-op once the handshake is done — it processes any queued
+    // peer CRYPTO data, runs boringssl, and queues outbound CRYPTO
+    // for the next `poll`. The integration-test fixture
+    // (`tests/integration/_fixtures.zig::handshake`) calls this
+    // explicitly; the loopback driver doesn't, so the SETTINGS-only
+    // in-process tests get away without it. Real-network clients
+    // MUST call `advance` because there's no inbound packet to
+    // bootstrap the handshake from — the very first ClientHello has
+    // to come out of `advance` → `poll` → wire.
+    try conn.advance();
     _ = try endpoint.drainSession();
 
     const Sink = struct {

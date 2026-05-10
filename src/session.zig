@@ -985,16 +985,6 @@ pub const WTSessionFlowSnapshot = struct {
     }
 };
 
-/// Deprecated alias for `webtransport.StreamKind` — kept for v0.2 source
-/// compatibility, removed in v0.3. New call sites should use
-/// `webtransport.StreamKind` (re-exported as `WebTransportStreamKind`)
-/// directly. Note: the underlying enum order is `{ uni, bidi }`, which
-/// is the reverse of the original `WTStreamDirection { bidi, uni }`
-/// declaration. No call site in this repo serialized the enum via
-/// `@intFromEnum`, so the rename is source-compatible at the switch /
-/// constant-construction level.
-pub const WTStreamDirection = webtransport_mod.StreamKind;
-
 pub const Session = struct {
     allocator: std.mem.Allocator,
     role: protocol.Role,
@@ -1267,7 +1257,7 @@ pub const Session = struct {
     fn gateWebTransportStreamOpen(
         self: *Session,
         session_id: u64,
-        direction: WTStreamDirection,
+        direction: WebTransportStreamKind,
     ) Error!void {
         // Distinguish three lifecycle states:
         //   * `.none`   — session never existed or has been torn down
@@ -1344,7 +1334,7 @@ pub const Session = struct {
     fn maybeEmitStreamsBlocked(
         self: *Session,
         flow: *WTSessionFlowState,
-        direction: WTStreamDirection,
+        direction: WebTransportStreamKind,
         limit: u64,
     ) Error!void {
         const last_ptr = switch (direction) {
@@ -1513,7 +1503,7 @@ pub const Session = struct {
     pub fn sendWebTransportMaxStreams(
         self: *Session,
         session_id: u64,
-        direction: WTStreamDirection,
+        direction: WebTransportStreamKind,
         value: u64,
     ) Error!void {
         const flow = self.webTransportFlowMut(session_id) orelse return Error.UnknownWebTransportSession;

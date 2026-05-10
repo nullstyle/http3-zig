@@ -3263,7 +3263,7 @@ test "WebTransport: peer FINs CONNECT control stream without CLOSE_WEBTRANSPORT_
     try std.testing.expect(client_wt.flowState() != null);
 
     // Server FINs its response side WITHOUT first sending CLOSE_WEBTRANSPORT_SESSION.
-    try server_wt.?.finishSend();
+    try server_wt.?.finish();
 
     // Local-side cleanup is immediate: the server's flow snapshot for
     // the session disappears the moment `finishStream` returns.
