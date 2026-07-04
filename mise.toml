@@ -1,3 +1,9 @@
 [tools]
-zig = "0.16.0"
+# Zig 0.17 is unreleased, so we track master — matching quic-zig (the
+# transport dependency), which http3-zig must build against. Last build
+# verified green (test + ReleaseSafe + conformance + mem-profile):
+# 0.17.0-dev.1158+1d1193aa7, the floor recorded in build.zig.zon's
+# minimum_zig_version. Bump both together after re-verifying on a newer
+# master.
+zig = "master"
 just = "1.49.0"

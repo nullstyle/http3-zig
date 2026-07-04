@@ -6,11 +6,15 @@ on:
   pull_request:
     branches: [main]
 
-# http3-zig pins Zig 0.16.0 via mise (mise.toml). The official Zig
-# downloads index doesn't list 0.16.0 — it's installed from mise's
-# registry — so we use jdx/mise-action to install the same toolchain
-# CI as local. quic-zig and boringssl-zig are URL+hash deps, so Zig
-# fetches them itself during build.
+# http3-zig tracks Zig master via mise (mise.toml), matching quic-zig — the
+# transport dependency it builds against. CI uses jdx/mise-action to install
+# the same toolchain as local development.
+#
+# NOTE: build.zig.zon currently uses a local path dependency for quic_zig
+# (../quic-zig) to iterate on both repos at once; CI requires it repointed to
+# the published v0.4.0 tarball (`zig fetch --save=quic_zig
+# https://github.com/nullstyle/quic-zig/archive/refs/tags/v0.4.0.tar.gz`) so a
+# standalone checkout resolves it. boringssl-zig is a URL+hash dep Zig fetches.
 jobs:
   build-test:
     timeout-minutes: 45
@@ -24,7 +28,7 @@ jobs:
       - name: Checkout http3-zig
         uses: actions/checkout@v4
 
-      - name: Set up mise (zig 0.16.0 + project tools)
+      - name: Set up mise (zig master + project tools)
         uses: jdx/mise-action@v2
         with:
           install: true
@@ -43,3 +47,24 @@ jobs:
 
       - name: zig build conformance
         run: zig build conformance -Doptimize=${{ matrix.optimize }} --summary all
+
+  # Long-running-session memory regression gate. `zig build mem-profile` runs
+  # the WebTransport long-lived-session profiler (always ReleaseSafe) and exits
+  # non-zero if per-iteration retained-memory growth exceeds the gate in
+  # bench/wt_memory.zig (see docs/memory-profile.md). Own job — the ReleaseSafe
+  # boringssl build is heavy — on one runner rather than the full matrix.
+  mem-profile:
+    timeout-minutes: 45
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout http3-zig
+        uses: actions/checkout@v4
+
+      - name: Set up mise (zig master + project tools)
+        uses: jdx/mise-action@v2
+        with:
+          install: true
+          cache: true
+
+      - name: zig build mem-profile (memory regression gate)
+        run: zig build mem-profile
