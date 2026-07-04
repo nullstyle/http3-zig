@@ -789,6 +789,24 @@ const StreamState = struct {
     /// application expects. Without this defer the FIN would race
     /// ahead of (or replace) the open event entirely.
     wt_buffered_fin: bool = false,
+    /// True once the buffered-stream replay path has emitted this
+    /// stream's `webtransport_stream_opened` event. Dedupes the open
+    /// across budget-limited replay drains: the replay emits
+    /// opened -> data -> finished from H3-side buffers (`rx` +
+    /// `wt_buffered_fin`), and under a tight `max_events_per_drain`
+    /// those events span multiple drains. quic-zig 0.4.0 reaps a peer
+    /// stream once its recv side is terminal, so the replay must be
+    /// self-contained and cannot fall back to re-reading the stream via
+    /// the main `streamIterator` drain path.
+    wt_replay_opened: bool = false,
+    /// Sticky copy of quic-zig's `recv.fin_seen` for this stream,
+    /// captured while the stream is still yielded by `streamIterator`.
+    /// quic-zig 0.4.0 reaps a peer stream once its recv side is terminal
+    /// (FIN received + all bytes read), after which the FIN is no longer
+    /// observable from the iterator; capturing it here lets a stream
+    /// parked mid-processing (blocked_on_qpack) still surface its FIN
+    /// when it is re-processed on a later drain.
+    quic_recv_fin_seen: bool = false,
     push_id: ?u64 = null,
     control_validator: ?stream_mod.FrameValidator = null,
     message_decoder: ?message_mod.Decoder = null,
@@ -1003,6 +1021,15 @@ pub const Session = struct {
     peer_goaway_id: ?u64 = null,
     peer_max_push_id: ?u64 = null,
     next_push_id: u64 = 0,
+    /// Reap-safe floor for locally-initiated bidi stream-id allocation.
+    /// quic-zig 0.4.0 reaps terminal streams, so scanning its live stream
+    /// table for a free id (as `nextLocalBidiId` does) would reuse a reaped
+    /// request id — silently defeating GOAWAY gating (a new request would
+    /// get a low, already-past id instead of the next one). This monotonic
+    /// high-water mark (highest local bidi id issued, plus 4) floors the
+    /// scan so ids never move backward. Uni streams don't need this — they
+    /// use quic-zig's own reap-safe `openNextUni` counter.
+    next_local_bidi_floor: u64 = 0,
     shutdown_state: ShutdownState = .active,
     last_close_error: ?errors_mod.ConnectionError = null,
     metrics_counters: observability_mod.Metrics = .{},
@@ -1148,6 +1175,7 @@ pub const Session = struct {
         if (!self.peerAllowsRequest(id)) return Error.RequestBlockedByGoaway;
 
         _ = try self.quic.openBidi(id);
+        self.recordLocalBidiOpened(id);
         const state = try self.ensureMessageState(id, .response, .request);
         const encoder = try self.ensureEncoder(state, .request);
         try self.writeHeadersWithEncoder(id, encoder, fields);
@@ -1170,8 +1198,14 @@ pub const Session = struct {
         try self.start();
         try self.gateWebTransportStreamOpen(session_id, .uni);
 
-        const stream_id = self.nextLocalUniId(0);
-        _ = try self.quic.openUni(stream_id);
+        // Adopt quic-zig 0.4.0's role-aware next-id helper rather than
+        // scanning the live stream table for a free id. quic-zig now reaps
+        // terminal streams (0.3.0+), so a `stream(id) == null` scan reuses a
+        // reaped id and clobbers our own StreamState registry entry (a leak).
+        // `openNextUni` keeps a monotonic per-type counter that never reuses
+        // an id, and leaves the id unconsumed on StreamLimitExceeded so a
+        // retry after the peer raises the limit reuses it.
+        const stream_id = (try self.quic.openNextUni()).id;
         errdefer self.quic.streamReset(stream_id, protocol.ErrorCode.internal_error) catch {};
 
         // Pre-register state with `wt_session_id` set so subsequent
@@ -1180,6 +1214,14 @@ pub const Session = struct {
         // `peer_max_data`. Without this, `gateWebTransportSendBytes`
         // would silently skip enforcement on uni streams.
         const state = try self.createState(stream_id);
+        // createState registered the state in self.streams; the errdefer
+        // above only resets the QUIC stream. Free the state too if a later
+        // step (prefix write, flow bump) fails.
+        errdefer {
+            _ = self.streams.remove(stream_id);
+            state.deinit(self.allocator);
+            self.allocator.destroy(state);
+        }
         state.wt_session_id = session_id;
 
         try self.writeWebTransportStreamPrefix(
@@ -1208,6 +1250,7 @@ pub const Session = struct {
 
         const stream_id = self.nextLocalBidiId(0);
         _ = try self.quic.openBidi(stream_id);
+        self.recordLocalBidiOpened(stream_id);
         errdefer self.quic.streamReset(stream_id, protocol.ErrorCode.internal_error) catch {};
 
         const state = try self.createState(stream_id);
@@ -2146,19 +2189,78 @@ pub const Session = struct {
                 if (n == 0) break;
                 try state.rx.appendSlice(self.allocator, tmp[0..n]);
             }
+            // Capture quic-zig's FIN flag stickily now, while the stream is
+            // still yielded by streamIterator. quic-zig 0.4.0 reaps a peer
+            // stream once its recv side is terminal (FIN + all bytes read),
+            // so a stream we park below (blocked_on_qpack) may be gone from
+            // the iterator by the next drain — after which recv.fin_seen is
+            // unobservable. The blocked-stream re-processing pass reads this
+            // captured copy instead.
+            if (entry.value_ptr.*.recv.fin_seen) state.quic_recv_fin_seen = true;
 
             self.processState(state, events, &budget) catch |err| {
                 if (!isLocalDrainBudgetError(err)) self.closeForError(err);
                 return err;
             };
             if (state.blocked_on_qpack) continue;
-            self.observeFin(state, entry.value_ptr.*.recv.fin_seen, events, &budget) catch |err| {
+            self.observeFin(state, state.quic_recv_fin_seen, events, &budget) catch |err| {
                 if (!isLocalDrainBudgetError(err)) self.closeForError(err);
                 return err;
             };
         }
 
+        // Re-process streams parked on a QPACK dynamic-table dependency,
+        // independent of streamIterator (quic-zig 0.4.0 may have reaped them).
+        // Runs after the main walk so any encoder-stream insert delivered this
+        // drain has already advanced the decoder table.
+        try self.drainQpackBlockedStreams(events, &budget);
+
         self.gcClosedStreams();
+    }
+
+    /// Re-process streams parked on a QPACK dynamic-table dependency.
+    ///
+    /// A HEADERS / PUSH_PROMISE block whose Required Insert Count exceeds the
+    /// decoder's known-received count is parked (`blocked_on_qpack`) with its
+    /// bytes retained in `state.rx`, awaiting the referenced insert on the
+    /// peer's QPACK encoder stream. The main drain loop only revisits a stream
+    /// that `streamIterator` still yields, but quic-zig 0.4.0 reaps a stream
+    /// once its recv side is terminal (FIN + all bytes read) — which a
+    /// fully-received-but-blocked request/response stream already is — so it
+    /// vanishes from the iterator before unblocking, stranding the block. This
+    /// pass re-runs `processState` for every blocked stream in the H3-side
+    /// registry and, once a stream unblocks, surfaces its FIN from the sticky
+    /// `quic_recv_fin_seen` captured while the stream was still live.
+    fn drainQpackBlockedStreams(
+        self: *Session,
+        events: *std.ArrayList(Event),
+        budget: *DrainBudget,
+    ) Error!void {
+        // Collect ids first so processState/observeFin never mutate a map we
+        // are iterating (mirrors gcClosedStreams). Blocked streams are rare and
+        // small; any surplus beyond the batch is retried on the next drain.
+        var batch: [128]u64 = undefined;
+        var n: usize = 0;
+        var it = self.streams.iterator();
+        while (it.next()) |entry| {
+            if (!entry.value_ptr.*.blocked_on_qpack) continue;
+            if (n == batch.len) break;
+            batch[n] = entry.value_ptr.*.id;
+            n += 1;
+        }
+        for (batch[0..n]) |stream_id| {
+            const state = self.streams.get(stream_id) orelse continue;
+            if (!state.blocked_on_qpack) continue;
+            self.processState(state, events, budget) catch |err| {
+                if (!isLocalDrainBudgetError(err)) self.closeForError(err);
+                return err;
+            };
+            if (state.blocked_on_qpack) continue;
+            self.observeFin(state, state.quic_recv_fin_seen, events, budget) catch |err| {
+                if (!isLocalDrainBudgetError(err)) self.closeForError(err);
+                return err;
+            };
+        }
     }
 
     /// Reclaims `Session.streams` entries whose lifecycle is fully
@@ -2272,6 +2374,15 @@ pub const Session = struct {
                 .datagram_lost => |lost| try self.appendEvent(events, budget, .{ .datagram_lost = lost }),
                 .flow_blocked => |blocked| try self.appendEvent(events, budget, .{ .flow_blocked = blocked }),
                 .connection_ids_needed => |needed| try self.appendEvent(events, budget, .{ .connection_ids_needed = needed }),
+                // Transport-level ConnectionEvents the H3 layer does not
+                // surface to its embedder — e.g. `alternative_server_address`,
+                // a QUIC server-migration hint (draft-munizaga-quic-
+                // alternative-server-address-00) added in quic-zig 0.4.0.
+                // Per the ConnectionEvent forward-compatibility contract
+                // (quic-zig docs/API_STABILITY.md), unknown variants are
+                // handled with an `else` so additive variants don't break
+                // compilation; H3 has no mapping for them, so drop them.
+                else => {},
             }
         }
         self.syncShutdownState();
@@ -2327,8 +2438,8 @@ pub const Session = struct {
     }
 
     fn openControlStream(self: *Session) Error!void {
-        const id = self.nextLocalUniId(0);
-        _ = try self.quic.openUni(id);
+        // openNextUni: monotonic per-type id, reap-safe (see openWebTransportUniStream).
+        const id = (try self.quic.openNextUni()).id;
         try self.writeStreamType(id, protocol.StreamType.control);
         self.control_stream_id = id;
         errdefer self.control_stream_id = null;
@@ -2357,12 +2468,11 @@ pub const Session = struct {
             return Error.QpackStreamsAlreadyOpen;
         }
 
-        const enc_id = self.nextLocalUniId(0);
-        _ = try self.quic.openUni(enc_id);
+        // openNextUni: monotonic per-type id, reap-safe (see openWebTransportUniStream).
+        const enc_id = (try self.quic.openNextUni()).id;
         try self.writeStreamType(enc_id, protocol.StreamType.qpack_encoder);
 
-        const dec_id = self.nextLocalUniId(enc_id + 4);
-        _ = try self.quic.openUni(dec_id);
+        const dec_id = (try self.quic.openNextUni()).id;
         try self.writeStreamType(dec_id, protocol.StreamType.qpack_decoder);
 
         self.qpack_encoder_stream_id = enc_id;
@@ -2676,13 +2786,20 @@ pub const Session = struct {
                     return;
                 }
             }
+        }
+
+        // Reserve the event slot BEFORE bumping `peer_streams_opened_*`. The
+        // buffered-stream replay path can retry this open across budget-limited
+        // drains (see `wt_replay_opened`); incrementing only after a successful
+        // reserve keeps a retried open from double-counting toward the peer
+        // stream-count limit.
+        try budget.reserve(0);
+        if (self.wt_established_sessions.get(state.wt_session_id.?)) |flow| {
             switch (kind) {
                 .bidi => flow.peer_streams_opened_bidi += 1,
                 .uni => flow.peer_streams_opened_uni += 1,
             }
         }
-
-        try budget.reserve(0);
         try self.appendReservedEvent(events, .{
             .webtransport_stream_opened = .{
                 .stream_id = state.id,
@@ -2815,7 +2932,12 @@ pub const Session = struct {
                 _ = self.wt_buffered_streams.orderedRemove(i);
                 continue;
             };
-            if (!state.wt_buffered) {
+            // Keep streams that are still buffered OR mid-replay. A replay in
+            // progress clears wt_buffered when it emits the open event but stays
+            // in this list (tracked by wt_replay_opened) until data + FIN have
+            // also committed, so a budget bail-out between those events resumes
+            // here on the next drain instead of being pruned.
+            if (!state.wt_buffered and !state.wt_replay_opened) {
                 _ = self.wt_buffered_streams.orderedRemove(i);
                 continue;
             }
@@ -2832,32 +2954,36 @@ pub const Session = struct {
 
             switch (self.webTransportSessionState(session_id)) {
                 .established => {
-                    // Atomic-ish replay: each step either commits its
-                    // event under the drain budget or returns a budget
-                    // error that the caller filters into "retry next
-                    // drain". The state must survive a partial-success
-                    // bail-out, so we only flip `wt_buffered = false`
-                    // and remove from the buffered list AFTER the open
-                    // event has committed. The data + FIN events that
-                    // follow ride the regular processWebTransportStreamState /
-                    // observeFin paths from the main drain loop on
-                    // subsequent drains: state.wt_session_id is set,
-                    // state.rx still holds the buffered payload, and
-                    // state.wt_buffered_fin (set in observeFin while
-                    // buffered) makes the FIN replay through the
-                    // already-handled "wt branch" of observeFin once
-                    // wt_buffered is false.
-                    try self.emitWebTransportStreamOpened(state, kind, events, budget);
-                    state.wt_buffered = false;
-                    _ = self.wt_buffered_streams.orderedRemove(i);
-                    // Try to drain buffered data + FIN inside this same
-                    // drain pass when budget allows. If either step
-                    // returns a budget error, the un-emitted bytes /
-                    // un-emitted FIN persist on `state.rx` /
-                    // `state.wt_buffered_fin` and the next drain's
-                    // regular path picks them up — we don't roll back
-                    // the open event because that's already committed
-                    // to the events list.
+                    // Self-contained replay: emit opened -> data -> finished
+                    // entirely from H3-side buffers (`state.rx` and
+                    // `state.wt_buffered_fin`), NOT the main streamIterator
+                    // drain path. quic-zig 0.4.0 reaps a peer stream once its
+                    // recv side is terminal (FIN + all bytes read), so by
+                    // replay time the underlying QUIC stream is typically gone
+                    // from streamIterator; relying on "the next drain's regular
+                    // path" to surface data/FIN would strand them (data never
+                    // arrives, so the stream never finishes).
+                    //
+                    // Each step commits its event under the drain budget or
+                    // throws a budget error the caller filters into "retry next
+                    // drain". The stream stays in `wt_buffered_streams` (with
+                    // `wt_buffered = true`) until all three events have
+                    // committed, so a mid-replay budget bail-out resumes
+                    // cleanly on the next drain. `wt_replay_opened` dedupes the
+                    // open across those retries; `processWebTransportStreamState`
+                    // clears `rx` and the FIN block clears `wt_buffered_fin`, so
+                    // data/FIN are each emitted exactly once.
+                    if (!state.wt_replay_opened) {
+                        try self.emitWebTransportStreamOpened(state, kind, events, budget);
+                        state.wt_replay_opened = true;
+                        // Clear wt_buffered now (only after the open committed)
+                        // so processWebTransportStreamState emits the held
+                        // payload — its `if (wt_buffered) { hold; return; }`
+                        // guard would otherwise keep parking the bytes. The
+                        // stream stays in wt_buffered_streams, keyed off
+                        // wt_replay_opened, until data + FIN have both committed.
+                        state.wt_buffered = false;
+                    }
                     if (state.rx.items.len > 0) {
                         try self.processWebTransportStreamState(state, kind, events, budget);
                     }
@@ -2873,6 +2999,9 @@ pub const Session = struct {
                             },
                         });
                     }
+                    // All three events committed: retire the replay entry.
+                    // Do not advance `i` — orderedRemove shifts the tail down.
+                    _ = self.wt_buffered_streams.orderedRemove(i);
                 },
                 .pending => {
                     // Keep buffering. Advance the cursor so we look at
@@ -3963,8 +4092,8 @@ pub const Session = struct {
         push_id: u64,
         response_fields: []const qpack.FieldLine,
     ) Error!u64 {
-        const stream_id = self.nextLocalUniId(0);
-        _ = try self.quic.openUni(stream_id);
+        // openNextUni: monotonic per-type id, reap-safe (see openWebTransportUniStream).
+        const stream_id = (try self.quic.openNextUni()).id;
         errdefer self.quic.streamReset(stream_id, protocol.ErrorCode.internal_error) catch {};
         const state = try self.createState(stream_id);
         state.uni_kind = .push;
@@ -4295,24 +4424,24 @@ pub const Session = struct {
         return Error.SendBufferFull;
     }
 
-    fn nextLocalUniId(self: *const Session, first_id: u64) u64 {
-        const low_bits: u64 = switch (self.role) {
-            .client => 0b10,
-            .server => 0b11,
-        };
-        var id = (first_id & ~@as(u64, 0b11)) | low_bits;
-        while (self.quic.stream(id) != null) id += 4;
-        return id;
-    }
-
     fn nextLocalBidiId(self: *const Session, first_id: u64) u64 {
         const low_bits: u64 = switch (self.role) {
             .client => 0b00,
             .server => 0b01,
         };
         var id = (first_id & ~@as(u64, 0b11)) | low_bits;
+        // Floor at the reap-safe high-water mark so a reaped id is never
+        // reused (see `next_local_bidi_floor`), then skip any still-live id.
+        if (id < self.next_local_bidi_floor) id = self.next_local_bidi_floor;
         while (self.quic.stream(id) != null) id += 4;
         return id;
+    }
+
+    /// Advance the reap-safe bidi floor past `id` after a successful local
+    /// bidi open, so `nextLocalBidiId` never hands the id out again even once
+    /// quic-zig reaps the stream from its live table.
+    fn recordLocalBidiOpened(self: *Session, id: u64) void {
+        self.next_local_bidi_floor = @max(self.next_local_bidi_floor, id + 4);
     }
 
     fn observeGoaway(self: *Session, id: u64) Error!void {

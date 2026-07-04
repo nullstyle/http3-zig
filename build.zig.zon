@@ -2,15 +2,25 @@
     .name = .http3_zig,
     .version = "0.3.0",
     .fingerprint = 0x71cd45b0dc74266b,
-    .minimum_zig_version = "0.16.0",
+    .minimum_zig_version = "0.17.0-dev.1158+1d1193aa7",
     .dependencies = .{
+        // Local path dependency to the sibling quic-zig checkout (v0.4.0,
+        // commit 9c75593). A path dep lets both repos iterate together and
+        // pins the exact transport source-of-truth tree. To pin the
+        // published tarball instead:
+        //   zig fetch --save=quic_zig \
+        //     https://github.com/nullstyle/quic-zig/archive/refs/tags/v0.4.0.tar.gz
         .quic_zig = .{
-            .url = "https://github.com/nullstyle/quic-zig/archive/f46137b.tar.gz",
-            .hash = "quic_zig-0.2.0-jMbGHWwIGwCHnlPXRjv0fxf4G-3nv9MlGUfTnDL5VWqC",
+            .path = "../quic-zig",
         },
+        // MUST match quic-zig's boringssl_zig entry byte-for-byte so the
+        // package manager dedupes to a single boringssl module instance;
+        // http3-zig crosses boringssl.tls.Context into quic_zig, so a
+        // mismatch yields "expected boringssl.tls.Context, found
+        // boringssl.tls.Context" type errors at the boundary.
         .boringssl_zig = .{
-            .url = "https://github.com/nullstyle/boringssl-zig/archive/c2218dd.tar.gz",
-            .hash = "boringssl_zig-0.5.0-4iEdPIOsAQAybg1mpSD2AAohBH9e54NXjrrnsiKHXauB",
+            .url = "https://github.com/nullstyle/boringssl-zig/archive/3e2953d.tar.gz",
+            .hash = "boringssl_zig-0.6.1-4iEdPMK6AQDiLQDYNDJwriUc5uhYFrrgUCICgk7uE8Im",
         },
     },
     .paths = .{

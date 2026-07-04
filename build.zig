@@ -14,12 +14,23 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    // quic-zig's root.zig single-sources version() from a `build_options`
+    // module that its own build.zig provides. Because we recreate the
+    // quic_zig module here (to share http3-zig's boringssl instance across
+    // the diamond, see build.zig.zon), we must supply that module too or a
+    // reference to quic_zig.version() fails to compile. Value is cosmetic —
+    // http3-zig never calls version() — but kept correct for the pinned dep.
+    const quic_build_options = b.addOptions();
+    quic_build_options.addOption([]const u8, "version", "0.4.0");
+    const quic_build_options_mod = quic_build_options.createModule();
+
     const quic_zig_mod = b.createModule(.{
         .root_source_file = quic_zig_dep.path("src/root.zig"),
         .target = target,
         .optimize = optimize,
     });
     quic_zig_mod.addImport("boringssl", boringssl_mod);
+    quic_zig_mod.addImport("build_options", quic_build_options_mod);
 
     const http3_zig_mod = b.addModule("http3_zig", .{
         .root_source_file = b.path("src/root.zig"),
@@ -144,7 +155,7 @@ pub fn build(b: *std.Build) void {
         .root_module = fuzz_seed_mod,
     });
     const run_fuzz_seed = b.addRunArtifact(fuzz_seed);
-    run_fuzz_seed.addArgs(b.args orelse &[_][]const u8{});
+    run_fuzz_seed.addPassthruArgs();
     const seed_fuzz_corpus_step = b.step(
         "seed-fuzz-corpus",
         "(Re)generate fuzz/corpus/ from the seed generator. Run after seed.zig changes.",
@@ -171,7 +182,7 @@ pub fn build(b: *std.Build) void {
     fuzz_corpus_step.dependOn(&install_fuzz_corpus.step);
 
     const run_fuzz_corpus = b.addRunArtifact(fuzz_corpus);
-    run_fuzz_corpus.addArgs(b.args orelse &[_][]const u8{});
+    run_fuzz_corpus.addPassthruArgs();
     const run_fuzz_corpus_step = b.step(
         "run-fuzz-corpus",
         "Run every file in fuzz/corpus/<target>/ through its codec target",
@@ -202,7 +213,7 @@ pub fn build(b: *std.Build) void {
     fuzz_wt_interleaved_step.dependOn(&install_fuzz_wt_interleaved.step);
 
     const run_fuzz_wt_interleaved = b.addRunArtifact(fuzz_wt_interleaved);
-    run_fuzz_wt_interleaved.addArgs(b.args orelse &[_][]const u8{});
+    run_fuzz_wt_interleaved.addPassthruArgs();
     const run_fuzz_wt_interleaved_step = b.step(
         "run-fuzz-wt-interleaved",
         "Run the WT interleaved fuzz harness over fuzz/corpus/wt-interleaved/",
@@ -258,7 +269,7 @@ pub fn build(b: *std.Build) void {
     external_wt_client_step.dependOn(&install_external_wt_client.step);
 
     const run_external_wt_client = b.addRunArtifact(external_wt_client);
-    run_external_wt_client.addArgs(b.args orelse &[_][]const u8{});
+    run_external_wt_client.addPassthruArgs();
     const run_external_wt_client_step = b.step("run-external-wt-client", "Run the external WebTransport interop client");
     run_external_wt_client_step.dependOn(&run_external_wt_client.step);
 
@@ -283,7 +294,7 @@ pub fn build(b: *std.Build) void {
     external_wt_server_step.dependOn(&install_external_wt_server.step);
 
     const run_external_wt_server = b.addRunArtifact(external_wt_server);
-    run_external_wt_server.addArgs(b.args orelse &[_][]const u8{});
+    run_external_wt_server.addPassthruArgs();
     const run_external_wt_server_step = b.step("run-external-wt-server", "Run the WebTransport echo server harness");
     run_external_wt_server_step.dependOn(&run_external_wt_server.step);
 
@@ -320,7 +331,7 @@ pub fn build(b: *std.Build) void {
 
     const run_wt_interop_matrix = b.addRunArtifact(wt_interop_matrix);
     run_wt_interop_matrix.step.dependOn(&install_external_wt_client.step);
-    run_wt_interop_matrix.addArgs(b.args orelse &[_][]const u8{});
+    run_wt_interop_matrix.addPassthruArgs();
     const wt_interop_matrix_step = b.step(
         "wt-interop-matrix",
         "Run external_wt client against every URL in WT_INTEROP_MATRIX_URLS",
@@ -426,6 +437,7 @@ pub fn build(b: *std.Build) void {
         .optimize = mem_profile_optimize,
     });
     quic_zig_safe_mod.addImport("boringssl", boringssl_safe_mod);
+    quic_zig_safe_mod.addImport("build_options", quic_build_options_mod);
     const http3_zig_safe_mod = b.createModule(.{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
@@ -489,6 +501,7 @@ pub fn build(b: *std.Build) void {
         .optimize = wt_load_optimize,
     });
     quic_zig_release_mod.addImport("boringssl", boringssl_release_mod);
+    quic_zig_release_mod.addImport("build_options", quic_build_options_mod);
     const http3_zig_release_mod = b.createModule(.{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
