@@ -297,6 +297,24 @@ pub fn encodeFieldSectionEncoderInstructions(
     var pos: usize = 0;
     for (fields) |field| {
         const instruction = chooseInsertInstruction(table, field, options) orelse continue;
+        // RFC 9204 §2.1.2 eviction safety: never insert an entry whose
+        // required eviction would drop a dynamic-table entry still referenced
+        // by an unacknowledged field section (or not yet acknowledged by the
+        // decoder). The inserted entry is always (field.name, field.value)
+        // regardless of name-ref encoding, so size it directly. Reference
+        // state lives in the tracker's EncoderState; with no tracker we have
+        // no reference information, so an insert is allowed only when it
+        // evicts nothing. A skipped insert falls back to a literal in the
+        // field section, exactly as a policy-disallowed insert does — and the
+        // encoder-instruction phase runs before the field section is encoded,
+        // so the fallback stays consistent.
+        const size_needed = DynamicTable.entrySizeFor(field.name, field.value);
+        const safe = if (options.tracker) |tracker|
+            table.insertOnlyEvicts(size_needed, tracker.encoder_state, state.EncoderState.isEvictable)
+        else
+            table.insertOnlyEvicts(size_needed, {}, neverEvictable);
+        if (!safe) continue;
+
         const n = try instructions.encodeEncoderInstruction(dst[pos..], instruction);
         const inserted = try instructions.applyEncoderInstruction(table, instruction);
         if (inserted) |absolute_index| {
@@ -305,6 +323,13 @@ pub fn encodeFieldSectionEncoderInstructions(
         pos += n;
     }
     return pos;
+}
+
+/// Eviction predicate used when there is no encoder reference tracker: with no
+/// reference information, no existing entry can be proven safe to evict, so an
+/// insert is permitted only when it would evict nothing.
+fn neverEvictable(_: void, _: u64) bool {
+    return false;
 }
 
 /// Decode a field section that avoids the dynamic table. The returned field
@@ -1063,6 +1088,59 @@ test "indexing policy emits encoder instructions and references inserted fields"
     try std.testing.expectEqualStrings("one", decoded[0].value);
     try std.testing.expectEqualStrings("authorization", decoded[1].name);
     try std.testing.expect(decoded[1].sensitive);
+}
+
+test "encoder skips an insert that would evict a still-referenced entry, then allows it after ack (RFC 9204 §2.1.2)" {
+    const allocator = std.testing.allocator;
+    // Capacity 40 holds exactly one 35-byte entry (2+1+32); a second insert
+    // must evict the first.
+    var table = DynamicTable.init(allocator, 40);
+    defer table.deinit();
+    try table.setCapacity(40);
+    var encoder_state = state.EncoderState.init(allocator, 4);
+    defer encoder_state.deinit();
+
+    const options_a = DynamicFieldSectionEncodeOptions{
+        .tracker = .{ .encoder_state = &encoder_state, .stream_id = 0 },
+        .indexing = .{ .dynamic_inserts = .all },
+    };
+    const fields_a = [_]FieldLine{.{ .name = "aa", .value = "1" }};
+    var enc: [64]u8 = undefined;
+    _ = try encodeFieldSectionEncoderInstructions(&enc, &table, &fields_a, options_a);
+    var fs: [64]u8 = undefined;
+    // Encoding the field section records the outstanding reference to entry 0.
+    _ = try encodeDynamicFieldSectionWithOptions(&fs, &table, &fields_a, options_a);
+    try std.testing.expectEqual(@as(u64, 1), table.insert_count);
+    try std.testing.expectEqual(@as(u64, 1), encoder_state.referenceCount(0));
+    // Unacknowledged + referenced -> not evictable.
+    try std.testing.expect(!encoder_state.isEvictable(0));
+
+    // A different field needs a new insert, which would evict entry 0. Because
+    // entry 0 is still referenced, the insert MUST be skipped (no encoder
+    // instruction emitted, entry 0 preserved) rather than corrupt the
+    // outstanding reference.
+    const options_b = DynamicFieldSectionEncodeOptions{
+        .tracker = .{ .encoder_state = &encoder_state, .stream_id = 4 },
+        .indexing = .{ .dynamic_inserts = .all },
+    };
+    const fields_b = [_]FieldLine{.{ .name = "bb", .value = "2" }};
+    try std.testing.expectEqual(
+        @as(usize, 0),
+        try encodeFieldSectionEncoderInstructions(&enc, &table, &fields_b, options_b),
+    );
+    try std.testing.expectEqual(@as(u64, 1), table.insert_count);
+    try std.testing.expectEqualStrings("aa", table.getAbsolute(0).?.name);
+    try std.testing.expect(table.find("bb", "2") == null);
+
+    // Once the decoder acknowledges stream 0's section, entry 0 is no longer
+    // referenced and has been received, so the same insert now succeeds and
+    // entry 0 is evicted — the guard is safety, not a permanent stall.
+    try encoder_state.receiveDecoderInstruction(.{ .section_ack = 0 });
+    try std.testing.expect(encoder_state.isEvictable(0));
+    try std.testing.expect(try encodeFieldSectionEncoderInstructions(&enc, &table, &fields_b, options_b) > 0);
+    try std.testing.expectEqual(@as(u64, 2), table.insert_count);
+    try std.testing.expect(table.getAbsolute(0) == null);
+    try std.testing.expectEqualStrings("bb", table.getAbsolute(1).?.name);
 }
 
 test "indexing policy can require acknowledged dynamic references" {

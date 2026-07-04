@@ -82,6 +82,40 @@ pub const DynamicTable = struct {
         return entrySize(name, value) <= self.capacity;
     }
 
+    /// Byte size (RFC 9204 §3.2.1) an entry with this name/value occupies in
+    /// the dynamic table. Exposed so a caller can size a prospective insert
+    /// before deciding whether performing it is safe (`insertOnlyEvicts`).
+    pub fn entrySizeFor(name: []const u8, value: []const u8) usize {
+        return entrySize(name, value);
+    }
+
+    /// True iff inserting an entry of `size_needed` bytes would evict ONLY
+    /// entries the caller's `evictable` predicate approves. Simulates the same
+    /// oldest-first eviction as `insert`/`insertOwned`, without mutating the
+    /// table. This keeps the encoder honoring RFC 9204 §2.1.2 — never evict a
+    /// dynamic-table entry still referenced by an unacknowledged field section
+    /// — while leaving reference bookkeeping in the caller (`EncoderState`)
+    /// rather than in this table.
+    pub fn insertOnlyEvicts(
+        self: *const DynamicTable,
+        size_needed: usize,
+        ctx: anytype,
+        comptime evictable: fn (@TypeOf(ctx), u64) bool,
+    ) bool {
+        if (size_needed > self.capacity) return false; // cannot be inserted at all
+        const target = self.capacity - size_needed;
+        var remaining = self.size;
+        var i: usize = 0;
+        while (remaining > target) {
+            if (i >= self.entries.items.len) break;
+            const entry = &self.entries.items[i];
+            if (!evictable(ctx, entry.absolute_index)) return false;
+            remaining -= entry.size();
+            i += 1;
+        }
+        return true;
+    }
+
     pub fn insert(
         self: *DynamicTable,
         name: []const u8,
