@@ -88,6 +88,50 @@ test "session rejects GOAWAY on request streams" {
     try expectLastCloseCode(&pair.server_h3, http3_zig.protocol.ErrorCode.frame_unexpected);
 }
 
+test "session rejects an oversized HEADERS declared length before buffering the payload [DoS]" {
+    const allocator = std.testing.allocator;
+
+    // Server enforces a 64 KiB field-section cap. Pre-0.4-hardening this cap
+    // only fired AFTER the whole HEADERS payload was reassembled, so a peer
+    // could pin up to the QUIC stream window in rx first. The cap must now be
+    // enforced on the DECLARED length, before any payload arrives.
+    var pair: H3Pair = undefined;
+    try pair.initStarted(allocator, .{}, .{ .max_field_section_size = 65536 });
+    defer pair.deinit();
+    try exchangePairSettings(allocator, &pair);
+
+    const stream_id: u64 = 0;
+    _ = try pair.client.openBidi(stream_id);
+    // Raw frame header only: HEADERS type + a declared length far above the
+    // cap, and NO payload bytes at all. Early rejection must still fire.
+    try writeVarint(&pair.client, stream_id, http3_zig.protocol.FrameType.headers);
+    try writeVarint(&pair.client, stream_id, 200_000);
+
+    try expectPairH3Error(allocator, &pair, error.HeaderSectionTooLarge);
+    try std.testing.expectEqual(http3_zig.session.ShutdownState.closed, pair.server_h3.shutdownState());
+    try expectLastCloseCode(&pair.server_h3, http3_zig.protocol.ErrorCode.message_error);
+}
+
+test "session rejects an oversized non-DATA frame via max_incoming_frame_length [DoS]" {
+    const allocator = std.testing.allocator;
+
+    var pair: H3Pair = undefined;
+    try pair.initStarted(allocator, .{}, .{ .max_incoming_frame_length = 131072 });
+    defer pair.deinit();
+    try exchangePairSettings(allocator, &pair);
+
+    // A GREASE/unknown frame type (0x1f*0 + 0x21) on the peer control stream,
+    // declaring a length above the general non-DATA cap. Unknown control
+    // frames are normally ignored, but the size cap fires on the declared
+    // length before the frame is processed.
+    const control = pair.client_h3.control_stream_id.?;
+    try writeVarint(&pair.client, control, 0x21);
+    try writeVarint(&pair.client, control, 200_000);
+
+    try expectPairH3Error(allocator, &pair, error.FrameTooLong);
+    try expectLastCloseCode(&pair.server_h3, http3_zig.protocol.ErrorCode.excess_load);
+}
+
 test "session rejects CANCEL_PUSH on request streams" {
     const allocator = std.testing.allocator;
 

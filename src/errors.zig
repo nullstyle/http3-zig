@@ -155,6 +155,10 @@ pub fn codeForError(err: anyerror) u64 {
         error.ValueTooLarge,
         error.InvalidLength,
         => protocol.ErrorCode.frame_error,
+        // A non-DATA frame whose declared length exceeds
+        // `max_incoming_frame_length`, rejected before reassembly.
+        error.FrameTooLong,
+        => protocol.ErrorCode.excess_load,
         error.HeaderSectionTooLarge,
         error.DataBeforeHeaders,
         error.DuplicateHeaders,

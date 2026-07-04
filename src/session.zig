@@ -159,6 +159,10 @@ pub const ProductionOptions = struct {
     max_field_lines: usize = 128,
     max_decoded_field_section_bytes: usize = 128 * 1024,
     max_field_section_size: usize = 64 * 1024,
+    /// Declared-length cap for incoming non-DATA frames (see
+    /// `Config.max_incoming_frame_length`). 128 KiB comfortably clears the
+    /// 64 KiB `max_field_section_size` while bounding control/GREASE frames.
+    max_incoming_frame_length: u64 = 128 * 1024,
     max_data_frame_payload: usize = 16 * 1024,
     max_datagram_payload_size: usize = 16 * 1024,
     max_capsule_value_size: usize = 64 * 1024,
@@ -229,6 +233,18 @@ pub const Config = struct {
     /// which limits encoded HEADERS payload bytes.
     max_decoded_field_section_bytes: ?usize = null,
     max_field_section_size: ?usize = null,
+    /// Optional cap on the DECLARED length of an incoming non-DATA HTTP/3
+    /// frame (SETTINGS/GOAWAY/CANCEL_PUSH/MAX_PUSH_ID/PRIORITY_UPDATE and
+    /// unknown/GREASE frames; HEADERS/PUSH_PROMISE are additionally bounded
+    /// by `max_field_section_size`). The frame is rejected on its declared
+    /// length — before its payload is reassembled into the per-stream rx
+    /// buffer — so untrusted receive buffering is bounded by this value
+    /// rather than by the QUIC stream flow-control window (which an embedder
+    /// may set far above the header cap). DATA frames are intentionally
+    /// exempt: they are legitimately large and bounded by QUIC flow control
+    /// plus the application body budget. Null preserves the legacy behavior;
+    /// `production()` defaults to 128 KiB.
+    max_incoming_frame_length: ?u64 = null,
     read_chunk_size: usize = 4096,
     max_data_frame_payload: usize = 16 * 1024,
     max_datagram_payload_size: usize = 64 * 1024,
@@ -293,6 +309,7 @@ pub const Config = struct {
             .max_field_lines = options.max_field_lines,
             .max_decoded_field_section_bytes = options.max_decoded_field_section_bytes,
             .max_field_section_size = options.max_field_section_size,
+            .max_incoming_frame_length = options.max_incoming_frame_length,
             .max_data_frame_payload = options.max_data_frame_payload,
             .max_datagram_payload_size = options.max_datagram_payload_size,
             .max_capsule_value_size = options.max_capsule_value_size,
@@ -3019,6 +3036,38 @@ pub const Session = struct {
         }
     }
 
+    /// Reject an incoming HTTP/3 frame on its DECLARED length before its
+    /// payload is reassembled into `state.rx`. Without this, an oversized
+    /// declared length buffers up to the QUIC stream flow-control window
+    /// before the post-reassembly size check fires — a receive-buffer
+    /// amplification DoS. DATA frames are intentionally exempt: legitimately
+    /// large, and bounded by QUIC flow control plus the application body
+    /// budget. Callers peek the header via `frame_mod.peekHeader` and call
+    /// this before `frame_mod.decode`.
+    fn checkIncomingFrameLength(self: *const Session, frame_type: u64, declared_len: u64) Error!void {
+        if (frame_type == protocol.FrameType.data) return;
+
+        // HEADERS / PUSH_PROMISE: the field section cannot exceed
+        // max_field_section_size; enforce it on the declared length here,
+        // matching the post-decode guard on decodeFieldSectionForStream.
+        if (frame_type == protocol.FrameType.headers) {
+            if (self.config.max_field_section_size) |max| {
+                if (declared_len > @as(u64, @intCast(max))) return Error.HeaderSectionTooLarge;
+            }
+        } else if (frame_type == protocol.FrameType.push_promise) {
+            if (self.config.max_field_section_size) |max| {
+                // payload = push_id varint (<= 8 bytes) + field section.
+                if (declared_len > @as(u64, @intCast(max)) +| 8) return Error.HeaderSectionTooLarge;
+            }
+        }
+
+        // General non-DATA declared-length cap (control / unknown / GREASE,
+        // and an upper bound over the header frames above).
+        if (self.config.max_incoming_frame_length) |max| {
+            if (declared_len > max) return Error.FrameTooLong;
+        }
+    }
+
     fn processControlState(
         self: *Session,
         state: *StreamState,
@@ -3026,6 +3075,12 @@ pub const Session = struct {
         budget: *DrainBudget,
     ) Error!void {
         while (state.rx.items.len > 0) {
+            if (frame_mod.peekHeader(state.rx.items)) |hdr| {
+                self.checkIncomingFrameLength(hdr.frame_type, hdr.length) catch |err| {
+                    self.closeForError(err);
+                    return err;
+                };
+            } else return; // frame type/length varints not fully buffered yet
             const decoded = frame_mod.decode(state.rx.items) catch |err| {
                 if (err == error.InsufficientBytes) return;
                 self.closeForError(err);
@@ -3233,6 +3288,12 @@ pub const Session = struct {
         const decoder = if (state.message_decoder) |*decoder| decoder else return Error.MissingStream;
 
         while (state.rx.items.len > 0) {
+            if (frame_mod.peekHeader(state.rx.items)) |hdr| {
+                self.checkIncomingFrameLength(hdr.frame_type, hdr.length) catch |err| {
+                    self.closeForError(err);
+                    return err;
+                };
+            } else return; // frame type/length varints not fully buffered yet
             const decoded = frame_mod.decode(state.rx.items) catch |err| {
                 if (err == error.InsufficientBytes) return;
                 self.closeForError(err);

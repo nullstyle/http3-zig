@@ -19,6 +19,11 @@ pub const Error = frame_mod.Error || qpack.Error || headers_mod.Error || stream_
     OutOfMemory,
     BufferTooSmall,
     HeaderSectionTooLarge,
+    /// An incoming frame's DECLARED length exceeds the configured
+    /// `max_incoming_frame_length` (non-DATA frames). Rejected on the
+    /// declared length before the payload is reassembled — a receive-buffer
+    /// DoS bound. Maps to H3_EXCESSIVE_LOAD.
+    FrameTooLong,
     DataBeforeHeaders,
     DuplicateHeaders,
     DataAfterTrailers,

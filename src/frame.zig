@@ -43,6 +43,48 @@ pub const Decoded = struct {
     bytes_read: usize,
 };
 
+/// A frame's type and declared payload length, decodable from just the two
+/// leading varints — before the payload itself is present.
+pub const Header = struct {
+    frame_type: u64,
+    /// Declared payload length (does not include the type/length varints).
+    length: u64,
+    /// Bytes occupied by the type + length varints.
+    header_len: usize,
+};
+
+/// Peek a frame's type and declared length without requiring its payload to
+/// be buffered. Returns null when fewer than the two leading varints are
+/// present yet (caller waits for more bytes). Lets a consumer reject an
+/// over-cap frame on its declared length before reassembling the payload —
+/// `decode` below requires the whole payload up front, so a size check that
+/// runs only after `decode` succeeds has already paid the buffering cost.
+pub fn peekHeader(src: []const u8) ?Header {
+    const typ_dec = varint.decode(src) catch return null;
+    const len_dec = varint.decode(src[typ_dec.bytes_read..]) catch return null;
+    return .{
+        .frame_type = typ_dec.value,
+        .length = len_dec.value,
+        .header_len = typ_dec.bytes_read + len_dec.bytes_read,
+    };
+}
+
+test "peekHeader reads type+length without the payload; null when incomplete" {
+    const std = @import("std");
+    var buf: [16]u8 = undefined;
+    var n: usize = 0;
+    n += try varint.encode(buf[n..], protocol.FrameType.headers);
+    n += try varint.encode(buf[n..], 200_000); // declared length, no payload present
+    const hdr = peekHeader(buf[0..n]).?;
+    try std.testing.expectEqual(protocol.FrameType.headers, hdr.frame_type);
+    try std.testing.expectEqual(@as(u64, 200_000), hdr.length);
+    try std.testing.expectEqual(n, hdr.header_len);
+    // One byte short of the length varint, and empty input: not enough to
+    // peek the header yet -> null (caller waits for more bytes).
+    try std.testing.expect(peekHeader(buf[0 .. n - 1]) == null);
+    try std.testing.expect(peekHeader("") == null);
+}
+
 pub const Iterator = struct {
     src: []const u8,
     pos: usize = 0,
