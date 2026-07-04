@@ -56,6 +56,15 @@ const ServerCid = [_]u8{ 0x91, 0x92, 0x93, 0x94, 0x95, 0x96, 0x97, 0x98 };
 const total_iterations: usize = 2_000;
 const sample_at_iters = [_]usize{ 500, 1_000, 2_000 };
 
+/// Regression gate: per-iteration retained-memory growth (warm-up → final
+/// sample) must stay below this. The current figure is ≈243 bytes/iter (down
+/// from ≈2755 before quic-zig 0.4.0's terminal-stream reaping landed on both
+/// the http3 and QUIC layers). Gate at 600 — ~2.5x current, so allocator /
+/// platform variation passes, but a reintroduced per-stream leak (which ran
+/// into the thousands of bytes/iter) fails the run. Exceeding it exits
+/// non-zero so a CI job can gate on it.
+const max_bytes_per_iter_gate: f64 = 600;
+
 const stream_payload_len: usize = 256;
 const datagram_payload_len: usize = 64;
 
@@ -520,21 +529,47 @@ pub fn main(init: std.process.Init) !void {
     }
 
     try printSampleTable(stdout, samples[0..samples_len]);
+    const per_iter = perIterBytes(samples[0..samples_len]);
     try stdout.flush();
 
     // Tear down the session before deinit'ing the GPA so all session
     // allocations are released.
     p.deinit();
 
+    var failed = false;
     const check = gpa.deinit();
     if (check == .leak) {
         try stdout.print("\n**LEAK DETECTED**: DebugAllocator reported leaks. See stderr for details.\n", .{});
-        try stdout.flush();
-        return error.LeakDetected;
+        failed = true;
     } else {
         try stdout.print("\nLeak check: ok (no leaked allocations after teardown).\n", .{});
-        try stdout.flush();
     }
+
+    // Per-iteration growth regression gate (see `max_bytes_per_iter_gate`).
+    if (per_iter > max_bytes_per_iter_gate) {
+        try stdout.print(
+            "**MEMORY REGRESSION**: {d:.1} bytes/iter exceeds the {d:.0} bytes/iter gate.\n",
+            .{ per_iter, max_bytes_per_iter_gate },
+        );
+        failed = true;
+    } else {
+        try stdout.print(
+            "Regression gate: ok ({d:.1} <= {d:.0} bytes/iter).\n",
+            .{ per_iter, max_bytes_per_iter_gate },
+        );
+    }
+    try stdout.flush();
+    if (failed) return error.MemoryProfileRegressed;
+}
+
+fn perIterBytes(samples: []const Sample) f64 {
+    if (samples.len < 2) return 0;
+    const baseline: i128 = @intCast(samples[0].bytes_in_use);
+    const last = samples[samples.len - 1];
+    const total_delta: i128 = @as(i128, @intCast(last.bytes_in_use)) - baseline;
+    const iters_delta: i128 = @intCast(last.iters_done);
+    if (iters_delta <= 0) return 0;
+    return @as(f64, @floatFromInt(total_delta)) / @as(f64, @floatFromInt(iters_delta));
 }
 
 fn labelFor(iters: usize) []const u8 {
