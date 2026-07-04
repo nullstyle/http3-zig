@@ -5,11 +5,12 @@
     .minimum_zig_version = "0.17.0-dev.1158+1d1193aa7",
     .dependencies = .{
         // Local path dependency to the sibling quic-zig checkout (v0.4.0,
-        // commit 9c75593). A path dep lets both repos iterate together and
-        // pins the exact transport source-of-truth tree. To pin the
-        // published tarball instead:
-        //   zig fetch --save=quic_zig \
-        //     https://github.com/nullstyle/quic-zig/archive/refs/tags/v0.4.0.tar.gz
+        // commit 9c75593) for dual-repo iteration; reproducible and offline.
+        // A standalone checkout (CI, downstream consumers) needs this
+        // repointed to the published tarball — but GitHub's on-the-fly tag
+        // archives are not byte-reproducible, so `zig fetch --save`'s hash
+        // does not match the build-time fetch. Resolve at release time by
+        // vendoring quic-zig or hosting a content-addressed archive.
         .quic_zig = .{
             .path = "../quic-zig",
         },
