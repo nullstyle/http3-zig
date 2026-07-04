@@ -88,6 +88,27 @@ test "session rejects GOAWAY on request streams" {
     try expectLastCloseCode(&pair.server_h3, http3_zig.protocol.ErrorCode.frame_unexpected);
 }
 
+test "sending GOAWAY drives quic-zig transport-level graceful shutdown" {
+    const allocator = std.testing.allocator;
+
+    var pair: H3Pair = undefined;
+    try pair.initStarted(allocator, .{}, .{});
+    defer pair.deinit();
+    try exchangePairSettings(allocator, &pair);
+
+    try std.testing.expect(!pair.server.gracefulShutdownActive());
+
+    // Server GOAWAY(0): stop processing new requests. This must engage the
+    // transport-level graceful shutdown, not just the H3-layer draining flag.
+    try pair.server_h3.sendGoaway(0);
+
+    try std.testing.expect(pair.server.gracefulShutdownActive());
+    // New local stream opens are now refused at the transport with
+    // ShuttingDown (MAX_STREAMS credit is also withheld from the peer).
+    try std.testing.expectError(error.ShuttingDown, pair.server.openNextUni());
+    try std.testing.expectError(error.ShuttingDown, pair.server.openNextBidi());
+}
+
 test "session rejects an oversized HEADERS declared length before buffering the payload [DoS]" {
     const allocator = std.testing.allocator;
 

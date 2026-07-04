@@ -2034,6 +2034,14 @@ pub const Session = struct {
         try self.writeControlFrame(.{ .goaway = id });
         self.sent_goaway_id = id;
         self.enterDraining();
+        // Pair the H3-layer GOAWAY with quic-zig 0.4.0's transport-level
+        // graceful shutdown: stop granting the peer MAX_STREAMS credit and
+        // refuse new local stream opens (Error.ShuttingDown) so both sides
+        // quiesce new-stream creation while in-flight streams drain. QUIC has
+        // no GOAWAY frame — this is the intended transport building block a
+        // higher layer pairs with its own GOAWAY signal. Existing stream-limit
+        // credit is not revoked, so in-flight streams still complete.
+        self.quic.beginGracefulShutdown();
         self.trace(.{
             .name = .goaway_sent,
             .role = self.role,
