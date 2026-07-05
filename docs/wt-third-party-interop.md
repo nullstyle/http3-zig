@@ -14,10 +14,12 @@ clean-shutdown read that still times out (`HarnessTimedOut`) *after* the
 protocol exchange has succeeded; that's a harness-exit nuance, not a protocol
 failure.
 
-The fixes require **quic-zig with the `initial_source_connection_id` fix**
-(quic-zig `main`, post-v0.6.0). http3-zig's pinned dependency is still the
-v0.6.0 tarball, so the third-party matrix stays `continue-on-error: true`
-until a quic-zig release carrying the fix is cut and the pin is bumped.
+http3-zig pins **quic-zig v0.6.1**, which carries the
+`initial_source_connection_id` fix, so the handshake completes. The
+third-party matrix stays `continue-on-error: true` — building and running an
+external Go server in CI is inherently flaky, so the in-tree self-test
+(`wt-interop-self-test.yml`) remains the hard gate while the foreign-peer
+matrix is advisory.
 
 ## Root cause (resolved)
 
