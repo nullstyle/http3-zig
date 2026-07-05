@@ -265,8 +265,10 @@ pub const ApplicationError = errors.ApplicationError;
 pub const ConnectionError = errors.ConnectionError;
 pub const StreamError = errors.StreamError;
 
+/// The package version, single-sourced from `build.zig.zon` through the
+/// `build_options` module so it can never drift from the manifest.
 pub fn version() []const u8 {
-    return "0.3.0";
+    return @import("build_options").version;
 }
 
 test {
@@ -296,6 +298,9 @@ test {
 }
 
 test "package metadata" {
-    try std.testing.expectEqualStrings("0.3.0", version());
+    // Single-sourced from build.zig.zon; assert it's populated and well-formed
+    // rather than pinning a literal that must be bumped in two places.
+    const v = version();
+    try std.testing.expect(v.len > 0 and std.mem.indexOfScalar(u8, v, '.') != null);
     try std.testing.expectEqualStrings("h3", protocol.alpn_h3);
 }

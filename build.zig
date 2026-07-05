@@ -21,8 +21,14 @@ pub fn build(b: *std.Build) void {
     // reference to quic_zig.version() fails to compile. Value is cosmetic —
     // http3-zig never calls version() — but kept correct for the pinned dep.
     const quic_build_options = b.addOptions();
-    quic_build_options.addOption([]const u8, "version", "0.4.0");
+    quic_build_options.addOption([]const u8, "version", "0.5.0");
     const quic_build_options_mod = quic_build_options.createModule();
+
+    // Single-source http3-zig's own version() from build.zig.zon so it can
+    // never drift from the manifest (mirrors quic-zig's build_options pattern).
+    const h3_build_options = b.addOptions();
+    h3_build_options.addOption([]const u8, "version", @import("build.zig.zon").version);
+    const h3_build_options_mod = h3_build_options.createModule();
 
     const quic_zig_mod = b.createModule(.{
         .root_source_file = quic_zig_dep.path("src/root.zig"),
@@ -39,6 +45,7 @@ pub fn build(b: *std.Build) void {
     });
     http3_zig_mod.addImport("quic_zig", quic_zig_mod);
     http3_zig_mod.addImport("boringssl", boringssl_mod);
+    http3_zig_mod.addImport("build_options", h3_build_options_mod);
 
     const fuzz_codecs_lib_mod = b.createModule(.{
         .root_source_file = b.path("fuzz/codecs.zig"),
@@ -445,6 +452,7 @@ pub fn build(b: *std.Build) void {
     });
     http3_zig_safe_mod.addImport("quic_zig", quic_zig_safe_mod);
     http3_zig_safe_mod.addImport("boringssl", boringssl_safe_mod);
+    http3_zig_safe_mod.addImport("build_options", h3_build_options_mod);
     const wt_memory_mod = b.createModule(.{
         .root_source_file = b.path("bench/wt_memory.zig"),
         .target = target,
@@ -509,6 +517,7 @@ pub fn build(b: *std.Build) void {
     });
     http3_zig_release_mod.addImport("quic_zig", quic_zig_release_mod);
     http3_zig_release_mod.addImport("boringssl", boringssl_release_mod);
+    http3_zig_release_mod.addImport("build_options", h3_build_options_mod);
     const wt_load_mod = b.createModule(.{
         .root_source_file = b.path("bench/wt_load.zig"),
         .target = target,
