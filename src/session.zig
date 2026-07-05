@@ -816,13 +816,13 @@ const StreamState = struct {
     /// self-contained and cannot fall back to re-reading the stream via
     /// the main `streamIterator` drain path.
     wt_replay_opened: bool = false,
-    /// Sticky copy of quic-zig's `recv.fin_seen` for this stream,
-    /// captured while the stream is still yielded by `streamIterator`.
-    /// quic-zig 0.4.0 reaps a peer stream once its recv side is terminal
-    /// (FIN received + all bytes read), after which the FIN is no longer
-    /// observable from the iterator; capturing it here lets a stream
-    /// parked mid-processing (blocked_on_qpack) still surface its FIN
-    /// when it is re-processed on a later drain.
+    /// Sticky record that quic-zig reported the peer's FIN for this stream,
+    /// captured inline with the draining read via `streamReadFin`. quic-zig
+    /// reaps a peer stream once its recv side is terminal (FIN received + all
+    /// bytes read), after which the FIN is no longer observable from the
+    /// iterator; holding it here lets a stream parked mid-processing
+    /// (blocked_on_qpack) still surface its FIN when it is re-processed on a
+    /// later drain.
     quic_recv_fin_seen: bool = false,
     push_id: ?u64 = null,
     control_validator: ?stream_mod.FrameValidator = null,
@@ -2203,18 +2203,19 @@ pub const Session = struct {
             }
 
             while (true) {
-                const n = try self.quic.streamRead(stream_id, tmp);
-                if (n == 0) break;
-                try state.rx.appendSlice(self.allocator, tmp[0..n]);
+                // streamReadFin (quic-zig 0.5.0) reports the peer's FIN inline
+                // with the read that drains it — so end-of-stream is captured
+                // even on the final read that makes the stream terminal (and
+                // thus reapable), without reaching into the receive half.
+                // Sticky into quic_recv_fin_seen so a stream we park below
+                // (blocked_on_qpack) still surfaces its FIN when the
+                // re-processing pass revisits it after quic-zig has reaped it
+                // from streamIterator.
+                const rr = try self.quic.streamReadFin(stream_id, tmp);
+                if (rr.fin) state.quic_recv_fin_seen = true;
+                if (rr.n == 0) break;
+                try state.rx.appendSlice(self.allocator, tmp[0..rr.n]);
             }
-            // Capture quic-zig's FIN flag stickily now, while the stream is
-            // still yielded by streamIterator. quic-zig 0.4.0 reaps a peer
-            // stream once its recv side is terminal (FIN + all bytes read),
-            // so a stream we park below (blocked_on_qpack) may be gone from
-            // the iterator by the next drain — after which recv.fin_seen is
-            // unobservable. The blocked-stream re-processing pass reads this
-            // captured copy instead.
-            if (entry.value_ptr.*.recv.fin_seen) state.quic_recv_fin_seen = true;
 
             self.processState(state, events, &budget) catch |err| {
                 if (!isLocalDrainBudgetError(err)) self.closeForError(err);
