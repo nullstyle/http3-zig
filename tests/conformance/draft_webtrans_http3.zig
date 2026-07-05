@@ -121,6 +121,31 @@ test "MUST: SETTINGS_WT_ENABLED uses the draft-15 codepoint 0x2c7cf000 [draft-ie
     try std.testing.expectEqual(@as(u64, 0x2c7cf000), http3_zig.protocol.SettingId.wt_enabled);
 }
 
+test "MUST: WT initial flow-control SETTINGS use the draft-15 codepoints [draft-ietf-webtrans-http3-15 §9.2]" {
+    // Draft-revision-specific codepoints for the initial per-session
+    // flow-control limits. Pinned numerically so a revision drift is loud.
+    try std.testing.expectEqual(@as(u64, 0x2b61), http3_zig.protocol.SettingId.wt_initial_max_data);
+    try std.testing.expectEqual(@as(u64, 0x2b64), http3_zig.protocol.SettingId.wt_initial_max_streams_uni);
+    try std.testing.expectEqual(@as(u64, 0x2b65), http3_zig.protocol.SettingId.wt_initial_max_streams_bidi);
+}
+
+test "MUST: WT initial flow-control SETTINGS round-trip through the SETTINGS codec [draft-ietf-webtrans-http3-15 §9.2]" {
+    const original: http3_zig.Settings = .{
+        .enable_connect_protocol = true,
+        .h3_datagram = true,
+        .wt_enabled = true,
+        .wt_initial_max_data = 262144,
+        .wt_initial_max_streams_uni = 16,
+        .wt_initial_max_streams_bidi = 8,
+    };
+    var buf: [64]u8 = undefined;
+    const n = try original.encode(&buf);
+    const decoded = try http3_zig.Settings.decode(buf[0..n]);
+    try std.testing.expectEqual(@as(?u64, 262144), decoded.wt_initial_max_data);
+    try std.testing.expectEqual(@as(?u64, 16), decoded.wt_initial_max_streams_uni);
+    try std.testing.expectEqual(@as(?u64, 8), decoded.wt_initial_max_streams_bidi);
+}
+
 test "MUST: bootstrap request uses :method = CONNECT and :protocol = webtransport [draft-ietf-webtrans-http3 §3.2]" {
     const request = [_]http3_zig.FieldLine{
         .{ .name = ":method", .value = "CONNECT" },

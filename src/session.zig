@@ -223,6 +223,18 @@ pub const ProductionOptions = struct {
     /// peer is now expected to use stream/transport flow control rather
     /// than a SETTINGS-advertised session count.
     enable_webtransport: bool = false,
+    /// Initial per-session WebTransport flow-control credit this endpoint
+    /// advertises via the draft-15 §9.2 SETTINGS
+    /// (`SETTINGS_WT_INITIAL_MAX_DATA` / `_STREAMS_UNI` / `_STREAMS_BIDI`).
+    /// When set, the peer may send up to this much data / open this many
+    /// streams on every WT session before an explicit capsule arrives —
+    /// and this endpoint enforces the limit on receive from session open.
+    /// `null` (the default) advertises nothing: no initial credit and no
+    /// receive-side enforcement until the application grants it with a
+    /// `WT_MAX_DATA` / `WT_MAX_STREAMS` capsule, preserving prior behavior.
+    wt_initial_max_data: ?u64 = null,
+    wt_initial_max_streams_uni: ?u64 = null,
+    wt_initial_max_streams_bidi: ?u64 = null,
     /// Policy for peer-opened WebTransport streams that arrive before
     /// the corresponding session has been confirmed
     /// (draft-ietf-webtrans-http3 §4.5).
@@ -345,6 +357,9 @@ pub const Config = struct {
                 .enable_connect_protocol = enable_connect_protocol,
                 .h3_datagram = enable_datagram,
                 .wt_enabled = options.enable_webtransport,
+                .wt_initial_max_data = options.wt_initial_max_data,
+                .wt_initial_max_streams_uni = options.wt_initial_max_streams_uni,
+                .wt_initial_max_streams_bidi = options.wt_initial_max_streams_bidi,
             },
             .qpack_encoder_table_capacity = options.qpack_encoder_table_capacity,
             .qpack_indexing = options.qpack_indexing,
@@ -1550,6 +1565,21 @@ pub const Session = struct {
         const flow = try self.allocator.create(WTSessionFlowState);
         errdefer self.allocator.destroy(flow);
         flow.* = .{ .session_id = stream_id };
+        // Seed draft-15 §9.2 initial flow-control credit from the SETTINGS
+        // exchange, so a session opens with limits already in force instead
+        // of waiting for the first WT_MAX_DATA / WT_MAX_STREAMS capsule. The
+        // values we advertised become the receive-side limits we enforce on
+        // the peer; the values the peer advertised gate our own sends. When
+        // a side advertised nothing the limit stays null (no enforcement),
+        // preserving the prior capsule-only behavior.
+        flow.local_max_data = self.local_settings.wt_initial_max_data;
+        flow.local_max_streams_uni = self.local_settings.wt_initial_max_streams_uni;
+        flow.local_max_streams_bidi = self.local_settings.wt_initial_max_streams_bidi;
+        if (self.peer_settings) |ps| {
+            flow.peer_max_data = ps.wt_initial_max_data;
+            flow.peer_max_streams_uni = ps.wt_initial_max_streams_uni;
+            flow.peer_max_streams_bidi = ps.wt_initial_max_streams_bidi;
+        }
         try self.wt_established_sessions.put(self.allocator, stream_id, flow);
     }
 

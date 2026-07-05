@@ -9,6 +9,22 @@ breaking changes; see notes per release.
 
 ## [Unreleased]
 
+### Added
+
+- **WebTransport initial flow-control SETTINGS (draft-ietf-webtrans-http3-15
+  §9.2).** `SETTINGS_WT_INITIAL_MAX_DATA` / `_STREAMS_UNI` / `_STREAMS_BIDI`
+  are now emitted, parsed, and wired into per-session flow control end to
+  end — previously they existed only as unused constants. Set
+  `ProductionOptions.wt_initial_max_data` / `wt_initial_max_streams_uni` /
+  `wt_initial_max_streams_bidi` (or the corresponding `Settings` fields) to
+  grant peers initial per-session credit, so a WebTransport session opens
+  with limits already in force instead of waiting for the first
+  `WT_MAX_DATA` / `WT_MAX_STREAMS` capsule. Each side's advertised values
+  become the receive-side limits it enforces; the peer's advertised values
+  gate its sends. Unset (`null`, the default) advertises nothing and
+  preserves the prior capsule-only behavior — no new enforcement unless you
+  opt in.
+
 ### Fixed
 
 - **Real-network WebTransport interop client now drives the QUIC

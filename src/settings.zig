@@ -23,6 +23,21 @@ pub const Settings = struct {
     /// draft revision this implementation pins to (`0x2c7cf000`).
     /// Both peers MUST send this for a session to bootstrap.
     wt_enabled: bool = false,
+    /// `SETTINGS_WT_INITIAL_MAX_DATA` (draft-ietf-webtrans-http3-15 §9.2):
+    /// the initial session-level `WT_MAX_DATA` this endpoint grants on
+    /// every WebTransport session, so the peer may send that many bytes
+    /// before an explicit `WT_MAX_DATA` capsule arrives — saving the
+    /// bootstrap round-trip. `null` = not advertised (no initial credit;
+    /// the peer must wait for a capsule).
+    wt_initial_max_data: ?u64 = null,
+    /// `SETTINGS_WT_INITIAL_MAX_STREAMS_UNI` (§9.2): initial limit on
+    /// peer-initiated unidirectional WT streams per session. `null` = not
+    /// advertised.
+    wt_initial_max_streams_uni: ?u64 = null,
+    /// `SETTINGS_WT_INITIAL_MAX_STREAMS_BIDI` (§9.2): initial limit on
+    /// peer-initiated bidirectional WT streams per session. `null` = not
+    /// advertised.
+    wt_initial_max_streams_bidi: ?u64 = null,
 
     pub fn encodedLen(self: Settings) usize {
         var n: usize = 0;
@@ -39,6 +54,15 @@ pub const Settings = struct {
         }
         if (self.wt_enabled) {
             n += settingEncodedLen(protocol.SettingId.wt_enabled, 1);
+        }
+        if (self.wt_initial_max_data) |v| {
+            n += settingEncodedLen(protocol.SettingId.wt_initial_max_data, v);
+        }
+        if (self.wt_initial_max_streams_uni) |v| {
+            n += settingEncodedLen(protocol.SettingId.wt_initial_max_streams_uni, v);
+        }
+        if (self.wt_initial_max_streams_bidi) |v| {
+            n += settingEncodedLen(protocol.SettingId.wt_initial_max_streams_bidi, v);
         }
         return n;
     }
@@ -59,6 +83,15 @@ pub const Settings = struct {
         if (self.wt_enabled) {
             pos += try put(dst[pos..], protocol.SettingId.wt_enabled, 1);
         }
+        if (self.wt_initial_max_data) |v| {
+            pos += try put(dst[pos..], protocol.SettingId.wt_initial_max_data, v);
+        }
+        if (self.wt_initial_max_streams_uni) |v| {
+            pos += try put(dst[pos..], protocol.SettingId.wt_initial_max_streams_uni, v);
+        }
+        if (self.wt_initial_max_streams_bidi) |v| {
+            pos += try put(dst[pos..], protocol.SettingId.wt_initial_max_streams_bidi, v);
+        }
         return pos;
     }
 
@@ -70,6 +103,9 @@ pub const Settings = struct {
         var seen_enable_connect_protocol = false;
         var seen_h3_datagram = false;
         var seen_wt_enabled = false;
+        var seen_wt_initial_max_data = false;
+        var seen_wt_initial_max_streams_uni = false;
+        var seen_wt_initial_max_streams_bidi = false;
 
         var pos: usize = 0;
         while (pos < src.len) {
@@ -120,6 +156,21 @@ pub const Settings = struct {
                     seen_wt_enabled = true;
                     out.wt_enabled = value >= 1;
                 },
+                protocol.SettingId.wt_initial_max_data => {
+                    if (seen_wt_initial_max_data) return Error.DuplicateSetting;
+                    seen_wt_initial_max_data = true;
+                    out.wt_initial_max_data = value;
+                },
+                protocol.SettingId.wt_initial_max_streams_uni => {
+                    if (seen_wt_initial_max_streams_uni) return Error.DuplicateSetting;
+                    seen_wt_initial_max_streams_uni = true;
+                    out.wt_initial_max_streams_uni = value;
+                },
+                protocol.SettingId.wt_initial_max_streams_bidi => {
+                    if (seen_wt_initial_max_streams_bidi) return Error.DuplicateSetting;
+                    seen_wt_initial_max_streams_bidi = true;
+                    out.wt_initial_max_streams_bidi = value;
+                },
                 else => {},
             }
         }
@@ -147,6 +198,9 @@ test "SETTINGS round-trip" {
         .enable_connect_protocol = true,
         .h3_datagram = true,
         .wt_enabled = true,
+        .wt_initial_max_data = 262144,
+        .wt_initial_max_streams_uni = 16,
+        .wt_initial_max_streams_bidi = 8,
     };
     var buf: [64]u8 = undefined;
     const n = try s.encode(&buf);
@@ -158,4 +212,29 @@ test "SETTINGS round-trip" {
     try std.testing.expect(got.enable_connect_protocol);
     try std.testing.expect(got.h3_datagram);
     try std.testing.expect(got.wt_enabled);
+    try std.testing.expectEqual(@as(?u64, 262144), got.wt_initial_max_data);
+    try std.testing.expectEqual(@as(?u64, 16), got.wt_initial_max_streams_uni);
+    try std.testing.expectEqual(@as(?u64, 8), got.wt_initial_max_streams_bidi);
+}
+
+test "SETTINGS omits unset WT initial flow-control values" {
+    const std = @import("std");
+    // Defaults (null) must not appear on the wire, and a peer that never
+    // sends them decodes back to null — no phantom zero limits.
+    const s: Settings = .{ .wt_enabled = true };
+    var buf: [64]u8 = undefined;
+    const n = try s.encode(&buf);
+    const got = try Settings.decode(buf[0..n]);
+    try std.testing.expectEqual(@as(?u64, null), got.wt_initial_max_data);
+    try std.testing.expectEqual(@as(?u64, null), got.wt_initial_max_streams_uni);
+    try std.testing.expectEqual(@as(?u64, null), got.wt_initial_max_streams_bidi);
+}
+
+test "SETTINGS rejects a duplicate WT initial flow-control value" {
+    const std = @import("std");
+    var buf: [32]u8 = undefined;
+    var pos: usize = 0;
+    pos += try put(buf[pos..], protocol.SettingId.wt_initial_max_data, 100);
+    pos += try put(buf[pos..], protocol.SettingId.wt_initial_max_data, 200);
+    try std.testing.expectError(Error.DuplicateSetting, Settings.decode(buf[0..pos]));
 }

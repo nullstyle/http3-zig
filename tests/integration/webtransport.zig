@@ -256,6 +256,109 @@ test "WebTransport over HTTP/3 establishes session, exchanges datagrams, and clo
     }
 }
 
+test "WebTransport session seeds initial flow-control credit from draft-15 §9.2 SETTINGS" {
+    const allocator = std.testing.allocator;
+    // Asymmetric limits so the seeding direction is unambiguous: each side's
+    // *advertised* values become the receive-side limits it enforces
+    // (`local_max_*`), and the peer's advertised values gate its sends
+    // (`peer_max_*`).
+    const client_settings: http3_zig.Settings = .{
+        .enable_connect_protocol = true,
+        .h3_datagram = true,
+        .wt_enabled = true,
+        .wt_initial_max_data = 1000,
+        .wt_initial_max_streams_uni = 5,
+        .wt_initial_max_streams_bidi = 3,
+    };
+    const server_settings: http3_zig.Settings = .{
+        .enable_connect_protocol = true,
+        .h3_datagram = true,
+        .wt_enabled = true,
+        .wt_initial_max_data = 2000,
+        .wt_initial_max_streams_uni = 7,
+        .wt_initial_max_streams_bidi = 4,
+    };
+
+    var pair: H3Pair = undefined;
+    try pair.initStarted(allocator, .{ .settings = client_settings }, .{ .settings = server_settings });
+    defer pair.deinit();
+    try exchangePairSettings(allocator, &pair);
+
+    var h3_client = http3_zig.Client.init(&pair.client_h3);
+    var h3_server = http3_zig.Server.init(&pair.server_h3);
+
+    var client_wt = try h3_client.startWebTransport(allocator, .{
+        .authority = "localhost",
+        .path = "/wt",
+    });
+    const session_id = client_wt.sessionId();
+
+    var server_runner = http3_zig.ServerRunner.init(allocator);
+    defer server_runner.deinit();
+
+    var client_events: std.ArrayList(http3_zig.session.Event) = .empty;
+    defer {
+        clearSessionEvents(allocator, &client_events);
+        client_events.deinit(allocator);
+    }
+    var server_events: std.ArrayList(http3_zig.session.Event) = .empty;
+    defer {
+        clearSessionEvents(allocator, &server_events);
+        server_events.deinit(allocator);
+    }
+
+    var server_wt: ?http3_zig.WebTransportServerStream = null;
+    var now_us: u64 = 1_000_000;
+    var iters: u32 = 0;
+    while (!(pair.server_h3.webTransportSessionState(session_id) == .established and
+        pair.client_h3.webTransportSessionState(session_id) == .established)) : (iters += 1)
+    {
+        try std.testing.expect(iters < 20_000);
+        try pumpH3(
+            &pair.client,
+            &pair.server,
+            &pair.client_h3,
+            &pair.server_h3,
+            &client_events,
+            &server_events,
+            &now_us,
+        );
+
+        for (server_events.items) |event| {
+            switch (try server_runner.observe(event)) {
+                .request_updated, .request_complete => |request_state| {
+                    const request = request_state.reader();
+                    if (server_wt == null and request.headers().len > 0) {
+                        server_wt = try h3_server.acceptWebTransport(allocator, request, .{});
+                    }
+                },
+                else => {},
+            }
+        }
+        clearSessionEvents(allocator, &server_events);
+        clearSessionEvents(allocator, &client_events);
+    }
+
+    // Server side: it enforces the 2000/7/4 it advertised on receive, and
+    // gates its own sends by the client's advertised 1000/5/3.
+    const s = pair.server_h3.webTransportFlowSnapshot(session_id).?;
+    try std.testing.expectEqual(@as(?u64, 2000), s.local_max_data);
+    try std.testing.expectEqual(@as(?u64, 7), s.local_max_streams_uni);
+    try std.testing.expectEqual(@as(?u64, 4), s.local_max_streams_bidi);
+    try std.testing.expectEqual(@as(?u64, 1000), s.peer_max_data);
+    try std.testing.expectEqual(@as(?u64, 5), s.peer_max_streams_uni);
+    try std.testing.expectEqual(@as(?u64, 3), s.peer_max_streams_bidi);
+
+    // Client side: the mirror image.
+    const c = pair.client_h3.webTransportFlowSnapshot(session_id).?;
+    try std.testing.expectEqual(@as(?u64, 1000), c.local_max_data);
+    try std.testing.expectEqual(@as(?u64, 5), c.local_max_streams_uni);
+    try std.testing.expectEqual(@as(?u64, 3), c.local_max_streams_bidi);
+    try std.testing.expectEqual(@as(?u64, 2000), c.peer_max_data);
+    try std.testing.expectEqual(@as(?u64, 7), c.peer_max_streams_uni);
+    try std.testing.expectEqual(@as(?u64, 4), c.peer_max_streams_bidi);
+}
+
 test "WebTransport unidirectional streams flow through the inbound dispatch path" {
     const allocator = std.testing.allocator;
     const h3_settings: http3_zig.Settings = .{
