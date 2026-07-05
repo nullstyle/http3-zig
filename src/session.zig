@@ -1038,15 +1038,6 @@ pub const Session = struct {
     peer_goaway_id: ?u64 = null,
     peer_max_push_id: ?u64 = null,
     next_push_id: u64 = 0,
-    /// Reap-safe floor for locally-initiated bidi stream-id allocation.
-    /// quic-zig 0.4.0 reaps terminal streams, so scanning its live stream
-    /// table for a free id (as `nextLocalBidiId` does) would reuse a reaped
-    /// request id — silently defeating GOAWAY gating (a new request would
-    /// get a low, already-past id instead of the next one). This monotonic
-    /// high-water mark (highest local bidi id issued, plus 4) floors the
-    /// scan so ids never move backward. Uni streams don't need this — they
-    /// use quic-zig's own reap-safe `openNextUni` counter.
-    next_local_bidi_floor: u64 = 0,
     shutdown_state: ShutdownState = .active,
     last_close_error: ?errors_mod.ConnectionError = null,
     metrics_counters: observability_mod.Metrics = .{},
@@ -1188,11 +1179,14 @@ pub const Session = struct {
         try self.start();
         try self.ensureExtendedConnectAllowed(fields);
 
-        const id = self.nextLocalBidiId(0);
+        // peekNextBidi (quic-zig 0.5.0) returns the id openNextBidi would use,
+        // without consuming it, so the GOAWAY gate runs on the real next id
+        // before we open — and it is reap-safe (a monotonic counter, not a
+        // scan of the live stream table that could reuse a reaped id).
+        const id = self.quic.peekNextBidi();
         if (!self.peerAllowsRequest(id)) return Error.RequestBlockedByGoaway;
 
-        _ = try self.quic.openBidi(id);
-        self.recordLocalBidiOpened(id);
+        _ = try self.quic.openNextBidi();
         const state = try self.ensureMessageState(id, .response, .request);
         const encoder = try self.ensureEncoder(state, .request);
         try self.writeHeadersWithEncoder(id, encoder, fields);
@@ -1265,9 +1259,8 @@ pub const Session = struct {
         try self.start();
         try self.gateWebTransportStreamOpen(session_id, .bidi);
 
-        const stream_id = self.nextLocalBidiId(0);
-        _ = try self.quic.openBidi(stream_id);
-        self.recordLocalBidiOpened(stream_id);
+        // openNextBidi (quic-zig 0.5.0): reap-safe next local bidi id.
+        const stream_id = (try self.quic.openNextBidi()).id;
         errdefer self.quic.streamReset(stream_id, protocol.ErrorCode.internal_error) catch {};
 
         const state = try self.createState(stream_id);
@@ -4491,26 +4484,6 @@ pub const Session = struct {
     fn ensureStreamSendCapacity(self: *const Session, stream_id: u64, additional_bytes: usize) Error!void {
         if (try self.canBufferStreamBytes(stream_id, additional_bytes)) return;
         return Error.SendBufferFull;
-    }
-
-    fn nextLocalBidiId(self: *const Session, first_id: u64) u64 {
-        const low_bits: u64 = switch (self.role) {
-            .client => 0b00,
-            .server => 0b01,
-        };
-        var id = (first_id & ~@as(u64, 0b11)) | low_bits;
-        // Floor at the reap-safe high-water mark so a reaped id is never
-        // reused (see `next_local_bidi_floor`), then skip any still-live id.
-        if (id < self.next_local_bidi_floor) id = self.next_local_bidi_floor;
-        while (self.quic.stream(id) != null) id += 4;
-        return id;
-    }
-
-    /// Advance the reap-safe bidi floor past `id` after a successful local
-    /// bidi open, so `nextLocalBidiId` never hands the id out again even once
-    /// quic-zig reaps the stream from its live table.
-    fn recordLocalBidiOpened(self: *Session, id: u64) void {
-        self.next_local_bidi_floor = @max(self.next_local_bidi_floor, id + 4);
     }
 
     fn observeGoaway(self: *Session, id: u64) Error!void {
