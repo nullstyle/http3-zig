@@ -14,13 +14,12 @@ See the [README](README.md) for the current capability surface and the
 
 - **Third-party interop.** The in-tree self-tests — HTTP/3 and WebTransport,
   http3-zig client ↔ http3-zig server over a real UDP socket — gate every
-  push. Interop against foreign servers (quic-go, ngtcp2, lsquic, aioquic,
-  and Chromium/curl) has skip-friendly harnesses under [`interop/`](interop/)
-  but is not yet green in CI: standing up real servers is open work and the
-  matrix remains advisory. WebTransport now completes the full protocol flow
-  against webtransport-go; the remaining webtransport-go issue is a
-  post-success harness clean-shutdown timeout (see
-  [`docs/wt-third-party-interop.md`](docs/wt-third-party-interop.md)).
+  push. The WebTransport foreign-peer matrix now brings up pinned
+  webtransport-go and pywebtransport peers in CI and is green on the v0.4.8
+  line, but it remains advisory while third-party peer setup is still treated
+  as flake-prone. HTTP/3 foreign-server coverage (quic-go, ngtcp2, lsquic,
+  aioquic, Chromium/curl) has skip-friendly harnesses under
+  [`interop/`](interop/) and remains future scope.
 
 - **QPACK dynamic-table cross-implementation coverage.** The dynamic-table
   fixture corpus (RFC 9204 Appendix B exact bytes) is pinned in-tree; binding

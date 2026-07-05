@@ -3,23 +3,21 @@
 ## Status
 
 The `wt-interop` GitHub Actions workflow runs http3-zig's external-WT client
-against unmodified third-party WebTransport servers, primarily
-`webtransport-go` (Go, quic-go core).
+against unmodified third-party WebTransport servers: `webtransport-go` (Go,
+quic-go core) and `pywebtransport` (Python over a Rust core).
 
-**The full WebTransport flow now completes against webtransport-go** —
-SETTINGS exchange, Extended CONNECT (200), a datagram round-trip, a
-client-initiated uni stream, and `CLOSE_WEBTRANSPORT_SESSION`. Two fixes got
-it there (see below). The only residual is the harness's final phase — a
-clean-shutdown read that still times out (`HarnessTimedOut`) *after* the
-protocol exchange has succeeded; that's a harness-exit nuance, not a protocol
-failure.
+**The full WebTransport flow now completes against the in-repo third-party
+peers** — SETTINGS exchange, Extended CONNECT (200), a datagram round-trip, a
+client-initiated uni stream, and `CLOSE_WEBTRANSPORT_SESSION`. The v0.4.8
+`main` CI rollup is green for the WT matrix as well as the hard in-tree WT
+self-test.
 
-http3-zig pins **quic-zig v0.6.1**, which carries the
+http3-zig pins **quic-zig v0.7.5**, which carries the
 `initial_source_connection_id` fix, so the handshake completes. The
-third-party matrix stays `continue-on-error: true` — building and running an
-external Go server in CI is inherently flaky, so the in-tree self-test
+third-party matrix stays `continue-on-error: true` — building and running
+external peers in CI is still treated as flake-prone, so the in-tree self-test
 (`wt-interop-self-test.yml`) remains the hard gate while the foreign-peer
-matrix is advisory.
+matrix is advisory signal.
 
 ## Root cause (resolved)
 
@@ -55,8 +53,8 @@ go build -C interop/external_wt/server_go -o /tmp/wt-go-server .
   > /tmp/wt-go.log 2>&1 &
 PORT=$(awk '/^READY / {print $2; exit}' /tmp/wt-go.log)
 
-# Against a quic-zig that carries the ISCID fix, this progresses through
-# SETTINGS, CONNECT (200), a datagram round-trip, a uni stream, and CLOSE.
+# Against the pinned quic-zig release, this progresses through SETTINGS,
+# CONNECT (200), a datagram round-trip, a uni stream, and CLOSE.
 WT_INTEROP_URL="https://127.0.0.1:$PORT/wt-go-interop" \
   ./zig-out/bin/http3-zig-external-wt-client --max-time-ms 8000
 ```

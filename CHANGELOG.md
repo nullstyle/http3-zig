@@ -9,6 +9,12 @@ breaking changes; see notes per release.
 
 ## [Unreleased]
 
+### Changed
+
+- Refreshed roadmap and WebTransport interop notes to match the v0.4.8 line:
+  `quic-zig` is pinned at v0.7.5, in-tree H3/WT self-tests are hard gates, and
+  the third-party WT matrix is green but still advisory.
+
 ## [0.4.8] - 2026-07-05
 
 ### Fixed
