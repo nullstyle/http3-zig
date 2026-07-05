@@ -1,5 +1,4 @@
-//! WebTransport-over-HTTP/3 helpers
-//! (draft-ietf-webtrans-http3-15, July 2025 revision).
+//! WebTransport-over-HTTP/3 helpers (draft-ietf-webtrans-http3-15).
 //!
 //! This module covers the protocol primitives that sit on top of the
 //! existing Extended CONNECT, HTTP/3 Datagrams, and Capsule Protocol

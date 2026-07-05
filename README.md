@@ -139,8 +139,7 @@ Decision rule:
   because the server cannot ask the client to stop sending the
   request body without a RESET, which is what `reset` already does.)
 - **bidirectional abort** (both sides) → `try self.abort(); try
-  self.cancel();`. A future `bidiAbort()` helper is on the v0.4
-  roadmap.
+  self.cancel();`.
 
 For the WebTransport-specific subset (CONNECT control stream vs WT
 substream vs WT-session-level capsule close) see
@@ -148,31 +147,34 @@ substream vs WT-session-level capsule close) see
 
 ## Status
 
-**Status: session scaffold.** The package now provides the stable protocol
-surfaces plus a first HTTP/3 session layer over `quic-zig.Connection`: HTTP/3
-constants, SETTINGS and frame codecs, non-blocking QPACK field-section
-encoding/decoding with static-table, Huffman string, and dynamic table core
-support plus dynamic field-section representations, encoder/decoder stream
-instruction codecs, state-sync accounting, and configurable indexing policy,
-header validation, Priority field parsing, HTTP/3 PRIORITY_UPDATE hooks, TLS context helpers,
-transport-free message codecs, critical stream setup, SETTINGS exchange,
-opt-in dynamic QPACK stream integration, GOAWAY handling, graceful-drain state,
-reset events, transport close events, structured HTTP/3/QPACK error
-classification, QUIC flow-control blocked observability, HTTP/3 DATAGRAM
-send/receive groundwork, reusable transport driver helpers, request lifecycle
-tracking, response lifecycle tracking, client/server event runners, Extended
-CONNECT negotiation and request metadata, Capsule Protocol codecs,
-context-aware DATAGRAM helpers, WebSocket-over-HTTP/3 tunnel helpers, HTTP/3
-trace callbacks and metrics snapshots, TLS keylog / QUIC qlog passthrough
-hooks, CONNECT-UDP receiver helpers, context registry, receive dispositions,
-bounded unknown-context datagram buffering, Context ID allocation checks,
-and UDP payload limits, first server-push support with `MAX_PUSH_ID`,
-`PUSH_PROMISE`, push streams, `CANCEL_PUSH`, duplicate-promise validation, and
-client push policy, opt-in send-buffer backpressure limits, and lightweight
-request-response facades with configurable tracker body and session event-queue
-budgets. `SessionConfig.production(.{})` provides an opt-in conservative
-session preset with bounded field sections, decoded QPACK storage, event
-payloads, reliable capsules, datagrams, and send buffering.
+http3-zig is a pre-1.0 HTTP/3 session layer over `quic-zig.Connection`. It
+provides:
+
+- **Protocol codecs** — HTTP/3 constants, SETTINGS and frame codecs,
+  transport-free message codecs, header validation, TLS context helpers, and
+  Priority field / `PRIORITY_UPDATE` parsing.
+- **QPACK** — non-blocking field-section encoding/decoding with the static
+  table, Huffman strings, and dynamic-table support: encoder/decoder stream
+  instruction codecs, state-sync accounting, configurable indexing policy,
+  and opt-in dynamic-stream integration.
+- **Session lifecycle** — critical-stream setup and SETTINGS exchange,
+  request/response lifecycle tracking, client/server event runners, reusable
+  transport-driver helpers, GOAWAY handling, graceful-drain state, reset and
+  transport-close events, and structured HTTP/3/QPACK error classification.
+- **Extensions** — Extended CONNECT negotiation and request metadata, Capsule
+  Protocol codecs, HTTP/3 DATAGRAM send/receive with a context registry,
+  receive dispositions, bounded unknown-context buffering and Context ID
+  allocation checks, WebSocket-over-HTTP/3 tunnel helpers, and CONNECT-UDP
+  receiver helpers.
+- **Server push** — `MAX_PUSH_ID`, `PUSH_PROMISE`, push streams,
+  `CANCEL_PUSH`, duplicate-promise validation, and client push policy.
+- **Observability & limits** — trace callbacks and metrics snapshots, TLS
+  keylog / QUIC qlog passthrough, QUIC flow-control blocked observability,
+  opt-in send-buffer backpressure, and UDP payload limits.
+
+`SessionConfig.production(.{})` provides a conservative preset with bounded
+field sections, decoded QPACK storage, event payloads, reliable capsules,
+datagrams, and send buffering.
 
 ```sh
 mise install

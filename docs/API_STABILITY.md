@@ -58,9 +58,9 @@ but changes will be deliberate, called out in `CHANGELOG.md`, and kept minimal.
   `ProductionOptions` (size caps, flow-control knobs, policy enums) will be
   normalized before 1.0. New `Config` fields are always added with
   production-safe defaults.
-- **Recently added surfaces** — e.g. the DoS hardening knobs
-  (`max_incoming_frame_length`) and the 0.5.0 accessor adoptions — may see
-  minor signature or naming refinement.
+- **Newly added surfaces** — e.g. the DoS hardening knobs
+  (`max_incoming_frame_length`) — may see minor signature or naming
+  refinement as they are exercised for the first time.
 
 ### Internal — do not depend on
 

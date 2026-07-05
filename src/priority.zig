@@ -2,7 +2,7 @@
 //!
 //! This is intentionally small: it extracts the standard `u` urgency and
 //! `i` incremental parameters from the Structured Fields dictionary form and
-//! ignores extension parameters for now.
+//! ignores extension parameters.
 //!
 //! Per RFC 9218 §4 ¶7, "Unknown priority parameters, priority parameters with
 //! out-of-range values, or values of unexpected types MUST be ignored." The

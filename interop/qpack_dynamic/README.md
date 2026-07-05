@@ -3,11 +3,10 @@
 This directory contains exact-byte dynamic-table QPACK vectors for http3-zig's
 transport-free interop runner.
 
-The current Go peer in `../qpack_quic_go` remains useful for the shared
-static/literal/Huffman profile, but `github.com/quic-go/qpack` v0.6.0 does not
-expose dynamic-table encoder/decoder stream support. These fixtures therefore
-pin the dynamic contract in http3-zig now, using RFC 9204 Appendix B bytes that a
-future peer can mirror directly.
+The Go peer in `../qpack_quic_go` covers the shared static/literal/Huffman
+profile. Since `github.com/quic-go/qpack` v0.6.0 does not expose dynamic-table
+encoder/decoder stream support, these fixtures pin the dynamic-table contract
+using RFC 9204 Appendix B bytes that another implementation can mirror directly.
 
 Run them with:
 

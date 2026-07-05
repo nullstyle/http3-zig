@@ -79,5 +79,5 @@ operator notes.
 
 ## Pull requests
 
-- Don't.  This is extensively vibe-coded at the moment and probably
-  shouldn't be used by anyone but me.
+- This project is actively developed by its maintainer. Please open an
+  issue to discuss a proposed change before submitting a pull request.

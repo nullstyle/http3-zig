@@ -7,7 +7,7 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 once it reaches 1.0. Until then, any release in the `0.x` line may include
 breaking changes; see notes per release.
 
-## [Unreleased] — v0.4.0 candidate
+## [Unreleased]
 
 ### Fixed
 
@@ -61,19 +61,6 @@ breaking changes; see notes per release.
   carries `continue-on-error: true`. The per-push real-socket gate
   (`wt-interop-self-test.yml`) remains hard-gating; third-party
   interop is advisory until the gap doc's investigation lands.
-
-### Pending (cross-repo)
-
-- **quic-zig streams-map GC** — implemented in
-  `/Users/nullstyle/prj/ai-workspace/quic-zig` (uncommitted there)
-  but NOT yet picked up by http3-zig. Bumping the dependency hash
-  requires either a tagged quic-zig release or accepting the
-  unrelated `ConnectionEvent.alternative_server_address` API
-  addition that's accumulated since `f46137b`. Per-iter mem-profile
-  delta from this fix is still TBD; expected to drop the residual
-  ~2.2 KiB/iter that v0.3's http3-side GC couldn't reach.
-
-## [Unreleased] — v0.3.0 candidate
 
 ### Performance / correctness (memory)
 
@@ -175,7 +162,7 @@ breaking changes; see notes per release.
   - `webtransport.flow_control_error_code` = `0x045d4487`.
   - `webtransport.alpn_error_code` = `0x0817b3dd`.
   - `webtransport.requirements_not_met_code` = `0x212c0d48`.
-  Audit doc: [`docs/error-code-audit-v0.2.md`](docs/error-code-audit-v0.2.md).
+  Audit doc: [`design/error-code-audit-v0.2.md`](design/error-code-audit-v0.2.md).
 
 ### Added (test coverage)
 
@@ -219,13 +206,13 @@ breaking changes; see notes per release.
   baseline for regression tracking, not optimization targets.
   Run via `zig build bench -Doptimize=ReleaseFast`.
 
-- **[`docs/error-code-audit-v0.2.md`](docs/error-code-audit-v0.2.md)** —
+- **[`design/error-code-audit-v0.2.md`](design/error-code-audit-v0.2.md)** —
   exhaustive comparison of our wire constants vs.
   draft-ietf-webtrans-http3-15 §9. 17 items audited; 6 drift items
   (now closed by the additions above); zero codepoint mismatches on
   the values we emit.
 
-- **[`docs/api-narrowing-proposal.md`](docs/api-narrowing-proposal.md)** —
+- **[`design/api-narrowing-proposal.md`](design/api-narrowing-proposal.md)** —
   audit of duplicate / redundant API paths with v0.3 / v0.4
   recommendations. Identifies five clusters (datagram sends, lifecycle
   verbs, stream-open paths, trackers vs raw events, re-exports).
@@ -239,16 +226,16 @@ breaking changes; see notes per release.
   canonical `finish` method with identical wire effect; `finishSend`
   remains as an alias and will be removed in v0.4. Migration is a
   one-character rename. Rationale:
-  [`docs/api-narrowing-proposal.md`](docs/api-narrowing-proposal.md).
+  [`design/api-narrowing-proposal.md`](design/api-narrowing-proposal.md).
 
 - **`WTStreamDirection` is deprecated, now an alias for
   `webtransport.StreamKind`.** Will be removed in v0.4. Migration:
   use `webtransport.StreamKind` (re-exported as
-  `WebTransportStreamKind`) directly. Note: the underlying enum order
-  is `{ uni, bidi }`, the reverse of the original
-  `WTStreamDirection { bidi, uni }` declaration. No call site in this
-  repo serialized the enum via `@intFromEnum`, so the rename is
-  source-compatible at the switch / constant-construction level.
+  `WebTransportStreamKind`) directly. Note: `StreamKind`'s order is
+  `{ uni, bidi }`, reversed from the deprecated alias's
+  `{ bidi, uni }`. No call site in this repo serialized the enum via
+  `@intFromEnum`, so the rename is source-compatible at the switch /
+  constant-construction level.
 
 ### Performance
 
@@ -257,14 +244,9 @@ breaking changes; see notes per release.
 
 ## [0.2.0]
 
-(Tagged at commit `2ce728f`.)
-
-The Unreleased section below documents Round 4 + Round 5 work folded
-into v0.1.0 and v0.2.0; the precise per-tag attribution is best read
-from `git log v0.1.0..v0.2.0` until this CHANGELOG is restructured to
-match the actual release cadence.
-
-## [Unreleased]
+Tagged at commit `2ce728f`. This section covers the 0.1.0 and 0.2.0
+releases together; see `git log v0.1.0..v0.2.0` for precise per-tag
+attribution.
 
 ### Added
 
@@ -302,9 +284,8 @@ match the actual release cadence.
   - Server-side N+1 session-rejection enforcement removed
     (applications can still bound concurrent sessions in
     `Server.acceptWebTransport`).
-  - Dual-peer interop in CI: webtransport-go (master pseudo-version
-    pending a tagged release post-PR #254) + pywebtransport v0.17.1
-    (the only Python facade currently shipping draft-15).
+  - Dual-peer interop in CI: webtransport-go (draft-15 via master) +
+    pywebtransport v0.17.1 (a Python facade shipping draft-15).
 
 - **Removed `recordPeerDataReceived` from the public WT API.** The
   session auto-bumps `peer_data_received` as it surfaces

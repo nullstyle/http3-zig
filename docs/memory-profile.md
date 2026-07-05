@@ -65,34 +65,22 @@ opened (ack-range / packet-number history, the reaped-stream watermark
 bitsets, and similar), not a leak — the detector is clean and everything
 is freed at teardown.
 
-## History: the cross-layer leak, now closed
+## Stream bookkeeping is reclaimed on both layers
 
-This harness originally measured **≈ 2 755 bytes/iter** of monotonic
-growth from never-removed per-stream bookkeeping on **both** layers — the
-http3 `Session.streams` map and the quic-zig `Connection.streams` map each
-kept a permanent entry (and its `rx` / recv-reassembly / send-chunk
-buffers) for every stream ever opened, freed only at whole-connection
-teardown.
+Per-stream bookkeeping does not accumulate for the life of a connection.
+Both layers reclaim a stream's state once it is terminal:
 
-It was closed in two steps:
+1. **http3 side:** `Session.gcClosedStreams`, called at the tail of every
+   `drain`, reclaims a `StreamState` once both directions are terminal
+   (driven by `StreamState.locally_finished` plus the recv-side flags).
+2. **quic-zig side:** a `gcClosedStreams` pass at the tail of `tick`
+   `fetchRemove`s a stream (and its `rx` / recv-reassembly / send-chunk
+   buffers) once its recv side (peer-initiated) or send side
+   (locally-initiated) is terminal.
 
-1. **http3 side:** `Session.gcClosedStreams` (called at the tail of every
-   `drain`) reclaims a `StreamState` once both directions are terminal,
-   driven by `StreamState.locally_finished` plus the recv-side flags. That
-   took the figure to ≈ 2 239 bytes/iter and left the rest one layer down.
-2. **quic-zig side:** the residual required quic-zig to stop retaining
-   terminal streams. quic-zig **0.3.0+** added exactly that — a
-   `gcClosedStreams` pass at the tail of `tick` that `fetchRemove`s a
-   stream once its recv side (peer-initiated) or send side
-   (locally-initiated) is terminal. Building http3-zig against **quic-zig
-   0.4.0** picks up that reaping and drops the figure to the ≈ 243
-   bytes/iter above. (Adapting the http3 drain loop to that reaping — it
-   can no longer rely on `streamIterator` re-yielding a parked stream — is
-   the subject of the 0.4.0 upgrade commit.)
-
-An earlier revision of this file predicted the quic-side fix as "deferred
-to a follow-up release"; that release is quic-zig 0.4.0, and this trace is
-it landing.
+Without both, a long-lived connection would grow O(N) in the total number
+of streams it has ever opened, since each map would keep a permanent entry
+freed only at whole-connection teardown.
 
 ## Regression gate
 
