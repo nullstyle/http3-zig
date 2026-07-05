@@ -163,10 +163,10 @@ pub const ProductionOptions = struct {
     qpack_blocked_streams: u64 = 16,
     qpack_encoder_table_capacity: usize = 0,
     qpack_indexing: qpack.IndexingPolicy = qpack.IndexingPolicy.static_only,
-    qpack_huffman: bool = true,
+    enable_qpack_huffman: bool = true,
     max_field_lines: usize = 128,
     max_decoded_field_section_bytes: usize = 128 * 1024,
-    max_field_section_size: usize = 64 * 1024,
+    max_field_section_size: u64 = 64 * 1024,
     /// Declared-length cap for incoming non-DATA frames (see
     /// `Config.max_incoming_frame_length`). 128 KiB comfortably clears the
     /// 64 KiB `max_field_section_size` while bounding control/GREASE frames.
@@ -236,7 +236,7 @@ pub const Config = struct {
     /// Literal/static QPACK does not require encoder/decoder streams. Dynamic
     /// QPACK enables them automatically; this flag keeps the explicit stream
     /// setup available for peers and tests that expect the streams to exist.
-    open_qpack_streams: bool = false,
+    enable_qpack_streams: bool = false,
     /// Maximum dynamic table capacity this endpoint will use as an encoder.
     /// The effective capacity is also bounded by the peer's
     /// SETTINGS_QPACK_MAX_TABLE_CAPACITY.
@@ -244,14 +244,14 @@ pub const Config = struct {
     /// Static-only by default. Set dynamic insert/reference modes to opt into
     /// QPACK encoder-stream instructions and dynamic field-section references.
     qpack_indexing: qpack.IndexingPolicy = qpack.IndexingPolicy.static_only,
-    qpack_huffman: bool = false,
+    enable_qpack_huffman: bool = false,
     /// Optional cap on decoded QPACK field-line count per field section.
     max_field_lines: ?usize = null,
     /// Optional cap on decoded field names/values plus field-line storage per
     /// QPACK field section. This is separate from `max_field_section_size`,
     /// which limits encoded HEADERS payload bytes.
     max_decoded_field_section_bytes: ?usize = null,
-    max_field_section_size: ?usize = null,
+    max_field_section_size: ?u64 = null,
     /// Optional cap on the DECLARED length of an incoming non-DATA HTTP/3
     /// frame (SETTINGS/GOAWAY/CANCEL_PUSH/MAX_PUSH_ID/PRIORITY_UPDATE and
     /// unknown/GREASE frames; HEADERS/PUSH_PROMISE are additionally bounded
@@ -341,14 +341,14 @@ pub const Config = struct {
             .settings = .{
                 .qpack_max_table_capacity = options.qpack_decoder_table_capacity,
                 .qpack_blocked_streams = options.qpack_blocked_streams,
-                .max_field_section_size = @intCast(options.max_field_section_size),
+                .max_field_section_size = options.max_field_section_size,
                 .enable_connect_protocol = enable_connect_protocol,
                 .h3_datagram = enable_datagram,
                 .wt_enabled = options.enable_webtransport,
             },
             .qpack_encoder_table_capacity = options.qpack_encoder_table_capacity,
             .qpack_indexing = options.qpack_indexing,
-            .qpack_huffman = options.qpack_huffman,
+            .enable_qpack_huffman = options.enable_qpack_huffman,
             .max_field_lines = options.max_field_lines,
             .max_decoded_field_section_bytes = options.max_decoded_field_section_bytes,
             .max_field_section_size = options.max_field_section_size,
@@ -3113,12 +3113,12 @@ pub const Session = struct {
         // matching the post-decode guard on decodeFieldSectionForStream.
         if (frame_type == protocol.FrameType.headers) {
             if (self.config.max_field_section_size) |max| {
-                if (declared_len > @as(u64, @intCast(max))) return Error.HeaderSectionTooLarge;
+                if (declared_len > max) return Error.HeaderSectionTooLarge;
             }
         } else if (frame_type == protocol.FrameType.push_promise) {
             if (self.config.max_field_section_size) |max| {
                 // payload = push_id varint (<= 8 bytes) + field section.
-                if (declared_len > @as(u64, @intCast(max)) +| 8) return Error.HeaderSectionTooLarge;
+                if (declared_len > max +| 8) return Error.HeaderSectionTooLarge;
             }
         }
 
@@ -4443,7 +4443,7 @@ pub const Session = struct {
         if (!self.canUseDynamicQpackEncoder()) return false;
         if (!(try self.syncQpackEncoderCapacity())) return false;
 
-        const max_instruction_len = qpackEncoderInstructionsMaxLen(fields, self.config.qpack_huffman);
+        const max_instruction_len = qpackEncoderInstructionsMaxLen(fields, self.config.enable_qpack_huffman);
         if (max_instruction_len == 0) return true;
 
         const instruction_buf = try self.allocator.alloc(u8, max_instruction_len);
@@ -4480,7 +4480,7 @@ pub const Session = struct {
         stream_id: u64,
     ) qpack.DynamicFieldSectionEncodeOptions {
         return .{
-            .huffman = self.config.qpack_huffman,
+            .huffman = self.config.enable_qpack_huffman,
             .tracker = .{
                 .encoder_state = &self.qpack_encoder_state,
                 .stream_id = stream_id,
@@ -4507,7 +4507,7 @@ pub const Session = struct {
     }
 
     fn usesQpackStreams(self: *const Session) bool {
-        return self.config.open_qpack_streams or
+        return self.config.enable_qpack_streams or
             self.receivesDynamicQpack() or
             self.config.qpack_encoder_table_capacity > 0 or
             self.hasDynamicQpackIndexing();
@@ -5351,7 +5351,7 @@ test "production config applies bounded defaults and feature opt-ins" {
     try std.testing.expect(!config.settings.h3_datagram);
     try std.testing.expectEqual(@as(?usize, 128), config.max_field_lines);
     try std.testing.expectEqual(@as(?usize, 128 * 1024), config.max_decoded_field_section_bytes);
-    try std.testing.expectEqual(@as(?usize, 64 * 1024), config.max_field_section_size);
+    try std.testing.expectEqual(@as(?u64, 64 * 1024), config.max_field_section_size);
     try std.testing.expectEqual(@as(usize, 16 * 1024), config.max_data_frame_payload);
     try std.testing.expectEqual(@as(usize, 16 * 1024), config.max_datagram_payload_size);
     try std.testing.expectEqual(@as(?usize, 64 * 1024), config.max_capsule_value_size);

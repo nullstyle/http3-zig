@@ -584,8 +584,8 @@ test "MUST close with H3_STREAM_CREATION_ERROR when a peer opens a second QPACK 
     var pair: fixture.H3Pair = undefined;
     try pair.initStarted(
         allocator,
-        .{ .open_qpack_streams = true },
-        .{ .open_qpack_streams = true },
+        .{ .enable_qpack_streams = true },
+        .{ .enable_qpack_streams = true },
     );
     defer pair.deinit();
 
@@ -601,8 +601,8 @@ test "MUST close with H3_STREAM_CREATION_ERROR when a peer opens a second QPACK 
     var pair: fixture.H3Pair = undefined;
     try pair.initStarted(
         allocator,
-        .{ .open_qpack_streams = true },
-        .{ .open_qpack_streams = true },
+        .{ .enable_qpack_streams = true },
+        .{ .enable_qpack_streams = true },
     );
     defer pair.deinit();
 
@@ -732,8 +732,8 @@ test "MUST close with H3_CLOSED_CRITICAL_STREAM when the peer closes the QPACK e
     var pair: fixture.H3Pair = undefined;
     try pair.initStarted(
         allocator,
-        .{ .open_qpack_streams = true },
-        .{ .open_qpack_streams = true },
+        .{ .enable_qpack_streams = true },
+        .{ .enable_qpack_streams = true },
     );
     defer pair.deinit();
 
@@ -751,8 +751,8 @@ test "MUST close with H3_CLOSED_CRITICAL_STREAM when the peer closes the QPACK d
     var pair: fixture.H3Pair = undefined;
     try pair.initStarted(
         allocator,
-        .{ .open_qpack_streams = true },
-        .{ .open_qpack_streams = true },
+        .{ .enable_qpack_streams = true },
+        .{ .enable_qpack_streams = true },
     );
     defer pair.deinit();
 

@@ -822,7 +822,7 @@ test "MUST record the peer-observed GOAWAY id on Session.peer_goaway_id [RFC9114
 test "MUST open the QPACK encoder + decoder critical streams when configured [RFC9114 §6.2.1 ¶? + RFC9204 §4.2 ¶?]" {
     // The QPACK encoder/decoder streams are critical streams in the
     // RFC 9204 sense; http3_zig.Session.start opens them when
-    // open_qpack_streams is set. Verify the stream ids are populated
+    // enable_qpack_streams is set. Verify the stream ids are populated
     // and follow the local-uni id pattern (low bits 0b10 for client,
     // 0b11 for server).
     const allocator = std.testing.allocator;
@@ -830,8 +830,8 @@ test "MUST open the QPACK encoder + decoder critical streams when configured [RF
     var pair: fixture.H3Pair = undefined;
     try pair.initStarted(
         allocator,
-        .{ .open_qpack_streams = true },
-        .{ .open_qpack_streams = true },
+        .{ .enable_qpack_streams = true },
+        .{ .enable_qpack_streams = true },
     );
     defer pair.deinit();
 

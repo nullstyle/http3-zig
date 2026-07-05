@@ -793,7 +793,7 @@ pub const Server = struct {
         /// section. `null` preserves the legacy unbounded behaviour.
         /// Mirrors `session_mod.Config.max_field_section_size` (it is
         /// also re-advertised via SETTINGS when this knob is set).
-        max_field_section_size: ?usize = null,
+        max_field_section_size: ?u64 = null,
 
         /// Cap on bytes a single peer-opened WebTransport stream may
         /// buffer while waiting for its session under
@@ -905,7 +905,7 @@ pub const Server = struct {
                 .max_pending_wt_sessions = self.max_pending_wt_sessions,
             };
             if (self.max_field_section_size) |max| {
-                session_config.settings.max_field_section_size = @intCast(max);
+                session_config.settings.max_field_section_size = max;
             }
             return session_config;
         }

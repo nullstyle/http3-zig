@@ -34,6 +34,29 @@ breaking changes; see notes per release.
   toolchain. Fixed all three; the client now completes a full HTTP/3
   request/response against the in-tree `curl-h3` server over loopback.
 
+### Security (hardening)
+
+- **Capped four adversarial-reachable session maps** a hostile peer could
+  grow without bound: `received_push_promises`, `request_priorities`,
+  `push_priorities`, and `wt_pending_sessions`. New `Config` caps
+  (`max_tracked_priorities`, `max_tracked_push_promises`,
+  `max_pending_wt_sessions`) are wired into the production presets
+  (1024/256/256). Priority floods drop the excess update (advisory,
+  RFC 9218 §7); push-promise and WebTransport-session floods close with
+  H3_EXCESSIVE_LOAD.
+
+### Changed (BREAKING)
+
+- **`Config` naming + type consistency (pre-1.0 cleanup).**
+  - `qpack_huffman` → `enable_qpack_huffman` and `open_qpack_streams` →
+    `enable_qpack_streams`, aligning on/off toggles under the `enable_`
+    prefix used by `enable_connect_protocol` / `enable_datagram` /
+    `enable_webtransport`.
+  - `Config.max_field_section_size` (and the `Client.Config` /
+    `Server.Config` / message-codec mirrors) is now `?u64` instead of
+    `?usize`, matching the wire type in `Settings`. On 64-bit targets this
+    is source-compatible for integer-literal callers.
+
 ### Removed (BREAKING — post-deprecation cleanup)
 
 - **`finishSend` removed from six wrapper types.** The v0.3

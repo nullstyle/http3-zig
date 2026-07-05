@@ -214,8 +214,8 @@ test "session rejects duplicate peer QPACK encoder streams" {
     var pair: H3Pair = undefined;
     try pair.initStarted(
         allocator,
-        .{ .open_qpack_streams = true },
-        .{ .open_qpack_streams = true },
+        .{ .enable_qpack_streams = true },
+        .{ .enable_qpack_streams = true },
     );
     defer pair.deinit();
 
@@ -231,10 +231,10 @@ test "session rejects peer QPACK capacity above advertised limit" {
     var pair: H3Pair = undefined;
     try pair.initStarted(
         allocator,
-        .{ .open_qpack_streams = true },
+        .{ .enable_qpack_streams = true },
         .{
             .settings = .{ .qpack_max_table_capacity = 64 },
-            .open_qpack_streams = true,
+            .enable_qpack_streams = true,
         },
     );
     defer pair.deinit();
@@ -255,10 +255,10 @@ test "session rejects peer QPACK insert larger than dynamic table capacity" {
     var pair: H3Pair = undefined;
     try pair.initStarted(
         allocator,
-        .{ .open_qpack_streams = true },
+        .{ .enable_qpack_streams = true },
         .{
             .settings = .{ .qpack_max_table_capacity = 64 },
-            .open_qpack_streams = true,
+            .enable_qpack_streams = true,
         },
     );
     defer pair.deinit();
@@ -287,8 +287,8 @@ test "session rejects invalid peer QPACK decoder feedback" {
     var pair: H3Pair = undefined;
     try pair.initStarted(
         allocator,
-        .{ .open_qpack_streams = true },
-        .{ .open_qpack_streams = true },
+        .{ .enable_qpack_streams = true },
+        .{ .enable_qpack_streams = true },
     );
     defer pair.deinit();
 

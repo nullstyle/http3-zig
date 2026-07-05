@@ -38,12 +38,12 @@ pub const Kind = enum {
 };
 
 pub const EncodeOptions = struct {
-    max_field_section_size: ?usize = null,
+    max_field_section_size: ?u64 = null,
     enable_connect_protocol: bool = false,
 };
 
 pub const DecodeOptions = struct {
-    max_field_section_size: ?usize = null,
+    max_field_section_size: ?u64 = null,
     enable_connect_protocol: bool = false,
 };
 

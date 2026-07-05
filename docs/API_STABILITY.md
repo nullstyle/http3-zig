@@ -53,11 +53,13 @@ but changes will be deliberate, called out in `CHANGELOG.md`, and kept minimal.
   codecs are exported for advanced use and testing. They are usable, but their
   signatures may be refined; they are not the primary embedding surface and
   are **not** covered by the Stable guarantee.
-- **`Config` naming** is a known pre-1.0 cleanup target: field names and the
-  `null`-to-disable vs `bool` conventions across `SessionConfig` /
-  `ProductionOptions` (size caps, flow-control knobs, policy enums) will be
-  normalized before 1.0. New `Config` fields are always added with
-  production-safe defaults.
+- **`Config` naming** follows a settled convention: on/off feature toggles use
+  the `enable_` prefix (`enable_connect_protocol`, `enable_datagram`,
+  `enable_webtransport`, `enable_qpack_huffman`, `enable_qpack_streams`);
+  optional caps use `?limit` where `null` disables the cap; and limit fields
+  are typed `u64` to match the wire (`max_field_section_size`). New `Config`
+  fields follow the same convention and are added with production-safe
+  defaults.
 - **Newly added surfaces** — e.g. the DoS hardening knobs
   (`max_incoming_frame_length`) — may see minor signature or naming
   refinement as they are exercised for the first time.
