@@ -1,0 +1,43 @@
+name: h3-interop-self-test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# In-tree HTTP/3 interop check: bring up the http3-zig `curl-h3` server on a
+# real UDP socket (Ubuntu's loopback, unlike a sandboxed dev host, has no
+# restrictions on inter-process UDP) and drive it with the http3-zig
+# `external-h3-client` — a full QUIC handshake + HTTP/3 request/response,
+# using only http3-zig binaries (no curl-with-HTTP3, no foreign server).
+#
+# This is the HTTP/3 counterpart to `wt-interop-self-test.yml`. It catches
+# regressions in the real-socket pump path that the in-process integration
+# tests don't reach — most sharply, a real-network client MUST call
+# `conn.advance()` to emit the first ClientHello, which the loopback driver
+# otherwise hides.
+#
+# The third-party HTTP/3 matrix (`interop/external_h3/run_matrix.sh`, driven
+# by `wt-interop`-style scheduled runs) covers the cross-implementation
+# story against foreign servers; this stays as the self-contained per-push
+# gate that never depends on an external server staying alive.
+jobs:
+  self-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout http3-zig
+        uses: actions/checkout@v4
+
+      - name: Set up mise (zig master + project tools)
+        uses: jdx/mise-action@v2
+        with:
+          install: true
+          cache: true
+
+      - name: Build the curl-h3 server + external-h3 client
+        run: zig build external-h3-client curl-h3-server
+
+      - name: Run the HTTP/3 self-test (loopback round-trip)
+        run: bash interop/external_h3/self_test.sh
