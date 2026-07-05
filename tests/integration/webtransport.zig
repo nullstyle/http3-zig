@@ -734,8 +734,7 @@ test "WebTransport stream RESET propagates the application error code" {
         // a WebTransport stream (i.e. parsed the type + Session ID prefix
         // and emitted `webtransport_stream_opened`). If we reset before the
         // server has read any bytes, the dispatch can't classify the stream
-        // and would fall back to the generic stream_reset event — see the
-        // ROADMAP "buffered streams" note for the corresponding cleanup.
+        // and would fall back to the generic stream_reset event.
         if (server_saw_open and !sent_reset) {
             if (uni_stream_id) |uni| {
                 try client_wt.resetStream(uni, app_error_code);

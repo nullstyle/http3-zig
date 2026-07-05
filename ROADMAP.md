@@ -29,10 +29,6 @@ See the [README](README.md) for the current capability surface and the
   enforcement is in place; intermediary forwarding of `WT_MAX_DATA` /
   `WT_*_BLOCKED` capsules is not yet implemented.
 
-- **Automated long-running fuzzing.** The per-push smoke corpus and
-  coverage-guided `zig build test --fuzz` are wired; sustained long-running
-  fuzz campaigns against a larger seeded corpus are not yet automated in CI.
-
 - **Memory-budget enforcement polish.** Opt-in caps cover send buffers,
   outgoing capsules, session event queues, tracker bodies, decoded QPACK
   field sections, and the production preset; remaining per-buffer budgets are

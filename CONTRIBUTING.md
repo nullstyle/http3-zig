@@ -13,8 +13,7 @@ CONNECT-UDP / MASQUE (RFC 9298), and WebTransport-over-HTTP/3
 may still churn — treat 0.x releases as potentially breaking.
 
 See [`README.md`](README.md) for an overview, [`CHANGELOG.md`](CHANGELOG.md)
-for what has shipped, and [`ROADMAP.md`](ROADMAP.md) for the broader
-phase-by-phase plan.
+for what has shipped, and [`ROADMAP.md`](ROADMAP.md) for what's planned.
 
 ## Building
 
