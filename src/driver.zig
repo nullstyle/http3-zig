@@ -48,7 +48,7 @@ pub const Endpoint = struct {
     pub fn handle(
         self: *Endpoint,
         datagram: []u8,
-        from: ?quic_zig.conn.path.Address,
+        from: ?quic_zig.Address,
         now_us: u64,
     ) Error!void {
         try self.quic.handle(datagram, from, now_us);

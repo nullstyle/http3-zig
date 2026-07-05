@@ -403,11 +403,14 @@ pub const DatagramEvent = struct {
     arrived_in_early_data: bool = false,
 };
 
-pub const DatagramSendEvent = quic_zig.conn.DatagramSendEvent;
-pub const FlowBlockedEvent = quic_zig.conn.FlowBlockedInfo;
-pub const FlowBlockedKind = quic_zig.conn.FlowBlockedKind;
-pub const FlowBlockedSource = quic_zig.conn.FlowBlockedSource;
-pub const ConnectionIdsNeededEvent = quic_zig.conn.state.ConnectionIdReplenishInfo;
+// quic-zig 0.5.0 re-exports these ConnectionEvent-payload types at the top
+// level, so name them there instead of reaching into the internal `conn.*` /
+// `conn.state.*` tier (not covered by quic-zig's stability guarantee).
+pub const DatagramSendEvent = quic_zig.DatagramSendEvent;
+pub const FlowBlockedEvent = quic_zig.FlowBlockedInfo;
+pub const FlowBlockedKind = quic_zig.FlowBlockedKind;
+pub const FlowBlockedSource = quic_zig.FlowBlockedSource;
+pub const ConnectionIdsNeededEvent = quic_zig.ConnectionIdReplenishInfo;
 
 pub const StreamSendState = struct {
     stream_id: u64,
