@@ -16,8 +16,10 @@ See the [README](README.md) for the current capability surface and the
   http3-zig client ↔ http3-zig server over a real UDP socket — gate every
   push. Interop against foreign servers (quic-go, ngtcp2, lsquic, aioquic,
   and Chromium/curl) has skip-friendly harnesses under [`interop/`](interop/)
-  but is not yet green in CI: standing up the real servers is open work, and
-  third-party WebTransport currently stalls at the QUIC handshake (see
+  but is not yet green in CI: standing up real servers is open work and the
+  matrix remains advisory. WebTransport now completes the full protocol flow
+  against webtransport-go; the remaining webtransport-go issue is a
+  post-success harness clean-shutdown timeout (see
   [`docs/wt-third-party-interop.md`](docs/wt-third-party-interop.md)).
 
 - **QPACK dynamic-table cross-implementation coverage.** The dynamic-table
@@ -33,7 +35,7 @@ See the [README](README.md) for the current capability surface and the
   outgoing capsules, session event queues, tracker bodies, decoded QPACK
   field sections, concurrent peer streams, and the adversarial-reachable
   session maps (tracked priorities, received push promises, pending
-  WebTransport sessions) — all wired into the production preset. Remaining:
-  reclaim per-stream priority entries when a stream closes (currently
-  bounded by the cap but not released early), and continue extending
-  per-buffer budgets toward a fully-bounded default posture.
+  WebTransport sessions) — all wired into the production preset, with
+  per-request priority entries reclaimed when streams close. Remaining:
+  continue extending per-buffer budgets toward a fully-bounded default
+  posture.

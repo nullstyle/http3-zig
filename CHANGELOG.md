@@ -46,11 +46,12 @@ breaking changes; see notes per release.
   `wt-interop` matrix both timed out at phase 1 with
   `SettingsExchangeTimedOut`. After this fix the self-test progresses
   cleanly through phase 1 (SETTINGS), phase 2 (CONNECT), and phase 3
-  (datagram + uni stream + CLOSE_WT). The third-party peers
-  (webtransport-go, pywebtransport) still don't complete the handshake
-  — see [`docs/wt-third-party-interop.md`](docs/wt-third-party-interop.md)
-  for the diagnostic state and reproduction; the third-party matrix step
-  is `continue-on-error: true` so it doesn't block merges.
+  (datagram + uni stream + CLOSE_WT). With the quic-zig v0.6.1 transport
+  fix, the full WebTransport flow now completes against webtransport-go;
+  the remaining issue is a post-success harness clean-shutdown timeout.
+  See [`docs/wt-third-party-interop.md`](docs/wt-third-party-interop.md).
+  The third-party matrix step is `continue-on-error: true` so it doesn't
+  block merges.
 
 - **Real-network HTTP/3 interop client now drives the QUIC handshake.**
   `interop/external_h3/client.zig` had the same gap as the WebTransport
