@@ -9,6 +9,14 @@ breaking changes; see notes per release.
 
 ## [Unreleased]
 
+## [0.4.4] - 2026-07-05
+
+### Fixed
+
+- Raised the per-push `wt-interop-self-test` timeout so current CI runners
+  can finish compiling the WebTransport self-test binaries instead of
+  cancelling during install.
+
 ## [0.4.3] - 2026-07-05
 
 ### Changed
