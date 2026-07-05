@@ -22,9 +22,17 @@ breaking changes; see notes per release.
   (datagram + uni stream + CLOSE_WT). The third-party peers
   (webtransport-go, pywebtransport) still don't complete the handshake
   — see [`docs/wt-third-party-interop.md`](docs/wt-third-party-interop.md)
-  for the diagnostic state and v0.4 follow-up plan; the third-party
-  matrix step is now `continue-on-error: true` so it doesn't block
-  merges.
+  for the diagnostic state and reproduction; the third-party matrix step
+  is `continue-on-error: true` so it doesn't block merges.
+
+- **Real-network HTTP/3 interop client now drives the QUIC handshake.**
+  `interop/external_h3/client.zig` had the same gap as the WebTransport
+  client: its pump loop never called `quic_zig.Connection.advance()` (so
+  no ClientHello was ever emitted) or `h3.start()` (so the control stream
+  and SETTINGS were never opened). Both interop clients also still used
+  `Allocator.dupeZ`, renamed to `dupeSentinel` in the tracked Zig
+  toolchain. Fixed all three; the client now completes a full HTTP/3
+  request/response against the in-tree `curl-h3` server over loopback.
 
 ### Removed (BREAKING — post-deprecation cleanup)
 
@@ -61,6 +69,14 @@ breaking changes; see notes per release.
   carries `continue-on-error: true`. The per-push real-socket gate
   (`wt-interop-self-test.yml`) remains hard-gating; third-party
   interop is advisory until the gap doc's investigation lands.
+
+- **HTTP/3 interop self-test** (`.github/workflows/h3-interop-self-test.yml`
+  + `interop/external_h3/self_test.sh`): the HTTP/3 counterpart to the
+  WebTransport self-test. Brings up the in-tree `curl-h3` server on a real
+  UDP socket and drives it with the in-tree `external-h3` client — a full
+  handshake plus request/response using only http3-zig binaries (GET
+  `/hello` and POST `/echo`), gating the real-socket pump path the
+  in-process tests don't reach.
 
 ### Performance / correctness (memory)
 
