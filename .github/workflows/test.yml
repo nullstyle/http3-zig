@@ -11,10 +11,13 @@ on:
 # the same toolchain as local development.
 #
 # NOTE: build.zig.zon currently uses a local path dependency for quic_zig
-# (../quic-zig) to iterate on both repos at once; CI requires it repointed to
-# the published v0.4.0 tarball (`zig fetch --save=quic_zig
-# https://github.com/nullstyle/quic-zig/archive/refs/tags/v0.4.0.tar.gz`) so a
-# standalone checkout resolves it. boringssl-zig is a URL+hash dep Zig fetches.
+# (../quic-zig, 0.5.0) to iterate on both repos at once; a standalone CI
+# checkout can't resolve it. Once quic-zig v0.5.0 is pushed + tagged, repoint
+# build.zig.zon to the tarball by hand (write .url + .hash — do NOT
+# `zig fetch --save` over the existing `.path` entry, which mangles it):
+#   .url  = "https://github.com/nullstyle/quic-zig/archive/refs/tags/v0.5.0.tar.gz"
+#   .hash = <run `zig fetch <that url>` and paste its output>
+# boringssl-zig is already a URL+hash dep Zig fetches itself.
 jobs:
   build-test:
     timeout-minutes: 45
