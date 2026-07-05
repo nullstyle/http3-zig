@@ -6,16 +6,16 @@ on:
   pull_request:
     branches: [main]
 
-# Codec fuzz smoke is cheap (~12 inputs across all codec targets) and
-# tractable as a per-push gate — it confirms the fuzz harness compiles
-# clean and the smoke corpus doesn't crash any decoder.
+# Per-push fuzz gates — all cheap, deterministic corpus replays that confirm
+# the harnesses compile and the seeded corpora don't crash any decoder:
 #
-# The corpus job is a heavier follow-up: it walks every file under
-# `fuzz/corpus/<target>/` (~100 hand-curated seeds across all
-# targets) and reports per-target case + fail counts. Still
-# tractable as a per-push gate; long-running fuzz campaigns are out
-# of scope and would run through `zig build fuzz-codecs` manually
-# with longer corpora.
+#   * smoke   — ~12 inputs across all codec targets.
+#   * corpus  — every file under fuzz/corpus/<target>/ (~100 seeds).
+#   * wt      — the WebTransport interleaved-operations corpus (50 seeds),
+#               driving a real H3Pair through random WT op sequences.
+#
+# Coverage-guided exploration (`zig build test --fuzz`) is the heavier
+# companion in fuzz-nightly.yml.
 jobs:
   smoke:
     strategy:
@@ -28,7 +28,7 @@ jobs:
       - name: Checkout http3-zig
         uses: actions/checkout@v4
 
-      - name: Set up mise (zig 0.16.0 + project tools)
+      - name: Set up mise (zig master + project tools)
         uses: jdx/mise-action@v2
         with:
           install: true
@@ -63,7 +63,7 @@ jobs:
       - name: Checkout http3-zig
         uses: actions/checkout@v4
 
-      - name: Set up mise (zig 0.16.0 + project tools)
+      - name: Set up mise (zig master + project tools)
         uses: jdx/mise-action@v2
         with:
           install: true
@@ -80,6 +80,41 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: fuzz-crashes-corpus-${{ matrix.os }}
+          path: |
+            fuzz/corpus/
+            zig-out/
+            .zig-cache/fuzz/
+          if-no-files-found: ignore
+          retention-days: 14
+
+  wt-interleaved:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-14]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - name: Checkout http3-zig
+        uses: actions/checkout@v4
+
+      - name: Set up mise (zig master + project tools)
+        uses: jdx/mise-action@v2
+        with:
+          install: true
+          cache: true
+
+      - name: Build the WebTransport interleaved fuzz harness
+        run: zig build fuzz-wt-interleaved
+
+      - name: Run the WebTransport interleaved corpus
+        run: zig build run-fuzz-wt-interleaved
+
+      - name: Upload fuzz crash artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-crashes-wt-interleaved-${{ matrix.os }}
           path: |
             fuzz/corpus/
             zig-out/

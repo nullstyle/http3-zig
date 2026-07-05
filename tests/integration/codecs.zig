@@ -47,6 +47,24 @@ test "codec fuzz harness smoke corpus" {
     }
 }
 
+// Coverage-guided fuzz entry point over every codec target. Under plain
+// `zig build test` the seed corpus runs once (a per-commit regression gate);
+// under `zig build test --fuzz` the Zig fuzzer explores new inputs with
+// coverage feedback. Deep fuzzing runs on Linux (CI) — the std.testing.fuzz
+// runtime aborts on macOS (same platform gap quic-zig documents). The
+// property: `runTarget` handles ANY byte slice without a panic / unreachable /
+// UB — a clean decode or a typed error is the expected outcome, and the
+// fuzzer flags only crashes. Minimized crashers are saved to the corpus.
+test "fuzz: HTTP/3 + QPACK + capsule + WebSocket codecs never crash on arbitrary input" {
+    try std.testing.fuzz({}, fuzzAllCodecs, .{ .corpus = fuzz_codecs.smokeInputs() });
+}
+
+fn fuzzAllCodecs(_: void, smith: *std.testing.Smith) anyerror!void {
+    var input_buf: [4096]u8 = undefined;
+    const len = smith.slice(&input_buf);
+    fuzz_codecs.runTarget(std.testing.allocator, .all, input_buf[0..len]) catch {};
+}
+
 test "codec fuzz harness accepts representative valid encodings" {
     const allocator = std.testing.allocator;
     var buf: [512]u8 = undefined;

@@ -5,23 +5,33 @@ on:
     - cron: '0 6 * * *'   # 06:00 UTC daily
   workflow_dispatch: {}
 
-# Long-form companion to the per-push `fuzz.yml`. The push gate runs the
-# 12-input smoke corpus and a single walk over `fuzz/corpus/`; this job
-# keeps each fuzz target hot for 30 minutes by looping the corpus
-# runner. Neither `fuzz-codecs` nor `fuzz-corpus` accepts a duration
-# flag (they consume a fixed corpus and exit), so we wrap with
-# `timeout 30m` and accept exit code 124 (SIGTERM from `timeout`) as a
-# successful budget-exhaustion. Anything else is a real crash and
-# fails the job, with the work tree uploaded as an artifact for triage.
+# Long-form companion to the per-push `fuzz.yml`.
+#
+#   * corpus-loop     — keeps the deterministic corpus replays hot for 30
+#                       minutes by looping the codec + WebTransport corpus
+#                       runners. Neither accepts a duration flag, so we wrap
+#                       with `timeout 30m` and accept exit 124 (SIGTERM) as
+#                       successful budget exhaustion; anything else is a real
+#                       crash and fails the job.
+#   * coverage-guided — the actual coverage-guided fuzzer over the codec
+#                       decode surface (`zig build test --fuzz`), which
+#                       explores NEW inputs with coverage feedback rather than
+#                       replaying a fixed corpus. Linux only: the
+#                       std.testing.fuzz runtime aborts on macOS (the platform
+#                       gap quic-zig also documents). This is where sanitizer-
+#                       grade coverage of the untrusted H3/QPACK/capsule decode
+#                       path comes from; ASan over the BoringSSL C++ boundary
+#                       is boringssl-zig's concern (BoringSSL is fuzzed
+#                       upstream).
 jobs:
-  fuzz-codecs:
+  corpus-loop:
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
       - name: Checkout http3-zig
         uses: actions/checkout@v4
 
-      - name: Set up mise (zig 0.16.0 + project tools)
+      - name: Set up mise (zig master + project tools)
         uses: jdx/mise-action@v2
         with:
           install: true
@@ -31,13 +41,15 @@ jobs:
         run: |
           zig build fuzz-codecs
           zig build fuzz-corpus
+          zig build fuzz-wt-interleaved
 
-      - name: Run codec smoke + corpus loop for 30 minutes
+      - name: Loop codec + WebTransport corpus replays for 30 minutes
         run: |
           timeout 30m bash -c '
             zig build run-fuzz-smoke
             while true; do
               zig build run-fuzz-corpus
+              zig build run-fuzz-wt-interleaved
             done
           ' || [ $? -eq 124 ]
 
@@ -45,10 +57,43 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: fuzz-nightly-codecs-crashes
+          name: fuzz-nightly-corpus-crashes
           path: |
             zig-out/
             fuzz/corpus/
             **/*.crash
+          if-no-files-found: ignore
+          retention-days: 14
+
+  coverage-guided:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout http3-zig
+        uses: actions/checkout@v4
+
+      - name: Set up mise (zig master + project tools)
+        uses: jdx/mise-action@v2
+        with:
+          install: true
+          cache: true
+
+      # `zig build test --fuzz` drives every std.testing.fuzz site (the codec
+      # harness in tests/integration/codecs.zig) with coverage feedback. It
+      # runs until interrupted, so time-box it; exit 124 (SIGTERM from
+      # `timeout`) is successful budget exhaustion, anything else is a crash.
+      - name: Coverage-guided fuzz for 30 minutes
+        run: |
+          timeout 30m zig build test --fuzz || [ $? -eq 124 ]
+
+      - name: Upload fuzz crash artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-nightly-coverage-guided-crashes
+          path: |
+            zig-out/
+            fuzz/corpus/
+            .zig-cache/v/
           if-no-files-found: ignore
           retention-days: 14
