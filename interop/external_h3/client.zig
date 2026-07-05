@@ -74,6 +74,8 @@ pub fn main(init: std.process.Init) !void {
     });
     defer h3.deinit();
 
+    try h3.start();
+
     var h3_client = http3_zig.Client.init(&h3);
     _ = try h3_client.request(allocator, .{
         .method = options.method,
@@ -113,6 +115,12 @@ pub fn main(init: std.process.Init) !void {
     while (completed.items.len == 0 and !conn.isClosed()) {
         if (now_us >= deadline_us) return error.ExternalInteropTimedOut;
 
+        // Drive the QUIC handshake: `advance` runs boringssl and queues
+        // outbound CRYPTO for the next flush. Real-network clients MUST call
+        // it — unlike the in-process loopback tests, there's no inbound packet
+        // to bootstrap from, so the very first ClientHello has to come out of
+        // `advance` → `flush` → wire.
+        try conn.advance();
         _ = try endpoint.drainSession();
         _ = try runner.observeBatch(events.items, &completed);
         clearEvents(allocator, &events);
