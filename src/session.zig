@@ -302,6 +302,23 @@ pub const Config = struct {
     /// Null preserves the legacy unbounded behavior; `production()`
     /// defaults to 1024.
     max_concurrent_peer_streams: ?usize = null,
+    /// Opt-in eager reclaim of bidirectional streams the peer has RESET.
+    /// A peer RESET leaves a request/response stream half-closed (its
+    /// receive side is terminal, but the local send side is still open),
+    /// so its `StreamState` lingers in the `streams` map — bounded by
+    /// `max_concurrent_peer_streams`, but never released — until the local
+    /// side also closes. When true, a peer RESET tears the local side down
+    /// immediately (the peer has abandoned the exchange, so there is
+    /// nothing left to send) and the per-drain GC reclaims the entry the
+    /// same pass the `stream_reset` event is surfaced. Off by default: some
+    /// applications take deliberate action on a reset and expect the stream
+    /// to persist until they close it — with this on, referencing the
+    /// stream id after its `stream_reset` event is a use-after-reclaim.
+    /// Scope is deliberately narrow (peer RESET of a plain bidi stream):
+    /// peer FIN is *not* reclaimed, because a server legitimately keeps
+    /// sending a response after the client's request FIN, and reclaiming
+    /// there would drop in-flight responses.
+    reclaim_peer_reset_streams: bool = false,
     /// Optional cap on tracked RFC 9218 priority hints — applied to the
     /// per-request (`request_priorities`) and per-push (`push_priorities`)
     /// maps independently. A peer flooding PRIORITY_UPDATE for distinct
@@ -3756,6 +3773,24 @@ pub const Session = struct {
                 .final_size = final_size,
             },
         });
+
+        // Opt-in eager reclaim (`Config.reclaim_peer_reset_streams`): a peer
+        // RESET of a plain bidirectional stream leaves it half-closed, so it
+        // would otherwise linger until the local side closes. Tear the local
+        // send side down now — the peer has abandoned the exchange — so
+        // `isFullyClosed` holds and `gcClosedStreams` reclaims it at the end
+        // of this drain. The `streamReset` may fail if quic-zig has already
+        // reaped its own entry (recv terminal); that is fine, we still mark
+        // the local side closed so the http3-zig registry reclaims. Uni
+        // streams already reap on `recv_done`; the WebTransport branch
+        // returned above, so this only touches request/response streams.
+        if (self.config.reclaim_peer_reset_streams and
+            !state.locally_finished and
+            !stream_mod.isUnidirectional(state.id))
+        {
+            self.quic.streamReset(state.id, protocol.ErrorCode.request_cancelled) catch {};
+            state.locally_finished = true;
+        }
     }
 
     fn validateDatagramSend(self: *Session, stream_id: u64, payload_len: usize) Error!void {

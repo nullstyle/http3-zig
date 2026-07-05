@@ -207,6 +207,160 @@ test "client send-side reset is surfaced as server request reset" {
     }
 }
 
+test "peer RESET reclaims the half-closed stream when reclaim_peer_reset_streams is set" {
+    const allocator = std.testing.allocator;
+
+    var server_tls = try http3_zig.server.initTlsContext(.{}, test_cert_pem, test_key_pem);
+    defer server_tls.deinit();
+    var client_tls = try http3_zig.client.initTlsContext(.{ .verify = .none });
+    defer client_tls.deinit();
+
+    var client: quic_zig.Connection = undefined;
+    var server: quic_zig.Connection = undefined;
+    try initConnectedQuic(allocator, client_tls, server_tls, &client, &server);
+    defer client.deinit();
+    defer server.deinit();
+
+    var client_h3 = http3_zig.Session.init(allocator, .client, &client, .{});
+    defer client_h3.deinit();
+    // The reclaim is a receive-side reaction to the peer's RESET, so it is
+    // the *server's* config that governs whether its lingering StreamState
+    // is released.
+    var server_h3 = http3_zig.Session.init(allocator, .server, &server, .{ .reclaim_peer_reset_streams = true });
+    defer server_h3.deinit();
+    var h3_client = http3_zig.Client.init(&client_h3);
+    var h3_server = http3_zig.Server.init(&server_h3);
+
+    var writer = try h3_client.startRequest(allocator, .{
+        .method = "POST",
+        .authority = "localhost",
+        .path = "/reset-me",
+    });
+    const request_stream_id = writer.stream_id;
+    // Body without a FIN — the server never responds, so absent the reclaim
+    // the stream stays half-closed (recv terminal after the RESET, local send
+    // side never closed) and lingers in `streams`.
+    try writer.write("partial body");
+
+    var client_events: std.ArrayList(http3_zig.session.Event) = .empty;
+    defer {
+        clearSessionEvents(allocator, &client_events);
+        client_events.deinit(allocator);
+    }
+    var server_events: std.ArrayList(http3_zig.session.Event) = .empty;
+    defer {
+        clearSessionEvents(allocator, &server_events);
+        server_events.deinit(allocator);
+    }
+
+    var now_us: u64 = 1_000_000;
+    var iters: u32 = 0;
+    while (!server_h3.streams.contains(request_stream_id)) : (iters += 1) {
+        try std.testing.expect(iters < 20_000);
+        try pumpH3(&client, &server, &client_h3, &server_h3, &client_events, &server_events, &now_us);
+        clearSessionEvents(allocator, &server_events);
+        clearSessionEvents(allocator, &client_events);
+    }
+
+    try writer.reset(http3_zig.protocol.ErrorCode.request_cancelled);
+
+    iters = 0;
+    var server_saw_reset = false;
+    while (!server_saw_reset) : (iters += 1) {
+        try std.testing.expect(iters < 20_000);
+        try pumpH3(&client, &server, &client_h3, &server_h3, &client_events, &server_events, &now_us);
+        for (server_events.items) |event| {
+            const request_event = h3_server.classify(event) orelse continue;
+            switch (request_event) {
+                .reset => |reset| {
+                    try std.testing.expectEqual(request_stream_id, reset.stream_id);
+                    server_saw_reset = true;
+                },
+                else => {},
+            }
+        }
+        clearSessionEvents(allocator, &server_events);
+        clearSessionEvents(allocator, &client_events);
+    }
+
+    // The reset event was surfaced and the per-drain GC ran in the same
+    // drain, so the StreamState is already gone.
+    try std.testing.expect(!server_h3.streams.contains(request_stream_id));
+}
+
+test "peer RESET leaves the stream tracked when reclaim_peer_reset_streams is off (default)" {
+    const allocator = std.testing.allocator;
+
+    var server_tls = try http3_zig.server.initTlsContext(.{}, test_cert_pem, test_key_pem);
+    defer server_tls.deinit();
+    var client_tls = try http3_zig.client.initTlsContext(.{ .verify = .none });
+    defer client_tls.deinit();
+
+    var client: quic_zig.Connection = undefined;
+    var server: quic_zig.Connection = undefined;
+    try initConnectedQuic(allocator, client_tls, server_tls, &client, &server);
+    defer client.deinit();
+    defer server.deinit();
+
+    var client_h3 = http3_zig.Session.init(allocator, .client, &client, .{});
+    defer client_h3.deinit();
+    var server_h3 = http3_zig.Session.init(allocator, .server, &server, .{});
+    defer server_h3.deinit();
+    var h3_client = http3_zig.Client.init(&client_h3);
+    var h3_server = http3_zig.Server.init(&server_h3);
+
+    var writer = try h3_client.startRequest(allocator, .{
+        .method = "POST",
+        .authority = "localhost",
+        .path = "/reset-me",
+    });
+    const request_stream_id = writer.stream_id;
+    try writer.write("partial body");
+
+    var client_events: std.ArrayList(http3_zig.session.Event) = .empty;
+    defer {
+        clearSessionEvents(allocator, &client_events);
+        client_events.deinit(allocator);
+    }
+    var server_events: std.ArrayList(http3_zig.session.Event) = .empty;
+    defer {
+        clearSessionEvents(allocator, &server_events);
+        server_events.deinit(allocator);
+    }
+
+    var now_us: u64 = 1_000_000;
+    var iters: u32 = 0;
+    while (!server_h3.streams.contains(request_stream_id)) : (iters += 1) {
+        try std.testing.expect(iters < 20_000);
+        try pumpH3(&client, &server, &client_h3, &server_h3, &client_events, &server_events, &now_us);
+        clearSessionEvents(allocator, &server_events);
+        clearSessionEvents(allocator, &client_events);
+    }
+
+    try writer.reset(http3_zig.protocol.ErrorCode.request_cancelled);
+
+    iters = 0;
+    var server_saw_reset = false;
+    while (!server_saw_reset) : (iters += 1) {
+        try std.testing.expect(iters < 20_000);
+        try pumpH3(&client, &server, &client_h3, &server_h3, &client_events, &server_events, &now_us);
+        for (server_events.items) |event| {
+            const request_event = h3_server.classify(event) orelse continue;
+            switch (request_event) {
+                .reset => server_saw_reset = true,
+                else => {},
+            }
+        }
+        clearSessionEvents(allocator, &server_events);
+        clearSessionEvents(allocator, &client_events);
+    }
+
+    // Default behavior: the server never closed its send side, so the
+    // half-closed StreamState is still tracked (bounded only by
+    // `max_concurrent_peer_streams`), not reclaimed.
+    try std.testing.expect(server_h3.streams.contains(request_stream_id));
+}
+
 test "server send-side reset is surfaced as client response reset" {
     const allocator = std.testing.allocator;
 

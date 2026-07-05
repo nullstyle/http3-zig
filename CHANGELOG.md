@@ -11,6 +11,17 @@ breaking changes; see notes per release.
 
 ### Added
 
+- **Opt-in eager reclaim of peer-RESET streams.** New
+  `Config.reclaim_peer_reset_streams` (default `false`). A peer RESET leaves a
+  bidirectional request/response stream half-closed — receive side terminal,
+  local send side still open — so its `StreamState` lingers in the `streams`
+  map (bounded by `max_concurrent_peer_streams`, but never released) until the
+  local side closes. When enabled, a peer RESET tears the local side down
+  immediately and the per-drain GC reclaims the entry the same pass the
+  `stream_reset` event is surfaced. Deliberately narrow: peer FIN is *not*
+  reclaimed (a server legitimately keeps responding after the client's request
+  FIN), and referencing the stream id after its `stream_reset` event with this
+  on is a use-after-reclaim.
 - **WebTransport initial flow-control SETTINGS (draft-ietf-webtrans-http3-15
   §9.2).** `SETTINGS_WT_INITIAL_MAX_DATA` / `_STREAMS_UNI` / `_STREAMS_BIDI`
   are now emitted, parsed, and wired into per-session flow control end to
