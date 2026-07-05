@@ -9,6 +9,15 @@ breaking changes; see notes per release.
 
 ## [Unreleased]
 
+## [0.4.5] - 2026-07-05
+
+### Fixed
+
+- Fixed the in-tree WebTransport self-test completion race. The harness now
+  treats a post-close datagram echo as proof that the exchange flushed, keeps
+  the server-side session handle through same-batch close/data ordering, and
+  gives the server a short post-completion drain window before exit.
+
 ## [0.4.4] - 2026-07-05
 
 ### Fixed

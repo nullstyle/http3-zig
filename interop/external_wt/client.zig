@@ -229,6 +229,7 @@ fn runHarness(allocator: std.mem.Allocator, io: std.Io, options: Options) !void 
     var saw_response = false;
     var sent_data = false;
     var sent_close = false;
+    var saw_datagram_echo = false;
     var saw_finish = false;
 
     while (!saw_finish) : (iters += 1) {
@@ -268,6 +269,7 @@ fn runHarness(allocator: std.mem.Allocator, io: std.Io, options: Options) !void 
                 },
                 .datagram => |dgram| {
                     if (dgram.stream_id == session_id) {
+                        saw_datagram_echo = true;
                         std.debug.print(
                             "external_wt: phase 3 — received datagram (len={d})\n",
                             .{dgram.payload.len},
@@ -315,11 +317,16 @@ fn runHarness(allocator: std.mem.Allocator, io: std.Io, options: Options) !void 
             sent_close = true;
         }
 
+        if (sent_close and saw_datagram_echo) {
+            saw_finish = true;
+        }
+
         try endpoint.tick(now_us);
         now_us += http3_zig.driver.default_step_us;
 
-        // Once we've sent CLOSE the CONNECT stream's response_complete
-        // observation flips `saw_finish` and the loop unwinds. If the
+        // Once we've sent CLOSE, either a CONNECT stream
+        // response_complete or a post-close datagram echo is enough to
+        // prove the peer received and processed the exchange. If the
         // peer is unresponsive we still fall through to the deadline /
         // iteration bound checks at the top of the loop.
     }

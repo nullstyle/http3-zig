@@ -6,9 +6,8 @@
 //!   * accepts a WebTransport `CONNECT` (`:protocol = webtransport`),
 //!   * echoes inbound datagrams back to the peer,
 //!   * surfaces inbound peer-opened unidirectional WT streams via
-//!     `webtransport_stream_data` events (no echo back — sending on a
-//!     server-initiated uni stream is sufficient round-trip
-//!     coverage),
+//!     `webtransport_stream_data` events and echoes the payload on a
+//!     server-initiated unidirectional WT stream while the session is open,
 //!   * stays running until `--max-sessions` sessions have completed
 //!     (default 1) or the connection closes.
 //!
@@ -142,7 +141,7 @@ fn runServer(allocator: std.mem.Allocator, io: std.Io, options: Options) !void {
         }
     };
 
-    while (!conn.isClosed() and !app.isDone()) {
+    while (!conn.isClosed() and !app.isDone(now_us)) {
         if (now_us - start_us > lifetime_us) {
             try stdout.print("EXIT lifetime {d}ms exceeded\n", .{options.max_lifetime_ms});
             try stdout.flush();
@@ -184,7 +183,7 @@ fn runServer(allocator: std.mem.Allocator, io: std.Io, options: Options) !void {
         }
 
         _ = try driver.drainSession();
-        for (events.items) |event| try app.observe(&h3_server, event);
+        for (events.items) |event| try app.observe(&h3_server, event, now_us);
         clearEvents(allocator, &events);
 
         if (peer) |p| {
@@ -203,11 +202,19 @@ fn runServer(allocator: std.mem.Allocator, io: std.Io, options: Options) !void {
 }
 
 const App = struct {
+    const completion_drain_us: u64 = 1_000_000;
+
+    const AcceptedSession = struct {
+        wt: http3_zig.WebTransportServerStream,
+        completed: bool = false,
+    };
+
     allocator: std.mem.Allocator,
     runner: http3_zig.ServerRunner,
-    accepted: std.AutoHashMapUnmanaged(u64, http3_zig.WebTransportServerStream) = .empty,
+    accepted: std.AutoHashMapUnmanaged(u64, AcceptedSession) = .empty,
     max_sessions: u64,
     sessions_completed: u64 = 0,
+    completed_at_us: ?u64 = null,
 
     fn init(allocator: std.mem.Allocator, max_sessions: u64) App {
         return .{
@@ -222,12 +229,14 @@ const App = struct {
         self.accepted.deinit(self.allocator);
     }
 
-    fn isDone(self: *const App) bool {
+    fn isDone(self: *const App, now_us: u64) bool {
         if (self.max_sessions == 0) return false;
-        return self.sessions_completed >= self.max_sessions;
+        if (self.sessions_completed < self.max_sessions) return false;
+        const completed_at = self.completed_at_us orelse return false;
+        return now_us - completed_at >= completion_drain_us;
     }
 
-    fn observe(self: *App, server: *http3_zig.Server, event: http3_zig.session.Event) !void {
+    fn observe(self: *App, server: *http3_zig.Server, event: http3_zig.session.Event, now_us: u64) !void {
         // The runner classifies HTTP/3 frame events; WebTransport-
         // specific stream events fall through as `.ignored` from the
         // tracker's perspective, so we inspect them on the raw event
@@ -259,9 +268,10 @@ const App = struct {
                 );
             },
             .datagram => |dg| {
-                if (self.accepted.get(dg.stream_id)) |wt_const| {
-                    var wt = wt_const;
+                if (self.accepted.getPtr(dg.stream_id)) |entry| {
+                    var wt = entry.wt;
                     try wt.sendDatagram(dg.payload);
+                    entry.wt = wt;
                     std.debug.print("OBSERVED wt datagram echo session={d} bytes={d}\n", .{ dg.stream_id, dg.payload.len });
                 }
             },
@@ -273,13 +283,24 @@ const App = struct {
                 const request = request_state.reader();
                 if (!self.accepted.contains(request.streamId()) and request.headers().len > 0 and request.isWebTransport()) {
                     const wt = try server.acceptWebTransport(self.allocator, request, .{});
-                    try self.accepted.put(self.allocator, request.streamId(), wt);
+                    try self.accepted.put(self.allocator, request.streamId(), .{ .wt = wt });
                     std.debug.print("OBSERVED wt accepted session={d}\n", .{request.streamId()});
                 }
                 if (request.complete()) {
-                    if (self.accepted.fetchRemove(request.streamId())) |entry| {
-                        _ = entry;
-                        self.sessions_completed += 1;
+                    if (self.accepted.getPtr(request.streamId())) |entry| {
+                        if (!entry.completed) {
+                            var wt = entry.wt;
+                            try wt.finish();
+                            entry.wt = wt;
+                            entry.completed = true;
+                            self.sessions_completed += 1;
+                            if (self.max_sessions != 0 and
+                                self.sessions_completed >= self.max_sessions and
+                                self.completed_at_us == null)
+                            {
+                                self.completed_at_us = now_us;
+                            }
+                        }
                         std.debug.print("OBSERVED wt session done session={d} total={d}\n", .{ request.streamId(), self.sessions_completed });
                     }
                 }
@@ -300,11 +321,16 @@ const App = struct {
     }
 
     fn echoUni(self: *App, session_id: u64, payload: []const u8) !void {
-        const wt_const = self.accepted.get(session_id) orelse return;
-        var wt = wt_const;
+        const entry = self.accepted.getPtr(session_id) orelse return;
+        if (entry.completed) {
+            std.debug.print("OBSERVED wt stream echo skipped session={d} reason=session-complete\n", .{session_id});
+            return;
+        }
+        var wt = entry.wt;
         const stream_id = try wt.openUniStream();
         try wt.writeStream(stream_id, payload);
         try wt.finishStream(stream_id);
+        entry.wt = wt;
     }
 };
 
