@@ -9,6 +9,8 @@ breaking changes; see notes per release.
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-07-05
+
 ### Added
 
 - **Opt-in eager reclaim of peer-RESET streams.** New
@@ -35,6 +37,14 @@ breaking changes; see notes per release.
   gate its sends. Unset (`null`, the default) advertises nothing and
   preserves the prior capsule-only behavior — no new enforcement unless you
   opt in.
+
+### Changed
+
+- Repointed the transport dependency to the tagged `quic-zig` v0.7.0
+  hardening release and the `boringssl-zig` v0.6.1 tag, keeping the
+  cross-repo BoringSSL pin byte-for-byte identical while pulling in the
+  strict persisted 0-RTT formats, sanitizer propagation, and pinned
+  quic-go CI scaffolding.
 
 ### Fixed
 
