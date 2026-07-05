@@ -33,7 +33,7 @@ pub fn main(init: std.process.Init) !void {
     });
     defer sock.close(io);
 
-    const sni = try allocator.dupeZ(u8, options.sni);
+    const sni = try allocator.dupeSentinel(u8, options.sni, 0);
     defer allocator.free(sni);
 
     var client_tls = try http3_zig.client.initTlsContext(.{

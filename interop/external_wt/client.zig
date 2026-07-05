@@ -133,7 +133,7 @@ fn runHarness(allocator: std.mem.Allocator, io: std.Io, options: Options) !void 
     });
     defer sock.close(io);
 
-    const sni_z = try allocator.dupeZ(u8, sni_bytes);
+    const sni_z = try allocator.dupeSentinel(u8, sni_bytes, 0);
     defer allocator.free(sni_z);
 
     var client_tls = try http3_zig.client.initTlsContext(.{ .verify = options.verify });
