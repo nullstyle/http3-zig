@@ -9,6 +9,15 @@ breaking changes; see notes per release.
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-07-05
+
+### Changed
+
+- Repointed to `quic-zig` v0.7.1 and `boringssl-zig` v0.6.2. This keeps
+  the 0.7.0 transport hardening while avoiding CI failures from the
+  BoringSSL googlesource tarball endpoint and the stale boringssl-zig
+  consumer example build API.
+
 ## [0.4.1] - 2026-07-05
 
 ### Added
