@@ -137,6 +137,14 @@ pub const Error = quic_zig.conn.state.Error ||
         /// `H3_REQUEST_REJECTED` and surfaces this error so the
         /// session pump can advance without dispatching the stream.
         PeerStreamLimitExceeded,
+        /// A new PUSH_PROMISE would push `received_push_promises` past
+        /// `Config.max_tracked_push_promises` (client). The session closes
+        /// the connection with H3_EXCESSIVE_LOAD.
+        ExcessivePushPromises,
+        /// A new WebTransport CONNECT would push `wt_pending_sessions`
+        /// past `Config.max_pending_wt_sessions` (server). The session
+        /// closes the connection with H3_EXCESSIVE_LOAD.
+        ExcessivePendingWebTransportSessions,
         /// Locally-initiated WebTransport stream open after the peer
         /// has sent `DRAIN_WEBTRANSPORT_SESSION`
         /// (draft-ietf-webtrans-http3-15 §5.5). Existing streams may
@@ -182,6 +190,17 @@ pub const ProductionOptions = struct {
     /// covering the case where MAX_STREAMS is generous but session
     /// state shouldn't grow proportionally.
     max_concurrent_peer_streams: usize = 1024,
+    /// See `Config.max_tracked_priorities`. Caps the RFC 9218 priority-hint
+    /// maps; a PRIORITY_UPDATE for a new id beyond the cap is dropped.
+    max_tracked_priorities: usize = 1024,
+    /// See `Config.max_tracked_push_promises`. Caps tracked received
+    /// PUSH_PROMISE field sections; a new promise beyond the cap closes
+    /// with H3_EXCESSIVE_LOAD.
+    max_tracked_push_promises: usize = 256,
+    /// See `Config.max_pending_wt_sessions`. Caps unconfirmed pending
+    /// WebTransport sessions; a new one beyond the cap closes with
+    /// H3_EXCESSIVE_LOAD.
+    max_pending_wt_sessions: usize = 256,
     /// Maximum bytes a single peer-opened WebTransport stream may
     /// buffer while waiting for its session to be confirmed under
     /// `BufferedStreamPolicy.buffer`. A stream that exceeds this
@@ -271,6 +290,30 @@ pub const Config = struct {
     /// Null preserves the legacy unbounded behavior; `production()`
     /// defaults to 1024.
     max_concurrent_peer_streams: ?usize = null,
+    /// Optional cap on tracked RFC 9218 priority hints — applied to the
+    /// per-request (`request_priorities`) and per-push (`push_priorities`)
+    /// maps independently. A peer flooding PRIORITY_UPDATE for distinct
+    /// stream/push ids otherwise grows these unboundedly, and they are not
+    /// reclaimed when a stream closes. Priorities are advisory, so an
+    /// update for a new id beyond the cap is dropped (RFC 9218 §7 permits
+    /// ignoring PRIORITY_UPDATE). Null preserves the legacy unbounded
+    /// behavior; `production()` defaults to 1024.
+    max_tracked_priorities: ?usize = null,
+    /// Optional cap on tracked received PUSH_PROMISE field sections
+    /// (`received_push_promises`, client only). A server promising distinct
+    /// push ids up to the advertised MAX_PUSH_ID otherwise grows this
+    /// unboundedly. A new promise beyond the cap closes the connection with
+    /// H3_EXCESSIVE_LOAD. Null preserves the legacy behavior (bounded only
+    /// by MAX_PUSH_ID); `production()` defaults to 256.
+    max_tracked_push_promises: ?usize = null,
+    /// Optional cap on unconfirmed pending WebTransport sessions
+    /// (`wt_pending_sessions`, server only) — CONNECT streams that began a
+    /// WT handshake but have not been accepted or torn down. A peer opening
+    /// many WT CONNECTs without completing them otherwise grows this up to
+    /// MAX_STREAMS_BIDI. A new pending session beyond the cap closes the
+    /// connection with H3_EXCESSIVE_LOAD. Null preserves the legacy
+    /// behavior; `production()` defaults to 256.
+    max_pending_wt_sessions: ?usize = null,
     /// Optional cap on bytes a single peer-opened WebTransport stream
     /// may buffer while waiting for its session under
     /// `BufferedStreamPolicy.buffer`. Null preserves the legacy
@@ -319,6 +362,9 @@ pub const Config = struct {
             .max_event_payload_bytes_per_drain = options.max_event_payload_bytes_per_drain,
             .max_events_per_drain = options.max_events_per_drain,
             .max_concurrent_peer_streams = options.max_concurrent_peer_streams,
+            .max_tracked_priorities = options.max_tracked_priorities,
+            .max_tracked_push_promises = options.max_tracked_push_promises,
+            .max_pending_wt_sessions = options.max_pending_wt_sessions,
             .wt_max_buffered_bytes_per_stream = options.wt_max_buffered_bytes_per_stream,
             .push_policy = options.push_policy,
             .buffered_stream_policy = options.buffered_stream_policy,
@@ -1469,6 +1515,16 @@ pub const Session = struct {
 
     pub fn markWebTransportSessionPending(self: *Session, stream_id: u64) Error!void {
         if (self.wt_established_sessions.contains(stream_id)) return;
+        // Cap unconfirmed pending sessions so a peer can't open many WT
+        // CONNECTs without completing them and grow the map up to
+        // MAX_STREAMS_BIDI. Only a genuinely new stream id can grow it.
+        if (!self.wt_pending_sessions.contains(stream_id)) {
+            if (self.config.max_pending_wt_sessions) |limit| {
+                if (self.wt_pending_sessions.count() >= limit) {
+                    return Error.ExcessivePendingWebTransportSessions;
+                }
+            }
+        }
         try self.wt_pending_sessions.put(self.allocator, stream_id, {});
     }
 
@@ -4007,6 +4063,12 @@ pub const Session = struct {
             return;
         }
 
+        // Defense-in-depth beyond the client-advertised MAX_PUSH_ID: cap the
+        // distinct push promises tracked so a server can't flood the map.
+        if (self.config.max_tracked_push_promises) |limit| {
+            if (self.received_push_promises.count() >= limit) return Error.ExcessivePushPromises;
+        }
+
         const copy = try cloneFields(self.allocator, fields);
         errdefer freeFields(self.allocator, copy);
         try self.received_push_promises.put(self.allocator, push_id, copy);
@@ -4550,6 +4612,19 @@ pub const Session = struct {
         }
     }
 
+    /// True if `map` can accept `key` without exceeding
+    /// `Config.max_tracked_priorities` — no cap set, the key is already
+    /// present (an overwrite that doesn't grow the map), or the map is
+    /// below the cap.
+    fn priorityMapHasRoom(
+        self: *const Session,
+        map: *const std.AutoHashMapUnmanaged(u64, priority_mod.Priority),
+        key: u64,
+    ) bool {
+        const limit = self.config.max_tracked_priorities orelse return true;
+        return map.contains(key) or map.count() < limit;
+    }
+
     fn observePriorityUpdate(
         self: *Session,
         target: PriorityTarget,
@@ -4568,7 +4643,13 @@ pub const Session = struct {
 
         switch (target) {
             .request_stream => |stream_id| {
-                try self.request_priorities.put(self.allocator, stream_id, priority);
+                // Priorities are advisory (RFC 9218 §7): under a flood of
+                // distinct stream ids, drop the cached hint for a new id
+                // beyond the cap rather than growing the map unboundedly.
+                // The scheduler still receives the hint below regardless.
+                if (self.priorityMapHasRoom(&self.request_priorities, stream_id)) {
+                    try self.request_priorities.put(self.allocator, stream_id, priority);
+                }
                 // Feed the RFC 9218 hint to quic-zig 0.6.0's send scheduler so
                 // the server's response bytes on this request stream are
                 // emitted in urgency order. Best-effort: a PRIORITY_UPDATE for
@@ -4579,7 +4660,11 @@ pub const Session = struct {
                     .incremental = priority.incremental,
                 }) catch {};
             },
-            .push => |push_id| try self.push_priorities.put(self.allocator, push_id, priority),
+            .push => |push_id| {
+                if (self.priorityMapHasRoom(&self.push_priorities, push_id)) {
+                    try self.push_priorities.put(self.allocator, push_id, priority);
+                }
+            },
         }
 
         return .{

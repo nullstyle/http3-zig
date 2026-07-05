@@ -33,6 +33,9 @@ test "Client.Config.production + Server.Config.production drive a basic GET end 
     try std.testing.expectEqual(http3_zig.SessionBufferedStreamPolicy.reject, client_preset.buffered_stream_policy);
     try std.testing.expectEqual(@as(?usize, 4 * 1024 * 1024), client_preset.max_event_payload_bytes_per_drain);
     try std.testing.expectEqual(@as(?usize, 512), client_preset.max_events_per_drain);
+    try std.testing.expectEqual(@as(?usize, 1024), client_preset.max_tracked_priorities);
+    try std.testing.expectEqual(@as(?usize, 256), client_preset.max_tracked_push_promises);
+    try std.testing.expectEqual(@as(?usize, 256), client_preset.max_pending_wt_sessions);
 
     // The presets are independent types but should agree on every
     // shared field — they describe the same v0.1.0 production posture
@@ -43,6 +46,9 @@ test "Client.Config.production + Server.Config.production drive a basic GET end 
     try std.testing.expectEqual(client_preset.buffered_stream_policy, server_preset.buffered_stream_policy);
     try std.testing.expectEqual(client_preset.max_event_payload_bytes_per_drain, server_preset.max_event_payload_bytes_per_drain);
     try std.testing.expectEqual(client_preset.max_events_per_drain, server_preset.max_events_per_drain);
+    try std.testing.expectEqual(client_preset.max_tracked_priorities, server_preset.max_tracked_priorities);
+    try std.testing.expectEqual(client_preset.max_tracked_push_promises, server_preset.max_tracked_push_promises);
+    try std.testing.expectEqual(client_preset.max_pending_wt_sessions, server_preset.max_pending_wt_sessions);
 
     var pair: H3Pair = undefined;
     try pair.initStarted(

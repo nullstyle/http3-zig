@@ -156,8 +156,12 @@ pub fn codeForError(err: anyerror) u64 {
         error.InvalidLength,
         => protocol.ErrorCode.frame_error,
         // A non-DATA frame whose declared length exceeds
-        // `max_incoming_frame_length`, rejected before reassembly.
+        // `max_incoming_frame_length`, rejected before reassembly; or a
+        // peer flooding push-promise / pending-WT-session state past its
+        // configured cap.
         error.FrameTooLong,
+        error.ExcessivePushPromises,
+        error.ExcessivePendingWebTransportSessions,
         => protocol.ErrorCode.excess_load,
         error.HeaderSectionTooLarge,
         error.DataBeforeHeaders,

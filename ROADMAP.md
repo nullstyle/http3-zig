@@ -31,5 +31,9 @@ See the [README](README.md) for the current capability surface and the
 
 - **Memory-budget enforcement polish.** Opt-in caps cover send buffers,
   outgoing capsules, session event queues, tracker bodies, decoded QPACK
-  field sections, and the production preset; remaining per-buffer budgets are
-  being extended toward a fully-bounded default posture.
+  field sections, concurrent peer streams, and the adversarial-reachable
+  session maps (tracked priorities, received push promises, pending
+  WebTransport sessions) — all wired into the production preset. Remaining:
+  reclaim per-stream priority entries when a stream closes (currently
+  bounded by the cap but not released early), and continue extending
+  per-buffer budgets toward a fully-bounded default posture.

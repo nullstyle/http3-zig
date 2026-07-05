@@ -1370,6 +1370,21 @@ pub const Client = struct {
         /// `session_mod.Config.max_events_per_drain`.
         max_events_per_drain: ?usize = null,
 
+        /// Cap on tracked RFC 9218 priority hints (the per-request and
+        /// per-push maps, each). `null` preserves the legacy unbounded
+        /// behaviour. Mirrors `session_mod.Config.max_tracked_priorities`.
+        max_tracked_priorities: ?usize = null,
+
+        /// Cap on tracked received PUSH_PROMISE field sections (client
+        /// role). `null` preserves the legacy behaviour. Mirrors
+        /// `session_mod.Config.max_tracked_push_promises`.
+        max_tracked_push_promises: ?usize = null,
+
+        /// Cap on unconfirmed pending WebTransport sessions (server role).
+        /// `null` preserves the legacy behaviour. Mirrors
+        /// `session_mod.Config.max_pending_wt_sessions`.
+        max_pending_wt_sessions: ?usize = null,
+
         /// Production-grade defaults: tighter resource caps, strict
         /// buffering policies. Uses defaults for any field not listed.
         ///
@@ -1400,6 +1415,16 @@ pub const Client = struct {
         ///   - `max_events_per_drain = 512`
         ///       Caps event count per `drain`, providing structural
         ///       backpressure independent of payload size.
+        ///   - `max_tracked_priorities = 1024`
+        ///       Bounds cached RFC 9218 priority hints so a peer flooding
+        ///       PRIORITY_UPDATE for distinct ids can't grow them without
+        ///       limit; excess updates for new ids are dropped.
+        ///   - `max_tracked_push_promises = 256`
+        ///       Bounds tracked received PUSH_PROMISE field sections;
+        ///       exceeding closes with H3_EXCESSIVE_LOAD.
+        ///   - `max_pending_wt_sessions = 256`
+        ///       Bounds unconfirmed pending WebTransport sessions;
+        ///       exceeding closes with H3_EXCESSIVE_LOAD.
         pub const production: @This() = .{
             .max_concurrent_peer_streams = 256,
             .max_field_section_size = 16 * 1024,
@@ -1407,6 +1432,9 @@ pub const Client = struct {
             .buffered_stream_policy = .reject,
             .max_event_payload_bytes_per_drain = 4 * 1024 * 1024,
             .max_events_per_drain = 512,
+            .max_tracked_priorities = 1024,
+            .max_tracked_push_promises = 256,
+            .max_pending_wt_sessions = 256,
         };
 
         /// Project the preset onto a `session_mod.Config`, leaving all
@@ -1424,6 +1452,9 @@ pub const Client = struct {
                 .buffered_stream_policy = self.buffered_stream_policy,
                 .max_event_payload_bytes_per_drain = self.max_event_payload_bytes_per_drain,
                 .max_events_per_drain = self.max_events_per_drain,
+                .max_tracked_priorities = self.max_tracked_priorities,
+                .max_tracked_push_promises = self.max_tracked_push_promises,
+                .max_pending_wt_sessions = self.max_pending_wt_sessions,
             };
             if (self.max_field_section_size) |max| {
                 session_config.settings.max_field_section_size = @intCast(max);

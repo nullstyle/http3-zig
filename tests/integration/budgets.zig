@@ -279,3 +279,143 @@ test "session caps concurrent peer-opened streams via max_concurrent_peer_stream
         pair.client_h3.shutdownState(),
     );
 }
+
+test "session caps tracked request priorities under a PRIORITY_UPDATE flood" {
+    // A peer flooding PRIORITY_UPDATE for distinct request stream ids must
+    // not grow `request_priorities` unboundedly. Priorities are advisory
+    // (RFC 9218 §7): an update for a new id beyond the cap is dropped and
+    // the connection stays up.
+    const allocator = std.testing.allocator;
+
+    var pair: H3Pair = undefined;
+    try pair.initStarted(allocator, .{}, .{ .max_tracked_priorities = 4 });
+    defer pair.deinit();
+    try exchangePairSettings(allocator, &pair);
+
+    var h3_client = http3_zig.Client.init(&pair.client_h3);
+
+    // PRIORITY_UPDATE for 40 distinct client-initiated bidi request stream
+    // ids (0, 4, 8, ...), none of which are open.
+    var i: u64 = 0;
+    while (i < 40) : (i += 1) {
+        try h3_client.sendPriorityUpdateForRequest(i * 4, .{ .urgency = 3, .incremental = false });
+    }
+
+    var client_events: std.ArrayList(http3_zig.session.Event) = .empty;
+    defer {
+        clearSessionEvents(allocator, &client_events);
+        client_events.deinit(allocator);
+    }
+    var server_events: std.ArrayList(http3_zig.session.Event) = .empty;
+    defer {
+        clearSessionEvents(allocator, &server_events);
+        server_events.deinit(allocator);
+    }
+
+    var now_us: u64 = 1_000_000;
+    var iters: u32 = 0;
+    while (iters < 2000) : (iters += 1) {
+        try pumpH3(&pair.client, &pair.server, &pair.client_h3, &pair.server_h3, &client_events, &server_events, &now_us);
+        clearSessionEvents(allocator, &server_events);
+        clearSessionEvents(allocator, &client_events);
+    }
+
+    // Bounded at the cap, and the connection stayed up (advisory drop).
+    try std.testing.expect(pair.server_h3.request_priorities.count() <= 4);
+    try std.testing.expectEqual(http3_zig.session.ShutdownState.active, pair.server_h3.shutdownState());
+    try std.testing.expectEqual(http3_zig.session.ShutdownState.active, pair.client_h3.shutdownState());
+}
+
+test "session caps received push promises and closes on a PUSH_PROMISE flood" {
+    // A server promising distinct push ids up to the client's advertised
+    // MAX_PUSH_ID must not grow `received_push_promises` unboundedly. Beyond
+    // the cap the client closes the connection with H3_EXCESSIVE_LOAD.
+    const allocator = std.testing.allocator;
+
+    var pair: H3Pair = undefined;
+    try pair.initStarted(
+        allocator,
+        .{ .max_push_id = 100, .max_tracked_push_promises = 4 },
+        .{},
+    );
+    defer pair.deinit();
+    try exchangePairSettings(allocator, &pair);
+
+    var h3_client = http3_zig.Client.init(&pair.client_h3);
+    const request = try h3_client.startRequest(allocator, .{
+        .authority = "example.com",
+        .path = "/",
+    });
+    const req_stream = request.stream_id;
+
+    var client_events: std.ArrayList(http3_zig.session.Event) = .empty;
+    defer {
+        clearSessionEvents(allocator, &client_events);
+        client_events.deinit(allocator);
+    }
+    var server_events: std.ArrayList(http3_zig.session.Event) = .empty;
+    defer {
+        clearSessionEvents(allocator, &server_events);
+        server_events.deinit(allocator);
+    }
+
+    // Let the server register the request stream.
+    var now_us: u64 = 1_000_000;
+    var iters: u32 = 0;
+    while (iters < 50) : (iters += 1) {
+        try pumpH3(&pair.client, &pair.server, &pair.client_h3, &pair.server_h3, &client_events, &server_events, &now_us);
+        clearSessionEvents(allocator, &server_events);
+        clearSessionEvents(allocator, &client_events);
+    }
+
+    // The server floods PUSH_PROMISE for distinct push ids on the request
+    // stream.
+    const promised = [_]http3_zig.FieldLine{
+        .{ .name = ":method", .value = "GET" },
+        .{ .name = ":scheme", .value = "https" },
+        .{ .name = ":authority", .value = "example.com" },
+        .{ .name = ":path", .value = "/pushed" },
+    };
+    var pid: u64 = 0;
+    while (pid < 8) : (pid += 1) {
+        try writePushPromiseFrame(&pair.server, req_stream, pid, &promised);
+    }
+
+    // The client caps tracking and closes with H3_EXCESSIVE_LOAD.
+    try expectPairH3Error(allocator, &pair, error.ExcessivePushPromises);
+    try std.testing.expect(pair.client_h3.received_push_promises.count() <= 4);
+    try expectLastCloseCode(&pair.client_h3, http3_zig.protocol.ErrorCode.excess_load);
+}
+
+test "session caps pending WebTransport sessions and closes on a WT CONNECT flood" {
+    // A peer opening many WebTransport CONNECT streams without completing
+    // them must not grow `wt_pending_sessions` unboundedly. Beyond the cap
+    // the server closes the connection with H3_EXCESSIVE_LOAD.
+    const allocator = std.testing.allocator;
+
+    var pair: H3Pair = undefined;
+    try pair.initStarted(
+        allocator,
+        http3_zig.session.Config.production(.{ .enable_webtransport = true }),
+        http3_zig.session.Config.production(.{ .enable_webtransport = true, .max_pending_wt_sessions = 4 }),
+    );
+    defer pair.deinit();
+    try exchangePairSettings(allocator, &pair);
+
+    // The client opens many WebTransport CONNECT streams and never drives
+    // any to a 2xx — so the server's pending set would grow unbounded.
+    var h3_client = http3_zig.Client.init(&pair.client_h3);
+    var opened: u32 = 0;
+    while (opened < 8) : (opened += 1) {
+        _ = h3_client.startWebTransport(allocator, .{
+            .scheme = "https",
+            .authority = "example.com",
+            .path = "/wt",
+        }) catch break;
+    }
+    try std.testing.expect(opened >= 5);
+
+    try expectPairH3Error(allocator, &pair, error.ExcessivePendingWebTransportSessions);
+    try std.testing.expect(pair.server_h3.wt_pending_sessions.count() <= 4);
+    try expectLastCloseCode(&pair.server_h3, http3_zig.protocol.ErrorCode.excess_load);
+}
