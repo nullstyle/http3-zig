@@ -9,6 +9,14 @@ breaking changes; see notes per release.
 
 ## [Unreleased]
 
+## [0.4.6] - 2026-07-05
+
+### Changed
+
+- Repointed to `quic-zig` v0.7.5, carrying the pinned quic-go interop
+  output fix and Windows CI test-harness cleanup while keeping the
+  `boringssl-zig` v0.6.4 pin aligned.
+
 ## [0.4.5] - 2026-07-05
 
 ### Fixed
