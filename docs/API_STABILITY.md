@@ -84,6 +84,30 @@ via the runner/tracker `observe` / `classify` helpers). The contract, which
   series. A tag's payload shape is stable; an incompatible payload change is
   introduced as a new tag.
 
+Handle the events you care about explicitly and route the rest through a
+single `else` — the union keeps compiling when a minor release adds a variant,
+and you decide per call site whether the default is "ignore" or "revisit":
+
+```zig
+var events: std.ArrayList(session.Event) = .empty;
+defer events.deinit(allocator);
+try session.drain(&events);
+for (events.items) |event| switch (event) {
+    .headers => |h| try onHeaders(h),
+    .data => |d| try onData(d),
+    .datagram => |dg| try onDatagram(dg),
+    // Everything else — peer_settings, interim_headers, future variants —
+    // is safe to ignore for this consumer. An `else` (not an exhaustive
+    // arm-per-tag) is what makes the switch forward-compatible: adding a
+    // variant in a minor release will not break this code.
+    else => {},
+};
+```
+
+Omitting the `else` is a valid choice when you *want* the compile error as a
+review prompt on upgrade — but then a minor-version bump becomes a
+source-breaking change for your build, so pin the version accordingly.
+
 ## Config forward-compatibility
 
 New `Config` fields are additive and default to safe, backward-compatible
