@@ -233,6 +233,7 @@ pub const ConnectionIdsNeededEvent = session.ConnectionIdsNeededEvent;
 pub const StreamSendState = session.StreamSendState;
 pub const Capsule = capsule.Capsule;
 pub const CapsuleDecoded = capsule.Decoded;
+pub const CapsuleReassembler = capsule.Reassembler;
 pub const DatagramContextPayload = datagram.ContextPayload;
 pub const TransportEndpoint = driver.Endpoint;
 pub const TransportLoopback = driver.Loopback;

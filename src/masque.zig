@@ -4,6 +4,23 @@
 //! transport-free: client/server facades open the CONNECT stream, while this
 //! module owns request classification, target path construction, and the
 //! Context ID 0 UDP payload shape used by CONNECT-UDP datagrams and capsules.
+//!
+//! ## Scope: framing helpers, not a proxy
+//!
+//! This is a framing/helper layer, not a UDP proxy. Two boundaries matter:
+//!
+//! - **The UDP datapath is the embedder's.** http3-zig never owns sockets
+//!   (see the concurrency/allocator contract in `root.zig`); a CONNECT-UDP
+//!   proxy binds its own UDP socket, and forwards between it and the tunnel's
+//!   HTTP Datagrams / DATA-frame capsules using the Context ID 0 payload
+//!   codec here (`encodeUdpPayload` / the datagram helpers) plus the
+//!   `ConnectUdpReceiver` classification. The library provides the framing;
+//!   the embedder provides the socket loop.
+//! - **Capsules on the CONNECT stream must be reassembled.** A capsule
+//!   (RFC 9297) may legally span multiple HTTP/3 DATA frames, so decode
+//!   CONNECT-stream DATA through `capsule.Reassembler`
+//!   (`http3_zig.CapsuleReassembler`) — push each DATA event, drain complete
+//!   capsules — rather than decoding each DATA event independently.
 
 const std = @import("std");
 
