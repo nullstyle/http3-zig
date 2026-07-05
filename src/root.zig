@@ -108,11 +108,6 @@ pub const websocket = @import("websocket.zig");
 pub const webtransport = @import("webtransport.zig");
 pub const masque = @import("masque.zig");
 pub const session = @import("session.zig");
-// Internal: `connection.zig` is a deprecated parallel API to
-// `Session`. It survives in the tree as a transitional helper but is
-// NOT part of the public package surface — `Session` is the
-// supported way to layer HTTP/3 on top of `quic_zig.Connection`.
-const connection = @import("connection.zig");
 pub const client = @import("client.zig");
 pub const server = @import("server.zig");
 
@@ -292,7 +287,6 @@ test {
     _ = webtransport;
     _ = masque;
     _ = session;
-    _ = connection;
     _ = client;
     _ = server;
 }
