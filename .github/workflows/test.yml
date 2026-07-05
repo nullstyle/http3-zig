@@ -28,6 +28,9 @@ jobs:
       - name: Checkout http3-zig
         uses: actions/checkout@v4
 
+      - name: Check boringssl-zig pin matches quic-zig
+        run: tools/check-boringssl-pin.sh
+
       - name: Set up mise (zig master + project tools)
         uses: jdx/mise-action@v2
         with:
