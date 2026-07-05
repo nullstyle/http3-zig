@@ -1,19 +1,19 @@
 .{
     .name = .http3_zig,
-    .version = "0.4.2",
+    .version = "0.4.3",
     .fingerprint = 0x71cd45b0dc74266b,
     .minimum_zig_version = "0.17.0-dev.1158+1d1193aa7",
     .dependencies = .{
-        // quic-zig 0.7.1 — strict persisted 0-RTT state, anti-replay
+        // quic-zig 0.7.2 — strict persisted 0-RTT state, anti-replay
         // persistence, sanitizer/interop hardening, plus the v0.6.x downstream
         // accessors, stream-priority scheduler, and RFC 9000 §7.3
-        // initial_source_connection_id fix. Pinned to the v0.7.1 release
+        // initial_source_connection_id fix. Pinned to the v0.7.2 release
         // tarball. To bump: run `zig fetch <new-tarball-url>`
         // and paste its hash here by hand — do NOT `zig fetch --save`, which
         // mangles a dependency entry.
         .quic_zig = .{
-            .url = "https://github.com/nullstyle/quic-zig/archive/refs/tags/v0.7.1.tar.gz",
-            .hash = "quic_zig-0.7.1-jMbGHRrpNQDQKfqrwGVRtFc985GYXAQeC1tsKu0cQBDV",
+            .url = "https://github.com/nullstyle/quic-zig/archive/refs/tags/v0.7.2.tar.gz",
+            .hash = "quic_zig-0.7.2-jMbGHQ3yNQDPv_KL9zyz3UjeTSZas3nBfmBVPpbHjldL",
         },
         // MUST match quic-zig's boringssl_zig entry byte-for-byte so the
         // package manager dedupes to a single boringssl module instance;
@@ -21,8 +21,8 @@
         // mismatch yields "expected boringssl.tls.Context, found
         // boringssl.tls.Context" type errors at the boundary.
         .boringssl_zig = .{
-            .url = "https://github.com/nullstyle/boringssl-zig/archive/refs/tags/v0.6.2.tar.gz",
-            .hash = "boringssl_zig-0.6.2-4iEdPOXAAQBPePGrMiHoNxpHo_HAfps-Dm0dNyTuYk_F",
+            .url = "https://github.com/nullstyle/boringssl-zig/archive/refs/tags/v0.6.4.tar.gz",
+            .hash = "boringssl_zig-0.6.4-4iEdPG_EAQAatmfvnEyavDt9y1XW-WF5RpkdoMfQtpor",
         },
     },
     .paths = .{

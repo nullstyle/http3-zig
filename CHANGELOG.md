@@ -9,6 +9,14 @@ breaking changes; see notes per release.
 
 ## [Unreleased]
 
+## [0.4.3] - 2026-07-05
+
+### Changed
+
+- Repointed to `quic-zig` v0.7.2 and `boringssl-zig` v0.6.4. This keeps
+  the 0.7.x hardening line while carrying the Windows QNS build fixes,
+  BoringSSL Windows macro hygiene/no-asm fallback, and Winsock linking.
+
 ## [0.4.2] - 2026-07-05
 
 ### Changed
