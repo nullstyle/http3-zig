@@ -9,6 +9,14 @@ breaking changes; see notes per release.
 
 ## [Unreleased]
 
+## [0.4.8] - 2026-07-05
+
+### Fixed
+
+- Raised the per-push `h3-interop-self-test` timeout so fresh CI runners can
+  finish compiling the in-tree HTTP/3 interop binaries instead of cancelling
+  during the build step.
+
 ## [0.4.7] - 2026-07-05
 
 ### Fixed

@@ -25,7 +25,7 @@ on:
 jobs:
   self-test:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 15
     steps:
       - name: Checkout http3-zig
         uses: actions/checkout@v4
