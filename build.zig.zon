@@ -4,17 +4,15 @@
     .fingerprint = 0x71cd45b0dc74266b,
     .minimum_zig_version = "0.17.0-dev.1158+1d1193aa7",
     .dependencies = .{
-        // Local path dep to the sibling quic-zig checkout (0.6.0 — the
-        // reap-robust downstream accessors AND RFC 9218 stream-priority
-        // scheduling http3-zig consumes). Used for dual-repo iteration and
-        // because the v0.6.0 tag is not published yet. Once quic-zig v0.6.0 is
-        // pushed + tagged, repoint to the tarball by hand (do NOT
-        // `zig fetch --save` over a `.path` entry — it mangles it into
-        // `.path = "<url>"`):
-        //   .url  = "https://github.com/nullstyle/quic-zig/archive/refs/tags/v0.6.0.tar.gz"
-        //   .hash = <run `zig fetch <that url>` and paste its output>
+        // quic-zig 0.6.0 — the reap-robust downstream accessors and the
+        // RFC 9218 stream-priority scheduler (urgency + incremental
+        // round-robin) http3-zig consumes. Pinned to the v0.6.0 release
+        // tarball. To bump: run `zig fetch <new-tarball-url>` and paste its
+        // hash here by hand — do NOT `zig fetch --save`, which mangles a
+        // dependency entry.
         .quic_zig = .{
-            .path = "../quic-zig",
+            .url = "https://github.com/nullstyle/quic-zig/archive/refs/tags/v0.6.0.tar.gz",
+            .hash = "quic_zig-0.6.0-jMbGHZ_4NABdtfPnBNVwns0zDGb8hhbkeIhvHPbpxp0W",
         },
         // MUST match quic-zig's boringssl_zig entry byte-for-byte so the
         // package manager dedupes to a single boringssl module instance;
