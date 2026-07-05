@@ -140,6 +140,97 @@ test "client PRIORITY_UPDATE for request reaches server state" {
     try std.testing.expect(quic_priority.incremental);
 }
 
+test "server reclaims a request priority hint when the stream is reaped" {
+    // The RFC 9218 priority cache (`request_priorities`) is keyed by stream
+    // id. Without reclamation it grows once per request and never shrinks —
+    // a slow leak that the `max_tracked_priorities` cap bounds but never
+    // releases. `gcClosedStreams` must drop the hint when the stream reaps.
+    const allocator = std.testing.allocator;
+
+    var pair: H3Pair = undefined;
+    try pair.initStarted(allocator, .{}, .{});
+    defer pair.deinit();
+    try exchangePairSettings(allocator, &pair);
+
+    var h3_client = http3_zig.Client.init(&pair.client_h3);
+    var h3_server = http3_zig.Server.init(&pair.server_h3);
+
+    var request = try h3_client.startRequest(allocator, .{
+        .authority = "example.com",
+        .path = "/reclaim",
+    });
+    const request_stream_id = request.stream_id;
+    try request.updatePriority(.{ .urgency = 2, .incremental = false });
+    try request.finish();
+
+    var server_runner = http3_zig.ServerRunner.init(allocator);
+    defer server_runner.deinit();
+
+    var client_events: std.ArrayList(http3_zig.session.Event) = .empty;
+    defer {
+        clearSessionEvents(allocator, &client_events);
+        client_events.deinit(allocator);
+    }
+    var server_events: std.ArrayList(http3_zig.session.Event) = .empty;
+    defer {
+        clearSessionEvents(allocator, &server_events);
+        server_events.deinit(allocator);
+    }
+
+    // Drive the full request/response so the stream fully closes on both
+    // ends, then keep pumping until the server reaps it. `respond` FINs the
+    // response; the client's FIN was already sent. Reclamation is observed
+    // via `priorityForRequest` returning null once the stream is gone.
+    var saw_priority = false;
+    var response_sent = false;
+    var reclaimed = false;
+    var now_us: u64 = 1_000_000;
+    var iters: u32 = 0;
+    while (!reclaimed) : (iters += 1) {
+        try std.testing.expect(iters < 20_000);
+        try pumpH3(
+            &pair.client,
+            &pair.server,
+            &pair.client_h3,
+            &pair.server_h3,
+            &client_events,
+            &server_events,
+            &now_us,
+        );
+
+        for (server_events.items) |event| {
+            switch (try server_runner.observe(event)) {
+                .request_complete => |incoming| {
+                    if (!response_sent and incoming.stream_id == request_stream_id) {
+                        _ = try h3_server.respond(allocator, incoming.stream_id, .{
+                            .status = "200",
+                            .body = "reclaimed\n",
+                        });
+                        response_sent = true;
+                    }
+                },
+                else => {},
+            }
+        }
+        clearSessionEvents(allocator, &server_events);
+        clearSessionEvents(allocator, &client_events);
+
+        // The hint must be recorded while the stream is still live, and gone
+        // once it reaps — proving reclamation, not that it was never stored.
+        if (h3_server.priorityForRequest(request_stream_id) != null) {
+            saw_priority = true;
+        } else if (saw_priority and response_sent) {
+            reclaimed = true;
+        }
+    }
+
+    try std.testing.expect(saw_priority);
+    try std.testing.expect(h3_server.priorityForRequest(request_stream_id) == null);
+    try std.testing.expectEqual(@as(usize, 0), pair.server_h3.request_priorities.count());
+    // Reclamation rides the stream reap, so the stream itself is gone too.
+    try std.testing.expect(!pair.server_h3.streams.contains(request_stream_id));
+}
+
 test "client PRIORITY_UPDATE for push reaches server state" {
     const allocator = std.testing.allocator;
 

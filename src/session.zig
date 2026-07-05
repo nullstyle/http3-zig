@@ -2380,6 +2380,12 @@ pub const Session = struct {
             const removed = self.streams.fetchRemove(stream_id) orelse continue;
             removed.value.deinit(self.allocator);
             self.allocator.destroy(removed.value);
+            // Reclaim the cached RFC 9218 priority hint for this request
+            // stream (keyed by stream id). It is no longer consultable once
+            // the stream is reaped and would otherwise accumulate for the
+            // connection's lifetime — a slow leak under normal traffic that
+            // the `max_tracked_priorities` cap only bounds, never releases.
+            _ = self.request_priorities.remove(stream_id);
         }
     }
 
