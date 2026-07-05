@@ -4,13 +4,14 @@
     .fingerprint = 0x71cd45b0dc74266b,
     .minimum_zig_version = "0.17.0-dev.1158+1d1193aa7",
     .dependencies = .{
-        // Local path dep to the sibling quic-zig checkout (0.5.0 — the
-        // reap-robust downstream accessors http3-zig adopts). Used for
-        // dual-repo iteration and because the v0.5.0 tag is not published
-        // yet. Once quic-zig v0.5.0 is pushed + tagged, repoint to the
-        // tarball by hand (do NOT `zig fetch --save` over a `.path` entry —
-        // it mangles it into `.path = "<url>"`):
-        //   .url  = "https://github.com/nullstyle/quic-zig/archive/refs/tags/v0.5.0.tar.gz"
+        // Local path dep to the sibling quic-zig checkout (0.6.0 — the
+        // reap-robust downstream accessors AND RFC 9218 stream-priority
+        // scheduling http3-zig consumes). Used for dual-repo iteration and
+        // because the v0.6.0 tag is not published yet. Once quic-zig v0.6.0 is
+        // pushed + tagged, repoint to the tarball by hand (do NOT
+        // `zig fetch --save` over a `.path` entry — it mangles it into
+        // `.path = "<url>"`):
+        //   .url  = "https://github.com/nullstyle/quic-zig/archive/refs/tags/v0.6.0.tar.gz"
         //   .hash = <run `zig fetch <that url>` and paste its output>
         .quic_zig = .{
             .path = "../quic-zig",

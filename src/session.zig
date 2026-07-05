@@ -4170,6 +4170,16 @@ pub const Session = struct {
             self.allocator.destroy(state);
         }
 
+        // Apply any RFC 9218 priority buffered for this push id (from an
+        // earlier PRIORITY_UPDATE, keyed by push id before the push stream
+        // existed) to quic-zig's send scheduler, mirroring the request path.
+        if (self.push_priorities.get(push_id)) |p| {
+            self.quic.streamSetPriority(stream_id, .{
+                .urgency = p.urgency,
+                .incremental = p.incremental,
+            }) catch {};
+        }
+
         try self.writeStreamType(stream_id, protocol.StreamType.push);
         try self.writePushId(stream_id, push_id);
         const encoder = try self.ensureEncoder(state, .push);
@@ -4557,7 +4567,18 @@ pub const Session = struct {
         errdefer self.allocator.free(owned);
 
         switch (target) {
-            .request_stream => |stream_id| try self.request_priorities.put(self.allocator, stream_id, priority),
+            .request_stream => |stream_id| {
+                try self.request_priorities.put(self.allocator, stream_id, priority);
+                // Feed the RFC 9218 hint to quic-zig 0.6.0's send scheduler so
+                // the server's response bytes on this request stream are
+                // emitted in urgency order. Best-effort: a PRIORITY_UPDATE for
+                // an already-completed (reaped) request has nothing to
+                // schedule (streamSetPriority returns StreamNotFound).
+                self.quic.streamSetPriority(stream_id, .{
+                    .urgency = priority.urgency,
+                    .incremental = priority.incremental,
+                }) catch {};
+            },
             .push => |push_id| try self.push_priorities.put(self.allocator, push_id, priority),
         }
 

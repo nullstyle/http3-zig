@@ -131,6 +131,13 @@ test "client PRIORITY_UPDATE for request reaches server state" {
     try std.testing.expect(stored.incremental);
     try std.testing.expectEqual(@as(u64, 1), h3_client.metrics().priority_updates_sent);
     try std.testing.expectEqual(@as(u64, 1), h3_server.metrics().priority_updates_received);
+
+    // The server also propagated the RFC 9218 hint to quic-zig's send
+    // scheduler (0.6.0), so its response bytes on this stream schedule by
+    // urgency — the transport side of the co-design.
+    const quic_priority = pair.server.streamPriority(request_stream_id).?;
+    try std.testing.expectEqual(@as(u3, 1), quic_priority.urgency);
+    try std.testing.expect(quic_priority.incremental);
 }
 
 test "client PRIORITY_UPDATE for push reaches server state" {

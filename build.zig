@@ -21,7 +21,7 @@ pub fn build(b: *std.Build) void {
     // reference to quic_zig.version() fails to compile. Value is cosmetic —
     // http3-zig never calls version() — but kept correct for the pinned dep.
     const quic_build_options = b.addOptions();
-    quic_build_options.addOption([]const u8, "version", "0.5.0");
+    quic_build_options.addOption([]const u8, "version", "0.6.0");
     const quic_build_options_mod = quic_build_options.createModule();
 
     // Single-source http3-zig's own version() from build.zig.zon so it can
