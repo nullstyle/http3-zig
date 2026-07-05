@@ -33,7 +33,7 @@ extract_dep_field() {
     ' "$zon"
 }
 
-github_archive_raw_zon_url() {
+github_raw_zon_url() {
     url=$1
 
     case "$url" in
@@ -50,8 +50,18 @@ github_archive_raw_zon_url() {
             esac
             printf 'https://raw.githubusercontent.com/%s/%s/%s/build.zig.zon\n' "$owner" "$repo" "$ref"
             ;;
+        git+https://github.com/*/*.git#*)
+            path=${url#git+https://github.com/}
+            owner=${path%%/*}
+            path=${path#*/}
+            repo=${path%%.git#*}
+            ref=${path#*.git#}
+            [ "$repo" != "$path" ] || die "unsupported quic_zig git URL: $url"
+            [ -n "$ref" ] || die "missing ref in quic_zig git URL: $url"
+            printf 'https://raw.githubusercontent.com/%s/%s/%s/build.zig.zon\n' "$owner" "$repo" "$ref"
+            ;;
         *)
-            die "unsupported quic_zig archive URL: $url"
+            die "unsupported quic_zig URL: $url"
             ;;
     esac
 }
@@ -73,7 +83,7 @@ else
     tmp_dir=$(mktemp -d)
     trap 'rm -rf "$tmp_dir"' EXIT HUP INT TERM
     quic_zon=$tmp_dir/quic-build.zig.zon
-    raw_url=$(github_archive_raw_zon_url "$quic_url")
+    raw_url=$(github_raw_zon_url "$quic_url")
     curl -fsSL "$raw_url" -o "$quic_zon"
 fi
 

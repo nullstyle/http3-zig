@@ -9,6 +9,14 @@ breaking changes; see notes per release.
 
 ## [Unreleased]
 
+## [0.4.7] - 2026-07-05
+
+### Fixed
+
+- Updated the boringssl pin checker to understand the quic-zig `git+https`
+  tag pin used for v0.7.5, keeping CI's pre-build dependency alignment check
+  green.
+
 ## [0.4.6] - 2026-07-05
 
 ### Changed
