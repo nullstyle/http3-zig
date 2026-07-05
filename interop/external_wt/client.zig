@@ -153,7 +153,11 @@ fn runHarness(allocator: std.mem.Allocator, io: std.Io, options: Options) !void 
         .initial_max_stream_data_uni = 1024 * 1024,
         .initial_max_streams_bidi = 64,
         .initial_max_streams_uni = 16,
-        .max_udp_payload_size = 1200,
+        // Advertise a large receive limit (RFC 9000 default) so a peer's
+        // coalesced handshake datagram (quic-go sends ~1280 B) isn't dropped
+        // as `payload_too_large`. 1200 is the RFC minimum, not a good
+        // receive limit — it silently rejects real peers' ServerHello flight.
+        .max_udp_payload_size = 65527,
         .active_connection_id_limit = 8,
         .max_datagram_frame_size = 1200,
     });
