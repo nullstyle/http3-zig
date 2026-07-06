@@ -29,6 +29,9 @@ breaking changes; see notes per release.
   `RequestWriter.canWrite` checks and server-side raw request-body budgeting.
 - Added an embedding guide documenting event-loop integration, event ownership,
   raw-event vs runner tradeoffs, backpressure signals, and shutdown shape.
+- Added a graceful GOAWAY shutdown loopback example showing an accepted request
+  completing while the client's next request is rejected by the peer GOAWAY
+  limit.
 - Added public API smoke coverage for the documented stable embedding surface.
 - Added `wt_max_total_buffered_bytes` to cap aggregate pre-confirmation
   WebTransport buffering under `BufferedStreamPolicy.buffer`; production

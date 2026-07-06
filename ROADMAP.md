@@ -40,10 +40,10 @@ See the [README](README.md) for the current capability surface and the
   now documents the application-owned event-loop shape, session/event
   ownership rules, raw-event vs runner tradeoffs, and the backpressure signals
   embedders need to wire into custom servers, clients, proxies, and test
-  harnesses. The guide points at runnable facade, streaming-body, and
-  WebTransport proxy examples. Remaining: add a focused graceful GOAWAY /
-  shutdown example, and consider a socket-backed skeleton if quic-zig grows a
-  stable public listener/dialer helper for examples.
+  harnesses. The guide points at runnable facade, streaming-body, graceful
+  GOAWAY shutdown, and WebTransport proxy examples. Remaining: consider a
+  socket-backed skeleton if quic-zig grows a stable public listener/dialer
+  helper for examples.
 
 - **Memory-budget enforcement polish.** Opt-in caps cover send buffers,
   outgoing capsules, session event queues, tracker bodies, decoded QPACK

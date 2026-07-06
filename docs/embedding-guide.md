@@ -102,6 +102,8 @@ Runnable examples:
   bounded storage.
 - `examples/streaming_upload.zig`: client upload pacing with
   `RequestWriter.canWrite` and server-side raw request DATA budgeting.
+- `examples/graceful_shutdown.zig`: server-initiated GOAWAY drain where the
+  accepted request completes and the client's next request is blocked.
 - `examples/webtransport_proxy.zig`: explicit intermediary policy for WT
   capsules, datagrams, substreams, FIN, and reset forwarding.
 
@@ -131,6 +133,12 @@ QUIC connection until pending events and outgoing packets are drained. A
 connection close appears as a typed `connection_closed` event; inspect its
 structured HTTP/3 error metadata before removing the connection from your
 tables.
+
+`examples/graceful_shutdown.zig` shows the common server-side shape: accept
+request stream `0`, send `GOAWAY(4)` so the next client request stream is
+covered by the advertised limit, finish the already-accepted response, and let
+the client observe `RequestBlockedByGoaway` when it tries to open another
+request.
 
 Before `Session.deinit`, free all events that were yielded by prior drains.
 `Session.deinit` only releases state still owned by the session; drained event

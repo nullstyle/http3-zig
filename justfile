@@ -32,6 +32,9 @@ example-bounded-body-sink:
 example-streaming-upload:
     zig build run-example-streaming-upload
 
+example-graceful-shutdown:
+    zig build run-example-graceful-shutdown
+
 example-loopback-wt:
     zig build run-example-loopback-wt
 

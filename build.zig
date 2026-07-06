@@ -420,6 +420,25 @@ pub fn build(b: *std.Build) void {
     const run_streaming_upload_step = b.step("run-example-streaming-upload", "Run the streaming request upload example");
     run_streaming_upload_step.dependOn(&run_streaming_upload.step);
 
+    const graceful_shutdown_mod = b.createModule(.{
+        .root_source_file = b.path("examples/graceful_shutdown.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    graceful_shutdown_mod.addImport("http3_zig", http3_zig_mod);
+    graceful_shutdown_mod.addImport("quic_zig", quic_zig_mod);
+    const graceful_shutdown = b.addExecutable(.{
+        .name = "http3-zig-graceful-shutdown",
+        .root_module = graceful_shutdown_mod,
+    });
+    const install_graceful_shutdown = b.addInstallArtifact(graceful_shutdown, .{});
+    const graceful_shutdown_step = b.step("example-graceful-shutdown", "Build the graceful GOAWAY shutdown example");
+    graceful_shutdown_step.dependOn(&install_graceful_shutdown.step);
+
+    const run_graceful_shutdown = b.addRunArtifact(graceful_shutdown);
+    const run_graceful_shutdown_step = b.step("run-example-graceful-shutdown", "Run the graceful GOAWAY shutdown example");
+    run_graceful_shutdown_step.dependOn(&run_graceful_shutdown.step);
+
     const loopback_wt_mod = b.createModule(.{
         .root_source_file = b.path("examples/loopback_wt.zig"),
         .target = target,

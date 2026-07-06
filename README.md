@@ -89,7 +89,10 @@ which consumes raw response events into a caller-owned bounded sink instead of
 using the facade runners' body accumulation; streaming request-body producers
 can start from [`examples/streaming_upload.zig`](examples/streaming_upload.zig),
 which writes POST body chunks through `RequestWriter.canWrite` and lets the
-server consume raw request DATA under its own budget. For an application-author
+server consume raw request DATA under its own budget. Graceful shutdown policy
+is modeled in [`examples/graceful_shutdown.zig`](examples/graceful_shutdown.zig),
+which sends GOAWAY after accepting an in-flight request, lets that response
+finish, and rejects the next client request. For an application-author
 walkthrough of the WebTransport API (handshake, streams, datagrams, flow
 control, drain, close), see
 [`docs/webtransport-tour.md`](docs/webtransport-tour.md).
@@ -207,6 +210,7 @@ just fuzz-smoke
 just example-loopback-get
 just example-bounded-body-sink
 just example-streaming-upload
+just example-graceful-shutdown
 just external-h3-client
 just external-h3-interop
 ```
@@ -431,6 +435,8 @@ just external-h3-interop
   body storage.
 - `just example-streaming-upload` runs a client-side streaming POST with
   `RequestWriter.canWrite` checks and server-side raw request DATA budgeting.
+- `just example-graceful-shutdown` runs a server-initiated GOAWAY drain where
+  one in-flight request completes and the client's next request is blocked.
 - `just example-loopback-wt` runs the endpoint WebTransport loopback example.
 - `just example-webtransport-proxy` runs a two-hop WebTransport proxy datapath
   example over two in-process H3 pairs.
