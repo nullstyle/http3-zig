@@ -29,6 +29,9 @@ example-loopback-get:
 example-bounded-body-sink:
     zig build run-example-bounded-body-sink
 
+example-streaming-upload:
+    zig build run-example-streaming-upload
+
 example-loopback-wt:
     zig build run-example-loopback-wt
 

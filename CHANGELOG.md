@@ -25,6 +25,8 @@ breaking changes; see notes per release.
 - Added a bounded body sink loopback example showing raw
   `RequestEvent` / `ResponseEvent` consumption with caller-owned response-body
   storage and send-side `ResponseWriter.canWrite` checks.
+- Added a streaming upload loopback example showing client-side
+  `RequestWriter.canWrite` checks and server-side raw request-body budgeting.
 - Added public API smoke coverage for the documented stable embedding surface.
 - Added `wt_max_total_buffered_bytes` to cap aggregate pre-confirmation
   WebTransport buffering under `BufferedStreamPolicy.buffer`; production

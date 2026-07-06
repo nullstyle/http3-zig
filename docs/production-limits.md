@@ -35,9 +35,9 @@ or `Server.Config.production.toSessionConfig()`.
 - Drain-budget errors (`EventPayloadTooLarge`, `EventQueueFull`) are local
   backpressure signals. Callers should free emitted events and drain again.
 - Raw `RequestEvent` / `ResponseEvent` body events let embedders stream into
-  their own sinks instead of using facade tracker accumulation; response
-  producers can pair this with `ResponseWriter.canWrite` before emitting more
-  DATA.
+  their own sinks instead of using facade tracker accumulation. Request and
+  response producers can pair that with `RequestWriter.canWrite` or
+  `ResponseWriter.canWrite` before emitting more DATA.
 - WebTransport flow-control errors (`WebTransportFlowControlExceeded`,
   `WebTransportStreamLimitExceeded`, `WebTransportSessionDraining`) indicate
   session-level or peer-advertised limits rather than transport failure.
@@ -79,5 +79,8 @@ or `Server.Config.production.toSessionConfig()`.
 - `examples/bounded_body_sink.zig` is a compile-checked, runnable raw-event
   example that streams response DATA into a fixed application budget while the
   server side checks `ResponseWriter.canWrite`.
+- `examples/streaming_upload.zig` is a compile-checked, runnable upload
+  example that checks `RequestWriter.canWrite` before sending request DATA and
+  streams server-side request events into a fixed application budget.
 - `bench/wt_memory.zig` / `zig build mem-profile` gates long-running
   WebTransport memory growth; see [memory-profile.md](memory-profile.md).

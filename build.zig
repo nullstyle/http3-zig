@@ -401,6 +401,25 @@ pub fn build(b: *std.Build) void {
     const run_bounded_body_step = b.step("run-example-bounded-body-sink", "Run the bounded streaming body sink example");
     run_bounded_body_step.dependOn(&run_bounded_body.step);
 
+    const streaming_upload_mod = b.createModule(.{
+        .root_source_file = b.path("examples/streaming_upload.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    streaming_upload_mod.addImport("http3_zig", http3_zig_mod);
+    streaming_upload_mod.addImport("quic_zig", quic_zig_mod);
+    const streaming_upload = b.addExecutable(.{
+        .name = "http3-zig-streaming-upload",
+        .root_module = streaming_upload_mod,
+    });
+    const install_streaming_upload = b.addInstallArtifact(streaming_upload, .{});
+    const streaming_upload_step = b.step("example-streaming-upload", "Build the streaming request upload example");
+    streaming_upload_step.dependOn(&install_streaming_upload.step);
+
+    const run_streaming_upload = b.addRunArtifact(streaming_upload);
+    const run_streaming_upload_step = b.step("run-example-streaming-upload", "Run the streaming request upload example");
+    run_streaming_upload_step.dependOn(&run_streaming_upload.step);
+
     const loopback_wt_mod = b.createModule(.{
         .root_source_file = b.path("examples/loopback_wt.zig"),
         .target = target,
