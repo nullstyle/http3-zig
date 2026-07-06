@@ -21,9 +21,31 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, ubuntu-24.04-arm, macos-15]
-        optimize: [Debug, ReleaseSafe]
+        include:
+          - os: ubuntu-latest
+            optimize: Debug
+            advisory: false
+          - os: ubuntu-latest
+            optimize: ReleaseSafe
+            advisory: false
+          - os: ubuntu-24.04-arm
+            optimize: Debug
+            advisory: false
+          - os: ubuntu-24.04-arm
+            optimize: ReleaseSafe
+            advisory: false
+          - os: macos-15
+            optimize: Debug
+            advisory: false
+          - os: macos-15
+            optimize: ReleaseSafe
+            advisory: false
+          # Preview the next macOS generation without making it a release gate.
+          - os: macos-26
+            optimize: Debug
+            advisory: true
     runs-on: ${{ matrix.os }}
+    continue-on-error: ${{ matrix.advisory }}
     steps:
       - name: Checkout http3-zig
         uses: actions/checkout@v7
