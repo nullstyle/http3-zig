@@ -425,6 +425,12 @@ Unknown capsules are forwarded unchanged. `CLOSE_WEBTRANSPORT_SESSION` is not
 special-cased: forwarding the capsule does not finish or reset either CONNECT
 stream, so applications still own FIN/reset and stream-copy policy.
 
+For the rest of an intermediary datapath, see
+[`examples/webtransport_proxy.zig`](../examples/webtransport_proxy.zig). It
+models downstream client ↔ proxy ↔ upstream server with two in-process H3
+pairs, forwarding capsules with `forwardCapsuleTo` and forwarding DATAGRAMs,
+WT substream bytes, FIN, and reset through explicit application-owned maps.
+
 ### The flow snapshot
 
 ```zig
@@ -688,7 +694,11 @@ a `WebTransportFlowViolationKind` describing what overflowed.
 
 - [`examples/loopback_wt.zig`](../examples/loopback_wt.zig) — runnable
   in-process loopback demonstrating the full bootstrap → exchange → close
-  flow. Run via `just example-loopback-wt` (if defined) or directly.
+  flow. Run via `just example-loopback-wt`.
+- [`examples/webtransport_proxy.zig`](../examples/webtransport_proxy.zig) —
+  runnable two-hop intermediary example showing the caller-owned capsule,
+  datagram, WT stream, FIN, and reset forwarding datapath. Run via
+  `just example-webtransport-proxy`.
 - [`tests/integration/webtransport.zig`](../tests/integration/webtransport.zig)
   — exhaustive integration tests covering streams, datagrams, flow control,
   drain, close, buffered policies, subprotocol negotiation, and reset

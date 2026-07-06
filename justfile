@@ -23,6 +23,12 @@ external-h3-interop:
 example-loopback-get:
     zig build run-example-loopback-get
 
+example-loopback-wt:
+    zig build run-example-loopback-wt
+
+example-webtransport-proxy:
+    zig build run-example-webtransport-proxy
+
 fuzz-codecs:
     zig build fuzz-codecs
 

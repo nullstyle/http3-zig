@@ -384,6 +384,26 @@ pub fn build(b: *std.Build) void {
     const run_loopback_wt_step = b.step("run-example-loopback-wt", "Run the in-process HTTP/3 WebTransport loopback example");
     run_loopback_wt_step.dependOn(&run_loopback_wt.step);
 
+    const wt_proxy_mod = b.createModule(.{
+        .root_source_file = b.path("examples/webtransport_proxy.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    wt_proxy_mod.addImport("http3_zig", http3_zig_mod);
+    wt_proxy_mod.addImport("quic_zig", quic_zig_mod);
+    wt_proxy_mod.addImport("boringssl", boringssl_mod);
+    const wt_proxy = b.addExecutable(.{
+        .name = "http3-zig-webtransport-proxy",
+        .root_module = wt_proxy_mod,
+    });
+    const install_wt_proxy = b.addInstallArtifact(wt_proxy, .{});
+    const wt_proxy_step = b.step("example-webtransport-proxy", "Build the in-process WebTransport proxy datapath example");
+    wt_proxy_step.dependOn(&install_wt_proxy.step);
+
+    const run_wt_proxy = b.addRunArtifact(wt_proxy);
+    const run_wt_proxy_step = b.step("run-example-webtransport-proxy", "Run the in-process WebTransport proxy datapath example");
+    run_wt_proxy_step.dependOn(&run_wt_proxy.step);
+
     // WebTransport baseline microbenchmark. Drives an in-process H3 +
     // QUIC pair through the loopback shim and reports p50/p99/mean/max
     // for session establishment, datagram round-trip, and uni stream

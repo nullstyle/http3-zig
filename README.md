@@ -79,9 +79,13 @@ try req.finish();
 
 See [`examples/loopback_get.zig`](examples/loopback_get.zig) for the
 full pump loop, and [`examples/loopback_wt.zig`](examples/loopback_wt.zig)
-for the WebTransport variant. For an application-author walkthrough of
-the WebTransport API (handshake, streams, datagrams, flow control, drain,
-close), see [`docs/webtransport-tour.md`](docs/webtransport-tour.md).
+for the endpoint WebTransport variant. Intermediaries can start from
+[`examples/webtransport_proxy.zig`](examples/webtransport_proxy.zig), which
+forwards WT control capsules, QUIC DATAGRAM payloads, WT substream data, FIN,
+and resets across two in-process HTTP/3 pairs while keeping proxy policy in
+application code. For an application-author walkthrough of the WebTransport API
+(handshake, streams, datagrams, flow control, drain, close), see
+[`docs/webtransport-tour.md`](docs/webtransport-tour.md).
 
 ## Datagram sends
 
@@ -114,6 +118,9 @@ cases or non-WT MASQUE multiplexing. WT control / extension capsules are
 different: intermediary code may forward them with
 `WebTransport*Stream.forwardCapsuleTo`, which observes the inbound capsule
 locally and writes the exact capsule on the paired outbound CONNECT stream.
+`examples/webtransport_proxy.zig` shows the rest of the datapath that remains
+application-owned: stream-id maps, datagram routing, and CONNECT FIN/reset
+policy.
 
 ## Stream lifecycle
 
@@ -399,5 +406,8 @@ just external-h3-interop
 - `just example-loopback-get` runs a compact in-process client/server example
   over `TransportLoopback` with the public `Client`, `Server`,
   `ClientRunner`, and `ServerRunner` APIs.
+- `just example-loopback-wt` runs the endpoint WebTransport loopback example.
+- `just example-webtransport-proxy` runs a two-hop WebTransport proxy datapath
+  example over two in-process H3 pairs.
 
 See [ROADMAP.md](ROADMAP.md) for the production plan.

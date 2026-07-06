@@ -14,6 +14,9 @@ breaking changes; see notes per release.
 - Added WebTransport control-capsule forwarding helpers on client/server WT
   stream handles, with two-hop intermediary coverage for MAX_DATA, BLOCKED,
   DRAIN, unknown, and CLOSE capsule behavior.
+- Added a runnable WebTransport proxy datapath example that forwards WT
+  capsules, DATAGRAMs, substream data, FIN, and resets across two in-process
+  HTTP/3 pairs while keeping proxy policy application-owned.
 - Added an advisory HTTP/3 foreign-peer matrix against a pinned
   `quic-go/http3` server, plus status docs for local and CI runs.
 - Added public API smoke coverage for the documented stable embedding surface.

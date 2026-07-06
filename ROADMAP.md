@@ -28,8 +28,10 @@ See the [README](README.md) for the current capability surface and the
 
 - **WebTransport intermediary forwarding.** WT control-capsule forwarding
   helpers are in place for intermediaries that already own both CONNECT
-  streams. Remaining proxy work is intentionally application-level:
-  stream-copy loops, DATAGRAM routing, and CONNECT FIN/reset policy.
+  streams, and `examples/webtransport_proxy.zig` now shows the application
+  datapath for stream-copy loops, DATAGRAM routing, and CONNECT FIN/reset
+  policy across two in-process H3 pairs. A reusable full proxy remains out of
+  scope unless a future release chooses an explicit policy layer.
 
 - **Memory-budget enforcement polish.** Opt-in caps cover send buffers,
   outgoing capsules, session event queues, tracker bodies, decoded QPACK
