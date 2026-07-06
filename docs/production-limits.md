@@ -73,6 +73,10 @@ or `Server.Config.production.toSessionConfig()`.
 - `tests/integration/webtransport_forwarding.zig` covers two-hop WT
   control-capsule forwarding, including MAX_DATA, BLOCKED, DRAIN, unknown, and
   CLOSE capsule behavior.
+- `zig build run-examples` runs the in-process embedding cookbook on CI,
+  covering facade GET, raw response body budgeting, streaming upload
+  budgeting, graceful GOAWAY shutdown, endpoint WebTransport, and WT proxy
+  datapath ownership.
 - `examples/webtransport_proxy.zig` is a compile-checked, runnable two-hop WT
   datapath example covering capsule, DATAGRAM, stream-data, FIN, and reset
   forwarding ownership.

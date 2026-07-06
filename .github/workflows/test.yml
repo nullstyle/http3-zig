@@ -73,6 +73,10 @@ jobs:
       - name: zig build conformance
         run: zig build conformance -Doptimize=${{ matrix.optimize }} --summary all
 
+      - name: zig build run-examples
+        if: matrix.os == 'ubuntu-latest' && matrix.optimize == 'Debug'
+        run: zig build run-examples --summary all
+
   # Long-running-session memory regression gate. `zig build mem-profile` runs
   # the WebTransport long-lived-session profiler (always ReleaseSafe) and exits
   # non-zero if per-iteration retained-memory growth exceeds the gate in

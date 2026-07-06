@@ -207,6 +207,7 @@ loop shape, event lifetime rules, and when to choose raw events versus runners.
 mise install
 just test
 just fuzz-smoke
+just run-examples
 just example-loopback-get
 just example-bounded-body-sink
 just example-streaming-upload
@@ -427,6 +428,8 @@ just external-h3-interop
   `bash interop/external_h3/peers/aioquic.sh`; CI runs both from the advisory
   `h3-interop` workflow. See
   [docs/h3-third-party-interop.md](docs/h3-third-party-interop.md).
+- `just examples` builds every runnable in-process example; `just run-examples`
+  runs the full example cookbook and is covered by CI on Ubuntu.
 - `just example-loopback-get` runs a compact in-process client/server example
   over `TransportLoopback` with the public `Client`, `Server`,
   `ClientRunner`, and `ServerRunner` APIs.

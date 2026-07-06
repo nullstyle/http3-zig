@@ -97,6 +97,7 @@ proxies, or tools that stream directly into an application buffer.
 
 Runnable examples:
 
+- Run the full cookbook with `zig build run-examples` or `just run-examples`.
 - `examples/loopback_get.zig`: facade runners and complete response tracking.
 - `examples/bounded_body_sink.zig`: raw response events into caller-owned
   bounded storage.

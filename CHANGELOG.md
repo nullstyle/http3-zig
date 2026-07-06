@@ -32,6 +32,8 @@ breaking changes; see notes per release.
 - Added a graceful GOAWAY shutdown loopback example showing an accepted request
   completing while the client's next request is rejected by the peer GOAWAY
   limit.
+- Added aggregate `examples` / `run-examples` build steps and a CI gate that
+  runs the in-process embedding cookbook on Ubuntu.
 - Added public API smoke coverage for the documented stable embedding surface.
 - Added `wt_max_total_buffered_bytes` to cap aggregate pre-confirmation
   WebTransport buffering under `BufferedStreamPolicy.buffer`; production

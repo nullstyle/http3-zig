@@ -478,6 +478,22 @@ pub fn build(b: *std.Build) void {
     const run_wt_proxy_step = b.step("run-example-webtransport-proxy", "Run the in-process WebTransport proxy datapath example");
     run_wt_proxy_step.dependOn(&run_wt_proxy.step);
 
+    const examples_step = b.step("examples", "Build all runnable examples");
+    examples_step.dependOn(&install_loopback_get.step);
+    examples_step.dependOn(&install_bounded_body.step);
+    examples_step.dependOn(&install_streaming_upload.step);
+    examples_step.dependOn(&install_graceful_shutdown.step);
+    examples_step.dependOn(&install_loopback_wt.step);
+    examples_step.dependOn(&install_wt_proxy.step);
+
+    const run_examples_step = b.step("run-examples", "Run all in-process examples");
+    run_examples_step.dependOn(&run_loopback_get.step);
+    run_examples_step.dependOn(&run_bounded_body.step);
+    run_examples_step.dependOn(&run_streaming_upload.step);
+    run_examples_step.dependOn(&run_graceful_shutdown.step);
+    run_examples_step.dependOn(&run_loopback_wt.step);
+    run_examples_step.dependOn(&run_wt_proxy.step);
+
     // WebTransport baseline microbenchmark. Drives an in-process H3 +
     // QUIC pair through the loopback shim and reports p50/p99/mean/max
     // for session establishment, datagram round-trip, and uni stream

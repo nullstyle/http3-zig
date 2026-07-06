@@ -23,6 +23,12 @@ external-h3-interop:
     zig build external-h3-client
     bash interop/external_h3/run_matrix.sh
 
+examples:
+    zig build examples
+
+run-examples:
+    zig build run-examples
+
 example-loopback-get:
     zig build run-example-loopback-get
 
