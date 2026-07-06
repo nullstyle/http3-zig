@@ -29,10 +29,10 @@ jobs:
     timeout-minutes: 90
     steps:
       - name: Checkout http3-zig
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up mise (zig master + project tools)
-        uses: jdx/mise-action@v2
+        uses: jdx/mise-action@v4
         with:
           install: true
           cache: true
@@ -55,7 +55,7 @@ jobs:
 
       - name: Upload fuzz crash artifacts
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: fuzz-nightly-corpus-crashes
           path: |
@@ -70,10 +70,10 @@ jobs:
     timeout-minutes: 90
     steps:
       - name: Checkout http3-zig
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up mise (zig master + project tools)
-        uses: jdx/mise-action@v2
+        uses: jdx/mise-action@v4
         with:
           install: true
           cache: true
@@ -88,7 +88,7 @@ jobs:
 
       - name: Upload fuzz crash artifacts
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: fuzz-nightly-coverage-guided-crashes
           path: |

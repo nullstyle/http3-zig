@@ -44,16 +44,16 @@ jobs:
       EXTRA_URLS: ${{ github.event.inputs.urls }}
     steps:
       - name: Checkout http3-zig
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up mise (zig master + project tools)
-        uses: jdx/mise-action@v2
+        uses: jdx/mise-action@v4
         with:
           install: true
           cache: true
 
       - name: Set up Go (for the webtransport-go peer)
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version: "1.25"
           # Cache the module download for the third-party peer.
@@ -63,7 +63,7 @@ jobs:
           cache-dependency-path: interop/external_wt/server_go/go.sum
 
       - name: Set up Python (for the pywebtransport peer)
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           # pywebtransport requires CPython >= 3.12. We pin to 3.12
           # so a future runtime bump on `ubuntu-latest` doesn't
