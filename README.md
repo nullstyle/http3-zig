@@ -366,8 +366,8 @@ just external-h3-interop
 
 - `zig build check-api` compile-checks the documented stable embedding surface
   (`Session`, facades, runners, readers/trackers, extension wrappers,
-  observability hooks, and key codec re-exports) without running the broader
-  integration/conformance corpus.
+  observability hooks, and key codec re-exports) as a named CI gate, without
+  running the broader integration/conformance corpus.
 - `zig build test` covers unit codecs and an in-process `h3` ALPN integration
   where a `http3-zig.Session` client sends a request over `quic-zig` streams, a
   `http3-zig.Server` tracks and returns a response, the `http3-zig.Client` tracks the

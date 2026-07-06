@@ -21,8 +21,9 @@ but changes will be deliberate, called out in `CHANGELOG.md`, and kept minimal.
   `sendGoaway`, `stopSending`, `resetStream`, the datagram/capsule sends), and
   `SessionConfig` / `SessionProductionOptions` / `SessionConfig.production`.
   `zig build check-api` runs `tests/integration/public_api_smoke.zig` to
-  compile-check this tier, and the same smoke test is included in the normal
-  suite so an accidental alias or entry-point removal fails CI.
+  compile-check this tier as a named CI step, and the same smoke test is
+  included in the normal suite so an accidental alias or entry-point removal
+  fails CI.
 - **Facades:** `Client` and `Server`, their request/response/push option
   structs and streaming writer handles (`RequestWriter`, `ResponseWriter`,
   `PushWriter`), and the reader/tracker convenience types (`ResponseReader` /

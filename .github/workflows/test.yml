@@ -67,6 +67,9 @@ jobs:
       - name: zig build
         run: zig build -Doptimize=${{ matrix.optimize }} --summary all
 
+      - name: zig build check-api
+        run: zig build check-api -Doptimize=${{ matrix.optimize }} --summary all
+
       - name: zig build test
         run: zig build test -Doptimize=${{ matrix.optimize }} --summary all
 
