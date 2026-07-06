@@ -399,9 +399,10 @@ just external-h3-interop
 - `just external-h3-interop` runs the optional external-peer matrix. It skips
   peers whose server command environment variables are not configured, and can
   drive quic-go, ngtcp2, lsquic, and aioquic style servers through the shared
-  http3-zig-as-client harness. The pinned quic-go peer is available in-tree
-  via `bash interop/external_h3/peers/quic-go.sh`; CI runs it from the
-  advisory `h3-interop` workflow. See
+  http3-zig-as-client harness. Pinned quic-go and aioquic peers are available
+  in-tree via `bash interop/external_h3/peers/quic-go.sh` and
+  `bash interop/external_h3/peers/aioquic.sh`; CI runs both from the advisory
+  `h3-interop` workflow. See
   [docs/h3-third-party-interop.md](docs/h3-third-party-interop.md).
 - `just example-loopback-get` runs a compact in-process client/server example
   over `TransportLoopback` with the public `Client`, `Server`,

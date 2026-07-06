@@ -36,14 +36,18 @@ bash interop/external_h3/run_matrix.sh
 ```
 
 By default it attempts `quic-go`, `ngtcp2`, `lsquic`, and `aioquic`.
-`quic-go` has an in-repo pinned peer under `server_quic_go` and can be run
-directly:
+`quic-go` has an in-repo pinned peer under `server_quic_go`; `aioquic` has a
+pinned Python peer under `server_aioquic`. They can be run directly:
 
 ```sh
 bash interop/external_h3/peers/quic-go.sh
+python3 -m pip install -r interop/external_h3/server_aioquic/requirements.txt
+bash interop/external_h3/peers/aioquic.sh
 ```
 
-Other peers are skipped unless their command variable is set:
+Aioquic's peer script sets `AIOQUIC_H3_SERVER_CMD` automatically after the
+Python requirement is installed. Other peers are skipped unless their command
+variable is set:
 
 - `QUIC_GO_H3_SERVER_CMD`
 - `NGTCP2_H3_SERVER_CMD`
@@ -59,10 +63,11 @@ The command is evaluated with these environment variables:
 - `H3_ROOT`: directory containing `hello.txt`
 - `H3_PATH`: request path, default `/hello.txt`
 
-Example shape:
+Custom aioquic example shape:
 
 ```sh
-export AIOQUIC_H3_SERVER_CMD='python3 examples/http3_server.py --certificate "$H3_CERT" --private-key "$H3_KEY" --host "$H3_HOST" --port "$H3_PORT" --root "$H3_ROOT"'
+python3 -m pip install -r interop/external_h3/server_aioquic/requirements.txt
+export AIOQUIC_H3_SERVER_CMD='python3 interop/external_h3/server_aioquic/main.py --cert "$H3_CERT" --key "$H3_KEY" --host "$H3_HOST" --port "$H3_PORT" --root "$H3_ROOT"'
 bash interop/external_h3/peers/aioquic.sh
 ```
 

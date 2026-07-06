@@ -17,8 +17,8 @@ breaking changes; see notes per release.
 - Added a runnable WebTransport proxy datapath example that forwards WT
   capsules, DATAGRAMs, substream data, FIN, and resets across two in-process
   HTTP/3 pairs while keeping proxy policy application-owned.
-- Added an advisory HTTP/3 foreign-peer matrix against a pinned
-  `quic-go/http3` server, plus status docs for local and CI runs.
+- Added advisory HTTP/3 foreign-peer coverage against pinned `quic-go/http3`
+  and aioquic servers, with local peer scripts, CI jobs, and status docs.
 - Added public API smoke coverage for the documented stable embedding surface.
 - Added `wt_max_total_buffered_bytes` to cap aggregate pre-confirmation
   WebTransport buffering under `BufferedStreamPolicy.buffer`; production

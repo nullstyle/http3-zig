@@ -16,10 +16,10 @@ See the [README](README.md) for the current capability surface and the
   http3-zig client ↔ http3-zig server over a real UDP socket — gate every
   push. WebTransport advisory CI brings up pinned webtransport-go and
   pywebtransport peers. HTTP/3 advisory CI now brings up a pinned
-  quic-go/http3 server and drives it with the public external-H3 client. Both
-  foreign-peer matrices remain advisory while third-party setup is still
-  treated as flake-prone; expanding H3 coverage to ngtcp2, lsquic, aioquic,
-  and curl/Chromium remains future scope.
+  quic-go/http3 server and a pinned aioquic server, then drives both with the
+  public external-H3 client. Both foreign-peer matrices remain advisory while
+  third-party setup is still treated as flake-prone; expanding H3 coverage to
+  ngtcp2, lsquic, and curl/Chromium remains future scope.
 
 - **QPACK dynamic-table cross-implementation coverage.** The dynamic-table
   fixture corpus (RFC 9204 Appendix B exact bytes) is pinned in-tree; binding
