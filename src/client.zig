@@ -491,6 +491,14 @@ pub const WebTransportClientStream = struct {
         try self.writer.client.session.sendWebTransportMaxStreams(self.sessionId(), .uni, value);
     }
 
+    /// Sends a raw Capsule Protocol record on the WebTransport CONNECT
+    /// request body. This is for intermediary forwarding of WebTransport
+    /// control / extension capsules; WebTransport datagrams still use
+    /// `sendDatagram`.
+    pub fn sendCapsule(self: *WebTransportClientStream, decoded: capsule_mod.Capsule) session_mod.Error!void {
+        try self.writer.capsule(decoded.capsule_type, decoded.value);
+    }
+
     /// Folds an inbound capsule decoded from the CONNECT stream's body
     /// into the per-session flow-control state. Call this when
     /// iterating capsules out of `response_updated.body()` events for
@@ -502,6 +510,19 @@ pub const WebTransportClientStream = struct {
         decoded: capsule_mod.Capsule,
     ) session_mod.Error!void {
         try self.writer.client.session.observeWebTransportCapsule(self.sessionId(), decoded);
+    }
+
+    /// Intermediary helper: observe an inbound WebTransport capsule on this
+    /// handle, then forward the exact capsule bytes on `other`. The helper
+    /// intentionally does not finish/reset either CONNECT stream; applications
+    /// forward stream lifecycle separately.
+    pub fn forwardCapsuleTo(
+        self: *WebTransportClientStream,
+        decoded: capsule_mod.Capsule,
+        other: anytype,
+    ) session_mod.Error!void {
+        try self.observeCapsule(decoded);
+        try other.sendCapsule(decoded);
     }
 
     /// Read-only snapshot of the per-session flow-control counters and

@@ -80,11 +80,15 @@ test "public API smoke: stable embedding surface compiles" {
         _ = H.WebTransportClientStream.sendDatagram;
         _ = H.WebTransportClientStream.writeStream;
         _ = H.WebTransportClientStream.finishStream;
+        _ = H.WebTransportClientStream.sendCapsule;
+        _ = H.WebTransportClientStream.forwardCapsuleTo;
         _ = H.WebTransportClientStream.close;
         _ = H.WebTransportServerStream;
         _ = H.WebTransportServerStream.sendDatagram;
         _ = H.WebTransportServerStream.writeStream;
         _ = H.WebTransportServerStream.finishStream;
+        _ = H.WebTransportServerStream.sendCapsule;
+        _ = H.WebTransportServerStream.forwardCapsuleTo;
         _ = H.WebTransportServerStream.close;
         _ = H.ConnectUdpOptions;
         _ = H.ConnectUdpAcceptOptions;

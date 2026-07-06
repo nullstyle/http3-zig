@@ -11,6 +11,9 @@ breaking changes; see notes per release.
 
 ### Changed
 
+- Added WebTransport control-capsule forwarding helpers on client/server WT
+  stream handles, with two-hop intermediary coverage for MAX_DATA, BLOCKED,
+  DRAIN, unknown, and CLOSE capsule behavior.
 - Added an advisory HTTP/3 foreign-peer matrix against a pinned
   `quic-go/http3` server, plus status docs for local and CI runs.
 - Added public API smoke coverage for the documented stable embedding surface.

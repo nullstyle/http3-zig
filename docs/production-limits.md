@@ -37,11 +37,18 @@ or `Server.Config.production.toSessionConfig()`.
 - WebTransport flow-control errors (`WebTransportFlowControlExceeded`,
   `WebTransportStreamLimitExceeded`, `WebTransportSessionDraining`) indicate
   session-level or peer-advertised limits rather than transport failure.
+- `WebTransport*Stream.forwardCapsuleTo` is an explicit intermediary hook:
+  inbound WT control capsules are observed locally and forwarded unchanged to
+  a paired outbound handle, while stream/datagram copy policy stays with the
+  application.
 
 ## Still Caller-Owned
 
 - QUIC transport flow-control windows and datagram queue sizing live in
   quic-zig transport configuration.
+- Intermediaries own their proxy datapath: socket binding, WT stream copy
+  loops, QUIC-DATAGRAM routing, and CONNECT FIN/reset policy are intentionally
+  outside http3-zig's forwarding helper.
 - Application body accumulation is owned by `RequestTracker` /
   `ResponseTracker` budgets or by the caller if they consume raw events.
 - QPACK dynamic encoder table use is opt-in through the indexing policy and
@@ -56,5 +63,8 @@ or `Server.Config.production.toSessionConfig()`.
 - `tests/integration/webtransport.zig` covers per-stream and aggregate
   pre-confirmation WebTransport buffering caps plus replay under tight drain
   budgets.
+- `tests/integration/webtransport_forwarding.zig` covers two-hop WT
+  control-capsule forwarding, including MAX_DATA, BLOCKED, DRAIN, unknown, and
+  CLOSE capsule behavior.
 - `bench/wt_memory.zig` / `zig build mem-profile` gates long-running
   WebTransport memory growth; see [memory-profile.md](memory-profile.md).

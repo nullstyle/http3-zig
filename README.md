@@ -110,7 +110,10 @@ exposed on the underlying writer accessible via `requestWriter()` /
 `responseWriter()`, but calling those for a WT datagram is out of spec —
 they target the CONNECT stream's body, not WT's per-session datagram
 channel. Use the capsule paths only for pure RFC 9297 datagram-on-stream
-cases or non-WT MASQUE multiplexing.
+cases or non-WT MASQUE multiplexing. WT control / extension capsules are
+different: intermediary code may forward them with
+`WebTransport*Stream.forwardCapsuleTo`, which observes the inbound capsule
+locally and writes the exact capsule on the paired outbound CONNECT stream.
 
 ## Stream lifecycle
 
@@ -165,7 +168,9 @@ provides:
   Protocol codecs, HTTP/3 DATAGRAM send/receive with a context registry,
   receive dispositions, bounded unknown-context buffering and Context ID
   allocation checks, WebSocket-over-HTTP/3 tunnel helpers, and CONNECT-UDP
-  receiver helpers.
+  receiver helpers. WebTransport exposes endpoint flow-control helpers and
+  explicit intermediary capsule forwarding helpers; socket/datagram/stream
+  proxy loops stay application-owned.
 - **Server push** — `MAX_PUSH_ID`, `PUSH_PROMISE`, push streams,
   `CANCEL_PUSH`, duplicate-promise validation, and client push policy.
 - **Observability & limits** — trace callbacks and metrics snapshots, TLS
@@ -340,7 +345,8 @@ just external-h3-interop
   Extended CONNECT coverage checks SETTINGS negotiation, client-side gating,
   and server-side `:protocol` request metadata. Capsule coverage includes
   DATAGRAM capsules and context-aware payloads over both QUIC DATAGRAM frames
-  and DATA-frame capsules. Observability coverage checks TLS keylog hook
+  and DATA-frame capsules, plus WebTransport control-capsule forwarding across
+  a two-hop intermediary fixture. Observability coverage checks TLS keylog hook
   configuration plus HTTP/3 trace callback and metrics accounting for emitted
   events. WebSocket-over-HTTP/3 coverage checks negotiated Extended CONNECT
   gating, tunnel request/accept helpers, RFC 6455 frame encoding/decoding, and

@@ -26,9 +26,10 @@ See the [README](README.md) for the current capability surface and the
   it to a second implementation is blocked on `quic-go/qpack` dynamic-table
   support or an agreed alternate peer.
 
-- **WebTransport intermediary forwarding.** Endpoint-side flow-control capsule
-  enforcement is in place; intermediary forwarding of `WT_MAX_DATA` /
-  `WT_*_BLOCKED` capsules is not yet implemented.
+- **WebTransport intermediary forwarding.** WT control-capsule forwarding
+  helpers are in place for intermediaries that already own both CONNECT
+  streams. Remaining proxy work is intentionally application-level:
+  stream-copy loops, DATAGRAM routing, and CONNECT FIN/reset policy.
 
 - **Memory-budget enforcement polish.** Opt-in caps cover send buffers,
   outgoing capsules, session event queues, tracker bodies, decoded QPACK

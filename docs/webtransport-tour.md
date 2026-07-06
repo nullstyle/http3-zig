@@ -407,6 +407,24 @@ them and feed each one to `observeCapsule`:
 `observeCapsule` ignores capsules outside the WebTransport family (so it's
 safe to feed the whole stream). It updates the per-session flow snapshot.
 
+### Forwarding WT capsules
+
+Intermediaries can forward WebTransport control / extension capsules without
+becoming the owner of the full stream or datagram datapath:
+
+```zig
+var it = http3_zig.capsule.iter(connect_body);
+while (try it.next()) |decoded| {
+    try downstream_wt.forwardCapsuleTo(decoded.capsule, &upstream_wt);
+}
+```
+
+`forwardCapsuleTo` first calls `observeCapsule` on the receiving handle, then
+writes the same capsule with `sendCapsule` on the paired outbound handle.
+Unknown capsules are forwarded unchanged. `CLOSE_WEBTRANSPORT_SESSION` is not
+special-cased: forwarding the capsule does not finish or reset either CONNECT
+stream, so applications still own FIN/reset and stream-copy policy.
+
 ### The flow snapshot
 
 ```zig
