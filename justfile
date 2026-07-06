@@ -38,6 +38,9 @@ example-manual-pump-get:
 example-observability-metrics:
     zig build run-example-observability-metrics
 
+example-request-reset:
+    zig build run-example-request-reset
+
 example-bounded-body-sink:
     zig build run-example-bounded-body-sink
 

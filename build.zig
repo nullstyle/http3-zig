@@ -420,6 +420,25 @@ pub fn build(b: *std.Build) void {
     const run_observability_metrics_step = b.step("run-example-observability-metrics", "Run the observability metrics example");
     run_observability_metrics_step.dependOn(&run_observability_metrics.step);
 
+    const request_reset_mod = b.createModule(.{
+        .root_source_file = b.path("examples/request_reset.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    request_reset_mod.addImport("http3_zig", http3_zig_mod);
+    request_reset_mod.addImport("quic_zig", quic_zig_mod);
+    const request_reset = b.addExecutable(.{
+        .name = "http3-zig-request-reset",
+        .root_module = request_reset_mod,
+    });
+    const install_request_reset = b.addInstallArtifact(request_reset, .{});
+    const request_reset_step = b.step("example-request-reset", "Build the request reset lifecycle example");
+    request_reset_step.dependOn(&install_request_reset.step);
+
+    const run_request_reset = b.addRunArtifact(request_reset);
+    const run_request_reset_step = b.step("run-example-request-reset", "Run the request reset lifecycle example");
+    run_request_reset_step.dependOn(&run_request_reset.step);
+
     const bounded_body_mod = b.createModule(.{
         .root_source_file = b.path("examples/bounded_body_sink.zig"),
         .target = target,
@@ -520,6 +539,7 @@ pub fn build(b: *std.Build) void {
     examples_step.dependOn(&install_loopback_get.step);
     examples_step.dependOn(&install_manual_pump.step);
     examples_step.dependOn(&install_observability_metrics.step);
+    examples_step.dependOn(&install_request_reset.step);
     examples_step.dependOn(&install_bounded_body.step);
     examples_step.dependOn(&install_streaming_upload.step);
     examples_step.dependOn(&install_graceful_shutdown.step);
@@ -530,6 +550,7 @@ pub fn build(b: *std.Build) void {
     run_examples_step.dependOn(&run_loopback_get.step);
     run_examples_step.dependOn(&run_manual_pump.step);
     run_examples_step.dependOn(&run_observability_metrics.step);
+    run_examples_step.dependOn(&run_request_reset.step);
     run_examples_step.dependOn(&run_bounded_body.step);
     run_examples_step.dependOn(&run_streaming_upload.step);
     run_examples_step.dependOn(&run_graceful_shutdown.step);

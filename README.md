@@ -83,7 +83,9 @@ for the same GET with the QUIC/H3 pump order open-coded, and
 [`examples/loopback_wt.zig`](examples/loopback_wt.zig) for the endpoint
 WebTransport variant. [`examples/observability_metrics.zig`](examples/observability_metrics.zig)
 shows trace callbacks and metrics snapshots around the same request/response
-shape. Intermediaries can start from
+shape, and [`examples/request_reset.zig`](examples/request_reset.zig) shows a
+client request reset surfacing as a typed server-side lifecycle event.
+Intermediaries can start from
 [`examples/webtransport_proxy.zig`](examples/webtransport_proxy.zig), which
 forwards WT control capsules, QUIC DATAGRAM payloads, WT substream data, FIN,
 and resets across two in-process HTTP/3 pairs while keeping proxy policy in
@@ -215,6 +217,7 @@ just run-examples
 just example-loopback-get
 just example-manual-pump-get
 just example-observability-metrics
+just example-request-reset
 just example-bounded-body-sink
 just example-streaming-upload
 just example-graceful-shutdown
@@ -443,6 +446,8 @@ just external-h3-interop
   QUIC `tick` / `poll` / `handle` and HTTP/3 `drain` order.
 - `just example-observability-metrics` runs a compact request/response with
   `ObservabilityHooks` installed and prints trace/metrics counters.
+- `just example-request-reset` runs a client-side request reset and shows the
+  server's typed peer reset classification.
 - `just example-bounded-body-sink` runs the same in-process pattern with raw
   `RequestEvent` / `ResponseEvent` classification and caller-owned streaming
   body storage.

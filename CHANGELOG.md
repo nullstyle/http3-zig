@@ -29,6 +29,8 @@ breaking changes; see notes per release.
   `handle` plus HTTP/3 `drain` order without `TransportLoopback`.
 - Added an observability metrics example showing `ObservabilityHooks` and
   `Metrics` snapshots around a real request/response loop.
+- Added a request reset lifecycle example showing a client `RequestWriter`
+  reset surfacing as a typed server-side peer reset event.
 - Added a streaming upload loopback example showing client-side
   `RequestWriter.canWrite` checks and server-side raw request-body budgeting.
 - Added an embedding guide documenting event-loop integration, event ownership,

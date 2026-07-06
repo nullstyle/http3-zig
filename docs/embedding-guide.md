@@ -104,6 +104,8 @@ Runnable examples:
   `tick` / `poll` / `handle` and HTTP/3 `drain`.
 - `examples/observability_metrics.zig`: trace callbacks plus metrics snapshots
   around a real request/response loop.
+- `examples/request_reset.zig`: client request reset and server-side
+  `stream_reset` classification.
 - `examples/bounded_body_sink.zig`: raw response events into caller-owned
   bounded storage.
 - `examples/streaming_upload.zig`: client upload pacing with
