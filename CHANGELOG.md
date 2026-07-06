@@ -25,6 +25,8 @@ breaking changes; see notes per release.
 - Added a bounded body sink loopback example showing raw
   `RequestEvent` / `ResponseEvent` consumption with caller-owned response-body
   storage and send-side `ResponseWriter.canWrite` checks.
+- Added a manual pump GET example showing the QUIC `tick` / `poll` /
+  `handle` plus HTTP/3 `drain` order without `TransportLoopback`.
 - Added a streaming upload loopback example showing client-side
   `RequestWriter.canWrite` checks and server-side raw request-body budgeting.
 - Added an embedding guide documenting event-loop integration, event ownership,

@@ -77,9 +77,11 @@ try req.finish();
 // ... pump packets, drain events, observe responses ...
 ```
 
-See [`examples/loopback_get.zig`](examples/loopback_get.zig) for the
-full pump loop, and [`examples/loopback_wt.zig`](examples/loopback_wt.zig)
-for the endpoint WebTransport variant. Intermediaries can start from
+See [`examples/loopback_get.zig`](examples/loopback_get.zig) for the facade
+loopback shape, [`examples/manual_pump_get.zig`](examples/manual_pump_get.zig)
+for the same GET with the QUIC/H3 pump order open-coded, and
+[`examples/loopback_wt.zig`](examples/loopback_wt.zig) for the endpoint
+WebTransport variant. Intermediaries can start from
 [`examples/webtransport_proxy.zig`](examples/webtransport_proxy.zig), which
 forwards WT control capsules, QUIC DATAGRAM payloads, WT substream data, FIN,
 and resets across two in-process HTTP/3 pairs while keeping proxy policy in
@@ -209,6 +211,7 @@ just test
 just fuzz-smoke
 just run-examples
 just example-loopback-get
+just example-manual-pump-get
 just example-bounded-body-sink
 just example-streaming-upload
 just example-graceful-shutdown
@@ -433,6 +436,8 @@ just external-h3-interop
 - `just example-loopback-get` runs a compact in-process client/server example
   over `TransportLoopback` with the public `Client`, `Server`,
   `ClientRunner`, and `ServerRunner` APIs.
+- `just example-manual-pump-get` runs the same basic GET while open-coding the
+  QUIC `tick` / `poll` / `handle` and HTTP/3 `drain` order.
 - `just example-bounded-body-sink` runs the same in-process pattern with raw
   `RequestEvent` / `ResponseEvent` classification and caller-owned streaming
   body storage.

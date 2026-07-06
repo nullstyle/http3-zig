@@ -32,6 +32,9 @@ run-examples:
 example-loopback-get:
     zig build run-example-loopback-get
 
+example-manual-pump-get:
+    zig build run-example-manual-pump-get
+
 example-bounded-body-sink:
     zig build run-example-bounded-body-sink
 

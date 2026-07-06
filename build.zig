@@ -382,6 +382,25 @@ pub fn build(b: *std.Build) void {
     const run_loopback_get_step = b.step("run-example-loopback-get", "Run the in-process HTTP/3 loopback example");
     run_loopback_get_step.dependOn(&run_loopback_get.step);
 
+    const manual_pump_mod = b.createModule(.{
+        .root_source_file = b.path("examples/manual_pump_get.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    manual_pump_mod.addImport("http3_zig", http3_zig_mod);
+    manual_pump_mod.addImport("quic_zig", quic_zig_mod);
+    const manual_pump = b.addExecutable(.{
+        .name = "http3-zig-manual-pump-get",
+        .root_module = manual_pump_mod,
+    });
+    const install_manual_pump = b.addInstallArtifact(manual_pump, .{});
+    const manual_pump_step = b.step("example-manual-pump-get", "Build the manual event-loop pump GET example");
+    manual_pump_step.dependOn(&install_manual_pump.step);
+
+    const run_manual_pump = b.addRunArtifact(manual_pump);
+    const run_manual_pump_step = b.step("run-example-manual-pump-get", "Run the manual event-loop pump GET example");
+    run_manual_pump_step.dependOn(&run_manual_pump.step);
+
     const bounded_body_mod = b.createModule(.{
         .root_source_file = b.path("examples/bounded_body_sink.zig"),
         .target = target,
@@ -480,6 +499,7 @@ pub fn build(b: *std.Build) void {
 
     const examples_step = b.step("examples", "Build all runnable examples");
     examples_step.dependOn(&install_loopback_get.step);
+    examples_step.dependOn(&install_manual_pump.step);
     examples_step.dependOn(&install_bounded_body.step);
     examples_step.dependOn(&install_streaming_upload.step);
     examples_step.dependOn(&install_graceful_shutdown.step);
@@ -488,6 +508,7 @@ pub fn build(b: *std.Build) void {
 
     const run_examples_step = b.step("run-examples", "Run all in-process examples");
     run_examples_step.dependOn(&run_loopback_get.step);
+    run_examples_step.dependOn(&run_manual_pump.step);
     run_examples_step.dependOn(&run_bounded_body.step);
     run_examples_step.dependOn(&run_streaming_upload.step);
     run_examples_step.dependOn(&run_graceful_shutdown.step);

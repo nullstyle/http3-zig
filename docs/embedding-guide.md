@@ -74,7 +74,8 @@ events.clearRetainingCapacity();
 
 `TransportLoopback` is just the in-process version of this pattern for examples
 and tests. Production code usually keeps `TransportEndpoint` or open-codes the
-same order around its own socket API.
+same order around its own socket API. `examples/manual_pump_get.zig` shows the
+open-coded version without `TransportLoopback`.
 
 ## Choosing Event Surfaces
 
@@ -99,6 +100,8 @@ Runnable examples:
 
 - Run the full cookbook with `zig build run-examples` or `just run-examples`.
 - `examples/loopback_get.zig`: facade runners and complete response tracking.
+- `examples/manual_pump_get.zig`: the same GET while manually driving QUIC
+  `tick` / `poll` / `handle` and HTTP/3 `drain`.
 - `examples/bounded_body_sink.zig`: raw response events into caller-owned
   bounded storage.
 - `examples/streaming_upload.zig`: client upload pacing with
