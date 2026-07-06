@@ -124,6 +124,23 @@ pub fn build(b: *std.Build) void {
     );
     qpack_dynamic_interop_step.dependOn(&run_qpack_dynamic_interop_tests.step);
 
+    const qpack_dynamic_manifest_mod = b.createModule(.{
+        .root_source_file = b.path("interop/qpack_dynamic/manifest_main.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    qpack_dynamic_manifest_mod.addImport("http3_zig", http3_zig_mod);
+    const qpack_dynamic_manifest = b.addExecutable(.{
+        .name = "http3-zig-qpack-dynamic-fixtures",
+        .root_module = qpack_dynamic_manifest_mod,
+    });
+    const run_qpack_dynamic_manifest = b.addRunArtifact(qpack_dynamic_manifest);
+    const qpack_dynamic_manifest_step = b.step(
+        "qpack-dynamic-fixtures",
+        "Print the dynamic-table QPACK fixture JSON manifest",
+    );
+    qpack_dynamic_manifest_step.dependOn(&run_qpack_dynamic_manifest.step);
+
     const fuzz_codecs_mod = b.createModule(.{
         .root_source_file = b.path("fuzz/codecs_main.zig"),
         .target = target,

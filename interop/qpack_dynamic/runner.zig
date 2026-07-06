@@ -3,8 +3,13 @@
 const std = @import("std");
 const http3_zig = @import("http3_zig");
 const fixtures = @import("fixtures.zig");
+const manifest = @import("manifest.zig");
 
 const qpack = http3_zig.qpack;
+
+test "dynamic QPACK fixture JSON manifest matches Zig vectors" {
+    try manifest.expectCommittedJson();
+}
 
 test "dynamic QPACK encoder-stream fixtures reproduce exact bytes and table state" {
     for (fixtures.encoder_stream_vectors) |vector| {

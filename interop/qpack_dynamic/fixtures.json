@@ -1,0 +1,231 @@
+{
+  "schema": "http3-zig.qpack-dynamic-fixtures.v1",
+  "format_version": 1,
+  "source": "RFC 9204 Appendix B exact bytes plus http3-zig negative coverage",
+  "encoder_streams": [
+    {
+      "name": "rfc9204_appendix_b2_static_name_ref_insertions",
+      "max_table_capacity": 220,
+      "setup_encoder_stream": "",
+      "complete_before": null,
+      "instructions": [
+        {"type": "set_capacity", "capacity": 220},
+        {"type": "insert_name_ref", "table": "static", "index": 0, "value": "www.example.com"},
+        {"type": "insert_name_ref", "table": "static", "index": 1, "value": "/sample/path"}
+      ],
+      "encoder_stream": "3fbd01c00f7777772e6578616d706c652e636f6dc10c2f73616d706c652f70617468",
+      "table_after": {
+        "capacity": 220,
+        "len": 2,
+        "size": 106,
+        "insert_count": 2,
+        "dropped_count": 0,
+        "entries": [
+          {"absolute_index": 0, "name": ":authority", "value": "www.example.com"},
+          {"absolute_index": 1, "name": ":path", "value": "/sample/path"}
+        ],
+        "absent_absolute_indices": []
+      },
+      "insert_count_increment": null
+    },
+    {
+      "name": "rfc9204_appendix_b3_literal_insert",
+      "max_table_capacity": 220,
+      "setup_encoder_stream": "3fbd01c00f7777772e6578616d706c652e636f6dc10c2f73616d706c652f70617468",
+      "complete_before": {"stream_id": 4, "required_insert_count": 2, "encoded_decoder_feedback": "84"},
+      "instructions": [
+        {"type": "insert_literal", "name": "custom-key", "value": "custom-value"}
+      ],
+      "encoder_stream": "4a637573746f6d2d6b65790c637573746f6d2d76616c7565",
+      "table_after": {
+        "capacity": 220,
+        "len": 3,
+        "size": 160,
+        "insert_count": 3,
+        "dropped_count": 0,
+        "entries": [
+          {"absolute_index": 0, "name": ":authority", "value": "www.example.com"},
+          {"absolute_index": 1, "name": ":path", "value": "/sample/path"},
+          {"absolute_index": 2, "name": "custom-key", "value": "custom-value"}
+        ],
+        "absent_absolute_indices": []
+      },
+      "insert_count_increment": "01"
+    },
+    {
+      "name": "rfc9204_appendix_b4_duplicate",
+      "max_table_capacity": 220,
+      "setup_encoder_stream": "3fbd01c00f7777772e6578616d706c652e636f6dc10c2f73616d706c652f706174684a637573746f6d2d6b65790c637573746f6d2d76616c7565",
+      "complete_before": null,
+      "instructions": [
+        {"type": "duplicate", "index": 2}
+      ],
+      "encoder_stream": "02",
+      "table_after": {
+        "capacity": 220,
+        "len": 4,
+        "size": 217,
+        "insert_count": 4,
+        "dropped_count": 0,
+        "entries": [
+          {"absolute_index": 0, "name": ":authority", "value": "www.example.com"},
+          {"absolute_index": 1, "name": ":path", "value": "/sample/path"},
+          {"absolute_index": 2, "name": "custom-key", "value": "custom-value"},
+          {"absolute_index": 3, "name": ":authority", "value": "www.example.com"}
+        ],
+        "absent_absolute_indices": []
+      },
+      "insert_count_increment": null
+    },
+    {
+      "name": "rfc9204_appendix_b5_dynamic_name_ref_eviction",
+      "max_table_capacity": 220,
+      "setup_encoder_stream": "3fbd01c00f7777772e6578616d706c652e636f6dc10c2f73616d706c652f706174684a637573746f6d2d6b65790c637573746f6d2d76616c756502",
+      "complete_before": null,
+      "instructions": [
+        {"type": "insert_name_ref", "table": "dynamic", "index": 1, "value": "custom-value2"}
+      ],
+      "encoder_stream": "810d637573746f6d2d76616c756532",
+      "table_after": {
+        "capacity": 220,
+        "len": 4,
+        "size": 215,
+        "insert_count": 5,
+        "dropped_count": 1,
+        "entries": [
+          {"absolute_index": 1, "name": ":path", "value": "/sample/path"},
+          {"absolute_index": 2, "name": "custom-key", "value": "custom-value"},
+          {"absolute_index": 3, "name": ":authority", "value": "www.example.com"},
+          {"absolute_index": 4, "name": "custom-key", "value": "custom-value2"}
+        ],
+        "absent_absolute_indices": [0]
+      },
+      "insert_count_increment": null
+    }
+  ],
+  "field_sections": [
+    {
+      "name": "rfc9204_appendix_b2_dynamic_field_section_ack",
+      "max_table_capacity": 220,
+      "setup_encoder_stream": "3fbd01c00f7777772e6578616d706c652e636f6dc10c2f73616d706c652f70617468",
+      "stream_id": 4,
+      "required_insert_count": 2,
+      "base": 0,
+      "field_section": "03811011",
+      "fields": [
+        {"name": ":authority", "value": "www.example.com", "sensitive": false},
+        {"name": ":path", "value": "/sample/path", "sensitive": false}
+      ],
+      "decoder_feedback": {"instruction": {"type": "section_ack", "stream_id": 4}, "encoded": "84"},
+      "stream_cancel": null
+    },
+    {
+      "name": "rfc9204_appendix_b4_relative_and_static_refs_cancel",
+      "max_table_capacity": 220,
+      "setup_encoder_stream": "3fbd01c00f7777772e6578616d706c652e636f6dc10c2f73616d706c652f706174684a637573746f6d2d6b65790c637573746f6d2d76616c756502",
+      "stream_id": 8,
+      "required_insert_count": 4,
+      "base": 4,
+      "field_section": "050080c181",
+      "fields": [
+        {"name": ":authority", "value": "www.example.com", "sensitive": false},
+        {"name": ":path", "value": "/", "sensitive": false},
+        {"name": "custom-key", "value": "custom-value", "sensitive": false}
+      ],
+      "decoder_feedback": null,
+      "stream_cancel": {"instruction": {"type": "stream_cancel", "stream_id": 8}, "encoded": "48"}
+    }
+  ],
+  "negative_encoder_streams": [
+    {
+      "name": "truncated_static_name_ref_insert_value",
+      "max_table_capacity": 220,
+      "setup_encoder_stream": "",
+      "encoder_stream": "c00f7777772e6578616d706c652e636f",
+      "expected_error": "InsufficientBytes",
+      "table_after_error": {
+        "capacity": 0,
+        "len": 0,
+        "size": 0,
+        "insert_count": 0,
+        "dropped_count": 0,
+        "entries": [],
+        "absent_absolute_indices": []
+      }
+    },
+    {
+      "name": "set_capacity_above_local_maximum",
+      "max_table_capacity": 64,
+      "setup_encoder_stream": "",
+      "encoder_stream": "3fbd01",
+      "expected_error": "CapacityTooLarge",
+      "table_after_error": {
+        "capacity": 0,
+        "len": 0,
+        "size": 0,
+        "insert_count": 0,
+        "dropped_count": 0,
+        "entries": [],
+        "absent_absolute_indices": []
+      }
+    },
+    {
+      "name": "dynamic_name_ref_before_entry_exists",
+      "max_table_capacity": 220,
+      "setup_encoder_stream": "3fbd01",
+      "encoder_stream": "800178",
+      "expected_error": "InvalidDynamicIndex",
+      "table_after_error": {
+        "capacity": 220,
+        "len": 0,
+        "size": 0,
+        "insert_count": 0,
+        "dropped_count": 0,
+        "entries": [],
+        "absent_absolute_indices": []
+      }
+    }
+  ],
+  "negative_field_sections": [
+    {
+      "name": "required_insert_count_not_ready",
+      "max_table_capacity": 220,
+      "setup_encoder_stream": "",
+      "field_section": "03811011",
+      "expected_error": "RequiredInsertCountNotReady"
+    },
+    {
+      "name": "relative_dynamic_index_out_of_range",
+      "max_table_capacity": 220,
+      "setup_encoder_stream": "3fbd01c00f7777772e6578616d706c652e636f6dc10c2f73616d706c652f70617468",
+      "field_section": "030082",
+      "expected_error": "InvalidDynamicIndex"
+    },
+    {
+      "name": "post_base_dynamic_index_out_of_range",
+      "max_table_capacity": 220,
+      "setup_encoder_stream": "3fbd01c00f7777772e6578616d706c652e636f6dc10c2f73616d706c652f70617468",
+      "field_section": "030010",
+      "expected_error": "InvalidDynamicIndex"
+    },
+    {
+      "name": "truncated_literal_value",
+      "max_table_capacity": 220,
+      "setup_encoder_stream": "",
+      "field_section": "000021610262",
+      "expected_error": "MalformedFieldSection"
+    }
+  ],
+  "negative_decoder_feedback": [
+    {
+      "name": "zero_insert_count_increment",
+      "encoded": "00",
+      "expected_error": "InsertCountIncrementZero"
+    },
+    {
+      "name": "truncated_section_ack_integer",
+      "encoded": "ff",
+      "expected_error": "InsufficientBytes"
+    }
+  ]
+}

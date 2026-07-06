@@ -166,7 +166,8 @@ provides:
 - **QPACK** — non-blocking field-section encoding/decoding with the static
   table, Huffman strings, and dynamic-table support: encoder/decoder stream
   instruction codecs, state-sync accounting, configurable indexing policy,
-  and opt-in dynamic-stream integration.
+  opt-in dynamic-stream integration, and implementation-neutral dynamic
+  fixture manifests for external peer harnesses.
 - **Session lifecycle** — critical-stream setup and SETTINGS exchange,
   request/response lifecycle tracking, client/server event runners, reusable
   transport-driver helpers, GOAWAY handling, graceful-drain state, reset and
@@ -379,7 +380,12 @@ just external-h3-interop
   `github.com/quic-go/qpack`.
 - `just qpack-dynamic-interop` runs the transport-free dynamic-table fixture
   corpus for RFC 9204 Appendix B encoder streams, field sections, table
-  snapshots, decoder feedback bytes, and malformed dynamic-input rejection.
+  snapshots, decoder feedback bytes, and malformed dynamic-input rejection,
+  including a drift check for the committed JSON manifest consumed by external
+  peers.
+- `just qpack-dynamic-fixtures` prints the committed dynamic-table fixture
+  manifest (`interop/qpack_dynamic/fixtures.json`) from the Zig source
+  vectors.
 - `just fuzz-smoke` runs the transport-free codec fuzz harness across HTTP/3
   frames, SETTINGS, capsules, HTTP/3 DATAGRAM payloads, QPACK integers,
   Huffman strings, field sections, encoder/decoder stream instructions, and

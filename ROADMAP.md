@@ -22,8 +22,11 @@ See the [README](README.md) for the current capability surface and the
   ngtcp2, lsquic, and curl/Chromium remains future scope.
 
 - **QPACK dynamic-table cross-implementation coverage.** The dynamic-table
-  fixture corpus (RFC 9204 Appendix B exact bytes) is pinned in-tree; binding
-  it to a second implementation is blocked on `quic-go/qpack` dynamic-table
+  fixture corpus (RFC 9204 Appendix B exact bytes) is pinned in-tree and now
+  exported as `interop/qpack_dynamic/fixtures.json` for implementation-neutral
+  peer harnesses; `zig build qpack-dynamic-interop` checks that the committed
+  JSON stays byte-for-byte in sync with the Zig vectors. Binding the corpus to
+  a second implementation remains blocked on `quic-go/qpack` dynamic-table
   support or an agreed alternate peer.
 
 - **WebTransport intermediary forwarding.** WT control-capsule forwarding

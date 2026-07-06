@@ -9,6 +9,9 @@ qpack-interop:
 qpack-dynamic-interop:
     zig build qpack-dynamic-interop
 
+qpack-dynamic-fixtures:
+    zig build qpack-dynamic-fixtures
+
 curl-h3-interop:
     zig build curl-h3-server
     bash interop/curl_h3/run.sh

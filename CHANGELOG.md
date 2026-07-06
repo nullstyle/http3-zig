@@ -19,6 +19,9 @@ breaking changes; see notes per release.
   HTTP/3 pairs while keeping proxy policy application-owned.
 - Added advisory HTTP/3 foreign-peer coverage against pinned `quic-go/http3`
   and aioquic servers, with local peer scripts, CI jobs, and status docs.
+- Added a committed JSON manifest and exporter for the RFC 9204 Appendix B
+  dynamic QPACK fixture corpus, with the in-tree runner checking for drift
+  between the neutral manifest and the Zig vectors.
 - Added public API smoke coverage for the documented stable embedding surface.
 - Added `wt_max_total_buffered_bytes` to cap aggregate pre-confirmation
   WebTransport buffering under `BufferedStreamPolicy.buffer`; production
