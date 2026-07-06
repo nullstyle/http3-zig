@@ -18,10 +18,10 @@ on:
 # `conn.advance()` to emit the first ClientHello, which the loopback driver
 # otherwise hides.
 #
-# The third-party HTTP/3 matrix (`interop/external_h3/run_matrix.sh`, driven
-# by `wt-interop`-style scheduled runs) covers the cross-implementation
-# story against foreign servers; this stays as the self-contained per-push
-# gate that never depends on an external server staying alive.
+# The advisory third-party HTTP/3 matrix (`h3-interop.yml`, backed by
+# `interop/external_h3/run_matrix.sh`) covers the cross-implementation story
+# against foreign servers; this stays as the self-contained per-push gate that
+# never depends on an external server staying alive.
 jobs:
   self-test:
     runs-on: ubuntu-latest

@@ -285,12 +285,13 @@ The session needs a policy for those bytes; pick one via
 |---|---|
 | `.pass_through` | (default) Surface the stream events even before the session is confirmed. The application is responsible for correlating. |
 | `.reject` | Reset the stream with the reserved `WEBTRANSPORT_BUFFERED_STREAM_REJECTED` (`0x3994bd84`) wire code. No stream events fire for the held bytes. |
-| `.buffer` | Hold the bytes (capped per stream by `wt_max_buffered_bytes_per_stream`, default 64 KiB in `production()`). When the session confirms, replay `_opened` + `_data` + `_finished` in client-open order. |
+| `.buffer` | Hold the bytes (capped per stream by `wt_max_buffered_bytes_per_stream`, default 64 KiB in `production()`, and across the session by `wt_max_total_buffered_bytes`, default 4 MiB). When the session confirms, replay `_opened` + `_data` + `_finished` in client-open order. |
 
 The `.buffer` policy is the closest match to the spec's recommendation
 (draft §4.5). Streams whose session is never confirmed are abandoned. Streams
-that exceed the per-stream buffer cap are reset with the
-`WEBTRANSPORT_BUFFERED_STREAM_REJECTED` code.
+that exceed the per-stream buffer cap, or would push the session over the
+aggregate buffer cap, are reset with the `WEBTRANSPORT_BUFFERED_STREAM_REJECTED`
+code.
 
 For server-initiated bidi streams (the WebTransport carve-out from RFC 9114
 §6.1 ¶3), the server calls `accepted.openBidiStream()` and the client
