@@ -23,7 +23,6 @@ jobs:
     continue-on-error: true
     env:
       TIMEOUT_MS: ${{ github.event.inputs.timeout_ms || '30000' }}
-      WORK_DIR: ${{ runner.temp }}/external-h3
       KEEP_WORK_DIR: "1"
     steps:
       - name: Checkout http3-zig
@@ -54,6 +53,7 @@ jobs:
       - name: Run the advisory H3 matrix
         env:
           CLIENT_TIMEOUT_MS: ${{ env.TIMEOUT_MS }}
+          WORK_DIR: ${{ runner.temp }}/external-h3
           QUIC_GO_READY_PATTERN: "^READY "
           QUIC_GO_H3_SERVER_CMD: ${{ runner.temp }}/h3-quic-go-server --listen "$H3_ADDR" --cert "$H3_CERT" --key "$H3_KEY" --root "$H3_ROOT" --max-requests 1 --max-lifetime-ms 60000
         run: bash interop/external_h3/run_matrix.sh quic-go
@@ -63,6 +63,6 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: h3-interop-quic-go-${{ github.run_id }}
-          path: ${{ env.WORK_DIR }}
+          path: ${{ runner.temp }}/external-h3
           if-no-files-found: ignore
           retention-days: 14
