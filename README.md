@@ -170,11 +170,13 @@ provides:
   `CANCEL_PUSH`, duplicate-promise validation, and client push policy.
 - **Observability & limits** — trace callbacks and metrics snapshots, TLS
   keylog / QUIC qlog passthrough, QUIC flow-control blocked observability,
-  opt-in send-buffer backpressure, and UDP payload limits.
+  opt-in send-buffer backpressure, drain/event budgets, and WebTransport
+  buffering caps.
 
 `SessionConfig.production(.{})` provides a conservative preset with bounded
 field sections, decoded QPACK storage, event payloads, reliable capsules,
-datagrams, and send buffering.
+datagrams, send buffering, and pre-confirmation WebTransport buffering. See
+[docs/production-limits.md](docs/production-limits.md).
 
 ```sh
 mise install
@@ -384,7 +386,10 @@ just external-h3-interop
 - `just external-h3-interop` runs the optional external-peer matrix. It skips
   peers whose server command environment variables are not configured, and can
   drive quic-go, ngtcp2, lsquic, and aioquic style servers through the shared
-  http3-zig-as-client harness.
+  http3-zig-as-client harness. The pinned quic-go peer is available in-tree
+  via `bash interop/external_h3/peers/quic-go.sh`; CI runs it from the
+  advisory `h3-interop` workflow. See
+  [docs/h3-third-party-interop.md](docs/h3-third-party-interop.md).
 - `just example-loopback-get` runs a compact in-process client/server example
   over `TransportLoopback` with the public `Client`, `Server`,
   `ClientRunner`, and `ServerRunner` APIs.

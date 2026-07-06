@@ -8,9 +8,9 @@ quic-go core) and `pywebtransport` (Python over a Rust core).
 
 **The full WebTransport flow now completes against the in-repo third-party
 peers** — SETTINGS exchange, Extended CONNECT (200), a datagram round-trip, a
-client-initiated uni stream, and `CLOSE_WEBTRANSPORT_SESSION`. The v0.4.8
-`main` CI rollup is green for the WT matrix as well as the hard in-tree WT
-self-test.
+client-initiated uni stream, and `CLOSE_WEBTRANSPORT_SESSION`. The current
+`main` CI posture treats the WT matrix as advisory signal and the in-tree WT
+self-test as the hard gate.
 
 http3-zig pins **quic-zig v0.7.5**, which carries the
 `initial_source_connection_id` fix, so the handshake completes. The

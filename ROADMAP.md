@@ -14,12 +14,12 @@ See the [README](README.md) for the current capability surface and the
 
 - **Third-party interop.** The in-tree self-tests — HTTP/3 and WebTransport,
   http3-zig client ↔ http3-zig server over a real UDP socket — gate every
-  push. The WebTransport foreign-peer matrix now brings up pinned
-  webtransport-go and pywebtransport peers in CI and is green on the v0.4.8
-  line, but it remains advisory while third-party peer setup is still treated
-  as flake-prone. HTTP/3 foreign-server coverage (quic-go, ngtcp2, lsquic,
-  aioquic, Chromium/curl) has skip-friendly harnesses under
-  [`interop/`](interop/) and remains future scope.
+  push. WebTransport advisory CI brings up pinned webtransport-go and
+  pywebtransport peers. HTTP/3 advisory CI now brings up a pinned
+  quic-go/http3 server and drives it with the public external-H3 client. Both
+  foreign-peer matrices remain advisory while third-party setup is still
+  treated as flake-prone; expanding H3 coverage to ngtcp2, lsquic, aioquic,
+  and curl/Chromium remains future scope.
 
 - **QPACK dynamic-table cross-implementation coverage.** The dynamic-table
   fixture corpus (RFC 9204 Appendix B exact bytes) is pinned in-tree; binding
@@ -32,9 +32,9 @@ See the [README](README.md) for the current capability surface and the
 
 - **Memory-budget enforcement polish.** Opt-in caps cover send buffers,
   outgoing capsules, session event queues, tracker bodies, decoded QPACK
-  field sections, concurrent peer streams, and the adversarial-reachable
-  session maps (tracked priorities, received push promises, pending
-  WebTransport sessions) — all wired into the production preset, with
-  per-request priority entries reclaimed when streams close. Remaining:
-  continue extending per-buffer budgets toward a fully-bounded default
-  posture.
+  field sections, concurrent peer streams, adversarial-reachable session maps
+  (tracked priorities, received push promises, pending WebTransport sessions),
+  and both per-stream and aggregate pre-confirmation WebTransport buffering.
+  See [`docs/production-limits.md`](docs/production-limits.md). Remaining:
+  continue converting caller-owned body/backpressure policy into examples and
+  higher-level helpers where that does not hide application semantics.

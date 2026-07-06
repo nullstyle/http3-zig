@@ -30,6 +30,7 @@ test "Client.Config.production + Server.Config.production drive a basic GET end 
     try std.testing.expectEqual(@as(?usize, 256), client_preset.max_concurrent_peer_streams);
     try std.testing.expectEqual(@as(?u64, 16 * 1024), client_preset.max_field_section_size);
     try std.testing.expectEqual(@as(?usize, 16 * 1024), client_preset.wt_max_buffered_bytes_per_stream);
+    try std.testing.expectEqual(@as(?usize, 4 * 1024 * 1024), client_preset.wt_max_total_buffered_bytes);
     try std.testing.expectEqual(http3_zig.SessionBufferedStreamPolicy.reject, client_preset.buffered_stream_policy);
     try std.testing.expectEqual(@as(?usize, 4 * 1024 * 1024), client_preset.max_event_payload_bytes_per_drain);
     try std.testing.expectEqual(@as(?usize, 512), client_preset.max_events_per_drain);
@@ -43,6 +44,7 @@ test "Client.Config.production + Server.Config.production drive a basic GET end 
     try std.testing.expectEqual(client_preset.max_concurrent_peer_streams, server_preset.max_concurrent_peer_streams);
     try std.testing.expectEqual(client_preset.max_field_section_size, server_preset.max_field_section_size);
     try std.testing.expectEqual(client_preset.wt_max_buffered_bytes_per_stream, server_preset.wt_max_buffered_bytes_per_stream);
+    try std.testing.expectEqual(client_preset.wt_max_total_buffered_bytes, server_preset.wt_max_total_buffered_bytes);
     try std.testing.expectEqual(client_preset.buffered_stream_policy, server_preset.buffered_stream_policy);
     try std.testing.expectEqual(client_preset.max_event_payload_bytes_per_drain, server_preset.max_event_payload_bytes_per_drain);
     try std.testing.expectEqual(client_preset.max_events_per_drain, server_preset.max_events_per_drain);

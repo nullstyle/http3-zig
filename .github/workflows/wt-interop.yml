@@ -55,7 +55,7 @@ jobs:
       - name: Set up Go (for the webtransport-go peer)
         uses: actions/setup-go@v5
         with:
-          go-version: "1.22"
+          go-version: "1.25"
           # Cache the module download for the third-party peer.
           # `go-version-file` is only set when there's a top-level
           # go.mod, so we point the cache at the server's go.sum
@@ -203,9 +203,9 @@ jobs:
         # advisory, not a hard merge gate (the per-push real-socket
         # gate in `wt-interop-self-test.yml` covers our own pump path
         # against our own server, which IS treated as gating).
-        # See <docs/wt-third-party-interop.md> for current status: green
-        # on the v0.4.8 line, but still advisory because third-party peer
-        # setup is more flake-prone than the in-tree self-test.
+        # See <docs/wt-third-party-interop.md> for current status; this
+        # remains advisory because third-party peer setup is more
+        # flake-prone than the in-tree self-test.
         continue-on-error: true
         run: zig build wt-interop-matrix -- --timeout-ms "${TIMEOUT_MS}"
 

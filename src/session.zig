@@ -211,6 +211,12 @@ pub const ProductionOptions = struct {
     /// wt_max_buffered_bytes_per_stream`. Draft-15 §4.5 suggests
     /// "endpoints SHOULD limit the number of buffered bytes."
     wt_max_buffered_bytes_per_stream: usize = 64 * 1024,
+    /// Aggregate cap for bytes held across all peer-opened WebTransport
+    /// streams waiting for session confirmation under
+    /// `BufferedStreamPolicy.buffer`. This gives production users a direct
+    /// total-memory budget instead of relying only on the product of the
+    /// per-stream cap and the concurrent-stream cap.
+    wt_max_total_buffered_bytes: usize = 4 * 1024 * 1024,
     enable_connect_protocol: bool = false,
     enable_datagram: bool = false,
     /// Advertise WebTransport via `SETTINGS_WT_ENABLED`
@@ -349,6 +355,12 @@ pub const Config = struct {
     /// unbounded behavior; `production()` defaults to 64 KiB.
     /// (draft-ietf-webtrans-http3-15 §4.5)
     wt_max_buffered_bytes_per_stream: ?usize = null,
+    /// Optional aggregate cap on bytes held across all peer-opened
+    /// WebTransport streams waiting for session confirmation under
+    /// `BufferedStreamPolicy.buffer`. Null preserves the legacy behavior;
+    /// `production()` defaults to 4 MiB.
+    /// (draft-ietf-webtrans-http3-15 §4.5)
+    wt_max_total_buffered_bytes: ?usize = null,
     /// Optional typed HTTP/3 trace callback. Metrics are always tracked; the
     /// callback lets embedders translate events into logs or qlog JSON.
     observability: observability_mod.Hooks = .{},
@@ -398,6 +410,7 @@ pub const Config = struct {
             .max_tracked_push_promises = options.max_tracked_push_promises,
             .max_pending_wt_sessions = options.max_pending_wt_sessions,
             .wt_max_buffered_bytes_per_stream = options.wt_max_buffered_bytes_per_stream,
+            .wt_max_total_buffered_bytes = options.wt_max_total_buffered_bytes,
             .push_policy = options.push_policy,
             .buffered_stream_policy = options.buffered_stream_policy,
         };
@@ -1621,6 +1634,10 @@ pub const Session = struct {
         return self.wt_established_sessions.count();
     }
 
+    pub fn webTransportBufferedByteCount(self: *const Session) usize {
+        return self.bufferedWebTransportBytes();
+    }
+
     /// True if `session_id` references a WebTransport CONNECT stream that
     /// the session knows about (pending or established). Used by the
     /// inbound-stream dispatch to decide whether to emit events,
@@ -2793,6 +2810,7 @@ pub const Session = struct {
                     .buffer => {
                         state.wt_buffered = true;
                         try self.wt_buffered_streams.append(self.allocator, state.id);
+                        if (try self.rejectIfBufferedWebTransportLimitExceeded(state)) return;
                         return;
                     },
                 },
@@ -2813,15 +2831,7 @@ pub const Session = struct {
             // would — STOP_SENDING with
             // `WEBTRANSPORT_BUFFERED_STREAM_REJECTED` — and remove
             // it from the buffered list so its bytes get freed.
-            if (self.config.wt_max_buffered_bytes_per_stream) |cap| {
-                if (state.rx.items.len > cap) {
-                    try self.rejectBufferedWebTransportStream(state);
-                    state.wt_buffered = false;
-                    self.removeFromBufferedList(state.id);
-                    state.rx.clearRetainingCapacity();
-                    return;
-                }
-            }
+            if (try self.rejectIfBufferedWebTransportLimitExceeded(state)) return;
             return;
         }
 
@@ -2994,6 +3004,38 @@ pub const Session = struct {
                 return;
             }
         }
+    }
+
+    fn bufferedWebTransportBytes(self: *const Session) usize {
+        var total: usize = 0;
+        for (self.wt_buffered_streams.items) |stream_id| {
+            const state = self.streams.get(stream_id) orelse continue;
+            if (state.wt_buffered) total += state.rx.items.len;
+        }
+        return total;
+    }
+
+    fn rejectBufferedWebTransportStreamFromBuffer(self: *Session, state: *StreamState) Error!void {
+        try self.rejectBufferedWebTransportStream(state);
+        state.wt_buffered = false;
+        self.removeFromBufferedList(state.id);
+        state.rx.clearRetainingCapacity();
+    }
+
+    fn rejectIfBufferedWebTransportLimitExceeded(self: *Session, state: *StreamState) Error!bool {
+        if (self.config.wt_max_buffered_bytes_per_stream) |cap| {
+            if (state.rx.items.len > cap) {
+                try self.rejectBufferedWebTransportStreamFromBuffer(state);
+                return true;
+            }
+        }
+        if (self.config.wt_max_total_buffered_bytes) |cap| {
+            if (self.bufferedWebTransportBytes() > cap) {
+                try self.rejectBufferedWebTransportStreamFromBuffer(state);
+                return true;
+            }
+        }
+        return false;
     }
 
     fn rejectBufferedWebTransportStream(self: *Session, state: *StreamState) Error!void {
@@ -5427,6 +5469,8 @@ test "production config applies bounded defaults and feature opt-ins" {
     try std.testing.expectEqual(@as(usize, 16 * 1024), config.max_datagram_payload_size);
     try std.testing.expectEqual(@as(?usize, 64 * 1024), config.max_capsule_value_size);
     try std.testing.expectEqual(@as(?usize, 1 * 1024 * 1024), config.max_stream_send_buffered);
+    try std.testing.expectEqual(@as(?usize, 64 * 1024), config.wt_max_buffered_bytes_per_stream);
+    try std.testing.expectEqual(@as(?usize, 4 * 1024 * 1024), config.wt_max_total_buffered_bytes);
     try std.testing.expectEqual(@as(?usize, 1 * 1024 * 1024), config.max_event_payload_size);
     try std.testing.expectEqual(@as(?usize, 4 * 1024 * 1024), config.max_event_payload_bytes_per_drain);
     try std.testing.expectEqual(@as(?usize, 512), config.max_events_per_drain);

@@ -11,9 +11,12 @@ breaking changes; see notes per release.
 
 ### Changed
 
-- Refreshed roadmap and WebTransport interop notes to match the v0.4.8 line:
-  `quic-zig` is pinned at v0.7.5, in-tree H3/WT self-tests are hard gates, and
-  the third-party WT matrix is green but still advisory.
+- Added an advisory HTTP/3 foreign-peer matrix against a pinned
+  `quic-go/http3` server, plus status docs for local and CI runs.
+- Added public API smoke coverage for the documented stable embedding surface.
+- Added `wt_max_total_buffered_bytes` to cap aggregate pre-confirmation
+  WebTransport buffering under `BufferedStreamPolicy.buffer`; production
+  presets default it to 4 MiB and tests cover the aggregate cap.
 
 ## [0.4.8] - 2026-07-05
 

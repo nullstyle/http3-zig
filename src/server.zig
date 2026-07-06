@@ -802,6 +802,13 @@ pub const Server = struct {
         /// `session_mod.Config.wt_max_buffered_bytes_per_stream`.
         wt_max_buffered_bytes_per_stream: ?usize = null,
 
+        /// Aggregate cap on bytes held across all peer-opened
+        /// WebTransport streams waiting for session confirmation under
+        /// `BufferedStreamPolicy.buffer`. `null` preserves the legacy
+        /// unbounded behaviour. Mirrors
+        /// `session_mod.Config.wt_max_total_buffered_bytes`.
+        wt_max_total_buffered_bytes: ?usize = null,
+
         /// Policy for peer-opened WebTransport streams whose Session
         /// ID references a session that has not yet been confirmed.
         /// Mirrors `session_mod.Config.buffered_stream_policy`.
@@ -852,6 +859,9 @@ pub const Server = struct {
         ///       Bounds bytes a single peer-opened WebTransport stream
         ///       may buffer while waiting for its session
         ///       (draft-ietf-webtrans-http3-15 §4.5).
+        ///   - `wt_max_total_buffered_bytes = 4 MiB`
+        ///       Bounds aggregate bytes held across all buffered
+        ///       pre-confirmation WebTransport streams.
         ///   - `buffered_stream_policy = .reject`
         ///       Reject peer-opened WT streams whose session has not
         ///       yet been confirmed instead of buffering or surfacing
@@ -877,6 +887,7 @@ pub const Server = struct {
             .max_concurrent_peer_streams = 256,
             .max_field_section_size = 16 * 1024,
             .wt_max_buffered_bytes_per_stream = 16 * 1024,
+            .wt_max_total_buffered_bytes = 4 * 1024 * 1024,
             .buffered_stream_policy = .reject,
             .max_event_payload_bytes_per_drain = 4 * 1024 * 1024,
             .max_events_per_drain = 512,
@@ -897,6 +908,7 @@ pub const Server = struct {
                 .max_concurrent_peer_streams = self.max_concurrent_peer_streams,
                 .max_field_section_size = self.max_field_section_size,
                 .wt_max_buffered_bytes_per_stream = self.wt_max_buffered_bytes_per_stream,
+                .wt_max_total_buffered_bytes = self.wt_max_total_buffered_bytes,
                 .buffered_stream_policy = self.buffered_stream_policy,
                 .max_event_payload_bytes_per_drain = self.max_event_payload_bytes_per_drain,
                 .max_events_per_drain = self.max_events_per_drain,

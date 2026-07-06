@@ -12,13 +12,25 @@ BODY_EXPECT="${BODY_EXPECT:-http3-zig external h3 interop}"
 CLIENT_TIMEOUT_MS="${CLIENT_TIMEOUT_MS:-10000}"
 STARTUP_DELAY_MS="${STARTUP_DELAY_MS:-500}"
 WORK_DIR="${WORK_DIR:-$(mktemp -d "${TMPDIR:-/tmp}/http3-zig-external-h3.XXXXXX")}"
+KEEP_WORK_DIR="${KEEP_WORK_DIR:-0}"
+
+abs_path() {
+    case "$1" in
+        /*) printf '%s' "$1" ;;
+        *) printf '%s/%s' "$PWD" "$1" ;;
+    esac
+}
 
 cleanup() {
     if [[ -n "${PEER_PID:-}" ]] && kill -0 "$PEER_PID" 2>/dev/null; then
         kill "$PEER_PID" 2>/dev/null || true
         wait "$PEER_PID" 2>/dev/null || true
     fi
-    rm -rf "$WORK_DIR"
+    if [[ "$KEEP_WORK_DIR" == "1" ]]; then
+        echo "preserving external-h3 work dir: $WORK_DIR"
+    else
+        rm -rf "$WORK_DIR"
+    fi
 }
 trap cleanup EXIT
 
@@ -28,6 +40,8 @@ if [[ ! -x "$CLIENT_BIN" ]]; then
     exit 1
 fi
 
+CERT="$(abs_path "$CERT")"
+KEY="$(abs_path "$KEY")"
 mkdir -p "$WORK_DIR/www"
 printf '%s\n' "$BODY_EXPECT" >"$WORK_DIR/www/hello.txt"
 

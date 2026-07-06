@@ -3145,6 +3145,80 @@ test "WebTransport: .buffer policy rejects stream that exceeds wt_max_buffered_b
     );
 }
 
+test "WebTransport: .buffer policy enforces wt_max_total_buffered_bytes" {
+    // Aggregate byte cap (draft-ietf-webtrans-http3-15 §4.5):
+    // several individually-small peer-opened WT streams can otherwise
+    // add up to a large pre-confirmation buffer. The stream that pushes
+    // the aggregate over the configured cap is rejected while earlier
+    // buffered streams remain available for replay if the session is
+    // later confirmed.
+    const allocator = std.testing.allocator;
+    const h3_settings: http3_zig.Settings = .{
+        .enable_connect_protocol = true,
+        .h3_datagram = true,
+        .wt_enabled = true,
+    };
+
+    var pair: H3Pair = undefined;
+    try pair.initStarted(allocator, .{
+        .settings = h3_settings,
+    }, .{
+        .settings = h3_settings,
+        .buffered_stream_policy = .buffer,
+        .wt_max_buffered_bytes_per_stream = 1024,
+        .wt_max_total_buffered_bytes = 24,
+    });
+    defer pair.deinit();
+    try exchangePairSettings(allocator, &pair);
+
+    var h3_client = http3_zig.Client.init(&pair.client_h3);
+    var client_wt = try h3_client.startWebTransport(allocator, .{
+        .authority = "localhost",
+        .path = "/wt-buffer-total-cap",
+    });
+
+    const payload_a = "abcdefghijklmnop"; // 16 bytes, under total cap.
+    const payload_b = "qrstuvwxyzABCDEF"; // second stream pushes total > 24.
+    const uni_a = try client_wt.openUniStream();
+    try client_wt.writeStream(uni_a, payload_a);
+    const uni_b = try client_wt.openUniStream();
+    try client_wt.writeStream(uni_b, payload_b);
+
+    var client_events: std.ArrayList(http3_zig.session.Event) = .empty;
+    defer {
+        clearSessionEvents(allocator, &client_events);
+        client_events.deinit(allocator);
+    }
+    var server_events: std.ArrayList(http3_zig.session.Event) = .empty;
+    defer {
+        clearSessionEvents(allocator, &server_events);
+        server_events.deinit(allocator);
+    }
+
+    var now_us: u64 = 1_000_000;
+    var iters: u32 = 0;
+    while (iters < 200) : (iters += 1) {
+        try pumpH3(
+            &pair.client,
+            &pair.server,
+            &pair.client_h3,
+            &pair.server_h3,
+            &client_events,
+            &server_events,
+            &now_us,
+        );
+        clearSessionEvents(allocator, &server_events);
+        clearSessionEvents(allocator, &client_events);
+    }
+
+    try std.testing.expect(pair.server_h3.webTransportPendingCount() > 0);
+    try std.testing.expectEqual(payload_a.len, pair.server_h3.webTransportBufferedByteCount());
+    try std.testing.expectEqual(
+        http3_zig.session.ShutdownState.active,
+        pair.server_h3.shutdownState(),
+    );
+}
+
 test "WebTransport: .buffer replay under tight budget surfaces opened+data+finished in order" {
     // Stress test for the audit-flagged concern that budget
     // exhaustion mid-replay could orphan a parked FIN. The setup:
@@ -3394,4 +3468,3 @@ test "WebTransport: peer FINs CONNECT control stream without CLOSE_WEBTRANSPORT_
     try std.testing.expectEqual(@as(?http3_zig.errors.ConnectionError, null), pair.client_h3.lastCloseError());
     try std.testing.expectEqual(@as(?http3_zig.errors.ConnectionError, null), pair.server_h3.lastCloseError());
 }
-

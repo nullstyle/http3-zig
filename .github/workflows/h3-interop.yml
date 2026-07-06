@@ -1,0 +1,68 @@
+name: h3-interop
+
+on:
+  schedule:
+    # Sunday 07:30 UTC, after the WT matrix cadence but before nightly fuzz.
+    - cron: "30 7 * * 0"
+  workflow_dispatch:
+    inputs:
+      timeout_ms:
+        description: "Per-peer wallclock timeout (ms)"
+        required: false
+        default: "30000"
+
+# Advisory third-party HTTP/3 interop. The hard per-push real-socket gate is
+# h3-interop-self-test.yml, which keeps the peer in-tree. This workflow adds a
+# foreign server (pinned quic-go/http3) without making release train health
+# depend on third-party setup flake.
+jobs:
+  quic-go:
+    name: H3 interop (http3-zig client vs quic-go server)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    continue-on-error: true
+    env:
+      TIMEOUT_MS: ${{ github.event.inputs.timeout_ms || '30000' }}
+      WORK_DIR: ${{ runner.temp }}/external-h3
+      KEEP_WORK_DIR: "1"
+    steps:
+      - name: Checkout http3-zig
+        uses: actions/checkout@v4
+
+      - name: Set up mise (zig master + project tools)
+        uses: jdx/mise-action@v2
+        with:
+          install: true
+          cache: true
+
+      - name: Set up Go (for the quic-go peer)
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+          cache-dependency-path: interop/external_h3/server_quic_go/go.sum
+
+      - name: Build the http3-zig external H3 client
+        run: zig build external-h3-client
+
+      - name: Build the quic-go H3 peer
+        working-directory: interop/external_h3/server_quic_go
+        run: |
+          set -euo pipefail
+          go mod download
+          go build -o "${{ runner.temp }}/h3-quic-go-server" .
+
+      - name: Run the advisory H3 matrix
+        env:
+          CLIENT_TIMEOUT_MS: ${{ env.TIMEOUT_MS }}
+          QUIC_GO_READY_PATTERN: "^READY "
+          QUIC_GO_H3_SERVER_CMD: ${{ runner.temp }}/h3-quic-go-server --listen "$H3_ADDR" --cert "$H3_CERT" --key "$H3_KEY" --root "$H3_ROOT" --max-requests 1 --max-lifetime-ms 60000
+        run: bash interop/external_h3/run_matrix.sh quic-go
+
+      - name: Upload H3 interop logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: h3-interop-quic-go-${{ github.run_id }}
+          path: ${{ env.WORK_DIR }}
+          if-no-files-found: ignore
+          retention-days: 14

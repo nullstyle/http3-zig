@@ -20,6 +20,8 @@ but changes will be deliberate, called out in `CHANGELOG.md`, and kept minimal.
   / `drain` / `close`, the send-side entry points (`openRequest`,
   `sendGoaway`, `stopSending`, `resetStream`, the datagram/capsule sends), and
   `SessionConfig` / `SessionProductionOptions` / `SessionConfig.production`.
+  `tests/integration/public_api_smoke.zig` compile-checks this tier so an
+  accidental alias or entry-point removal fails the normal test suite.
 - **Facades:** `Client` and `Server`, their request/response/push option
   structs and streaming writer handles (`RequestWriter`, `ResponseWriter`,
   `PushWriter`), and the reader/tracker convenience types (`ResponseReader` /
@@ -63,8 +65,8 @@ but changes will be deliberate, called out in `CHANGELOG.md`, and kept minimal.
   fields follow the same convention and are added with production-safe
   defaults.
 - **Newly added surfaces** — e.g. the DoS hardening knobs
-  (`max_incoming_frame_length`) — may see minor signature or naming
-  refinement as they are exercised for the first time.
+  (`max_incoming_frame_length`, `wt_max_total_buffered_bytes`) — may see minor
+  signature or naming refinement as they are exercised for the first time.
 
 ### Internal — do not depend on
 

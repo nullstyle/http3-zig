@@ -35,8 +35,15 @@ zig build external-h3-client
 bash interop/external_h3/run_matrix.sh
 ```
 
-By default it attempts `quic-go`, `ngtcp2`, `lsquic`, and `aioquic`, but each
-peer is skipped unless its command variable is set:
+By default it attempts `quic-go`, `ngtcp2`, `lsquic`, and `aioquic`.
+`quic-go` has an in-repo pinned peer under `server_quic_go` and can be run
+directly:
+
+```sh
+bash interop/external_h3/peers/quic-go.sh
+```
+
+Other peers are skipped unless their command variable is set:
 
 - `QUIC_GO_H3_SERVER_CMD`
 - `NGTCP2_H3_SERVER_CMD`
@@ -62,3 +69,6 @@ bash interop/external_h3/peers/aioquic.sh
 If a peer prints a readiness line, set `<PEER>_READY_PATTERN`, for example
 `AIOQUIC_READY_PATTERN='listening|serving|ready'`. Without a readiness pattern
 the runner sleeps briefly before connecting.
+
+See [docs/h3-third-party-interop.md](../../docs/h3-third-party-interop.md) for
+the advisory GitHub Actions matrix and current status.
