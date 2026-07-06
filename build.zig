@@ -439,6 +439,25 @@ pub fn build(b: *std.Build) void {
     const run_request_reset_step = b.step("run-example-request-reset", "Run the request reset lifecycle example");
     run_request_reset_step.dependOn(&run_request_reset.step);
 
+    const tracked_datagram_mod = b.createModule(.{
+        .root_source_file = b.path("examples/tracked_datagram.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    tracked_datagram_mod.addImport("http3_zig", http3_zig_mod);
+    tracked_datagram_mod.addImport("quic_zig", quic_zig_mod);
+    const tracked_datagram = b.addExecutable(.{
+        .name = "http3-zig-tracked-datagram",
+        .root_module = tracked_datagram_mod,
+    });
+    const install_tracked_datagram = b.addInstallArtifact(tracked_datagram, .{});
+    const tracked_datagram_step = b.step("example-tracked-datagram", "Build the tracked HTTP/3 DATAGRAM example");
+    tracked_datagram_step.dependOn(&install_tracked_datagram.step);
+
+    const run_tracked_datagram = b.addRunArtifact(tracked_datagram);
+    const run_tracked_datagram_step = b.step("run-example-tracked-datagram", "Run the tracked HTTP/3 DATAGRAM example");
+    run_tracked_datagram_step.dependOn(&run_tracked_datagram.step);
+
     const bounded_body_mod = b.createModule(.{
         .root_source_file = b.path("examples/bounded_body_sink.zig"),
         .target = target,
@@ -540,6 +559,7 @@ pub fn build(b: *std.Build) void {
     examples_step.dependOn(&install_manual_pump.step);
     examples_step.dependOn(&install_observability_metrics.step);
     examples_step.dependOn(&install_request_reset.step);
+    examples_step.dependOn(&install_tracked_datagram.step);
     examples_step.dependOn(&install_bounded_body.step);
     examples_step.dependOn(&install_streaming_upload.step);
     examples_step.dependOn(&install_graceful_shutdown.step);
@@ -551,6 +571,7 @@ pub fn build(b: *std.Build) void {
     run_examples_step.dependOn(&run_manual_pump.step);
     run_examples_step.dependOn(&run_observability_metrics.step);
     run_examples_step.dependOn(&run_request_reset.step);
+    run_examples_step.dependOn(&run_tracked_datagram.step);
     run_examples_step.dependOn(&run_bounded_body.step);
     run_examples_step.dependOn(&run_streaming_upload.step);
     run_examples_step.dependOn(&run_graceful_shutdown.step);

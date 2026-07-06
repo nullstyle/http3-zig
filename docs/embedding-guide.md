@@ -106,6 +106,8 @@ Runnable examples:
   around a real request/response loop.
 - `examples/request_reset.zig`: client request reset and server-side
   `stream_reset` classification.
+- `examples/tracked_datagram.zig`: tracked HTTP/3 DATAGRAM send IDs and
+  ACK-event correlation.
 - `examples/bounded_body_sink.zig`: raw response events into caller-owned
   bounded storage.
 - `examples/streaming_upload.zig`: client upload pacing with

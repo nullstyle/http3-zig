@@ -75,9 +75,10 @@ or `Server.Config.production.toSessionConfig()`.
   CLOSE capsule behavior.
 - `zig build run-examples` runs the in-process embedding cookbook on CI,
   covering facade GET, manual QUIC/H3 pump ordering, observability metrics
-  wiring, request reset lifecycle classification, raw response body budgeting,
-  streaming upload budgeting, graceful GOAWAY shutdown, endpoint WebTransport,
-  and WT proxy datapath ownership.
+  wiring, request reset lifecycle classification, tracked HTTP/3 DATAGRAM
+  ACK correlation, raw response body budgeting, streaming upload budgeting,
+  graceful GOAWAY shutdown, endpoint WebTransport, and WT proxy datapath
+  ownership.
 - `examples/webtransport_proxy.zig` is a compile-checked, runnable two-hop WT
   datapath example covering capsule, DATAGRAM, stream-data, FIN, and reset
   forwarding ownership.

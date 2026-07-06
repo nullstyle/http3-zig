@@ -41,6 +41,9 @@ example-observability-metrics:
 example-request-reset:
     zig build run-example-request-reset
 
+example-tracked-datagram:
+    zig build run-example-tracked-datagram
+
 example-bounded-body-sink:
     zig build run-example-bounded-body-sink
 
