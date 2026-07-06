@@ -196,7 +196,9 @@ provides:
 `SessionConfig.production(.{})` provides a conservative preset with bounded
 field sections, decoded QPACK storage, event payloads, reliable capsules,
 datagrams, send buffering, and pre-confirmation WebTransport buffering. See
-[docs/production-limits.md](docs/production-limits.md).
+[docs/production-limits.md](docs/production-limits.md). The
+[embedding guide](docs/embedding-guide.md) shows the application-owned event
+loop shape, event lifetime rules, and when to choose raw events versus runners.
 
 ```sh
 mise install
@@ -220,6 +222,8 @@ just external-h3-interop
   provide convenience context constructors that advertise `h3`.
 - The library stays I/O-decoupled. Embedders own sockets and event loops,
   drive `quic-zig.Connection.handle` / `poll`, then hand stream bytes to `http3-zig`.
+  See [docs/embedding-guide.md](docs/embedding-guide.md) for the pump order,
+  event ownership, and backpressure choices.
 
 ## Current Modules
 
@@ -431,4 +435,5 @@ just external-h3-interop
 - `just example-webtransport-proxy` runs a two-hop WebTransport proxy datapath
   example over two in-process H3 pairs.
 
-See [ROADMAP.md](ROADMAP.md) for the production plan.
+See [docs/embedding-guide.md](docs/embedding-guide.md) for the event-loop
+integration shape, and [ROADMAP.md](ROADMAP.md) for the production plan.

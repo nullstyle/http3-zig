@@ -27,6 +27,8 @@ breaking changes; see notes per release.
   storage and send-side `ResponseWriter.canWrite` checks.
 - Added a streaming upload loopback example showing client-side
   `RequestWriter.canWrite` checks and server-side raw request-body budgeting.
+- Added an embedding guide documenting event-loop integration, event ownership,
+  raw-event vs runner tradeoffs, backpressure signals, and shutdown shape.
 - Added public API smoke coverage for the documented stable embedding surface.
 - Added `wt_max_total_buffered_bytes` to cap aggregate pre-confirmation
   WebTransport buffering under `BufferedStreamPolicy.buffer`; production

@@ -36,6 +36,15 @@ See the [README](README.md) for the current capability surface and the
   policy across two in-process H3 pairs. A reusable full proxy remains out of
   scope unless a future release chooses an explicit policy layer.
 
+- **Embedding cookbook.** [`docs/embedding-guide.md`](docs/embedding-guide.md)
+  now documents the application-owned event-loop shape, session/event
+  ownership rules, raw-event vs runner tradeoffs, and the backpressure signals
+  embedders need to wire into custom servers, clients, proxies, and test
+  harnesses. The guide points at runnable facade, streaming-body, and
+  WebTransport proxy examples. Remaining: add a focused graceful GOAWAY /
+  shutdown example, and consider a socket-backed skeleton if quic-zig grows a
+  stable public listener/dialer helper for examples.
+
 - **Memory-budget enforcement polish.** Opt-in caps cover send buffers,
   outgoing capsules, session event queues, tracker bodies, decoded QPACK
   field sections, concurrent peer streams, adversarial-reachable session maps
