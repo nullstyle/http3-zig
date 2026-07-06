@@ -35,6 +35,9 @@ example-loopback-get:
 example-manual-pump-get:
     zig build run-example-manual-pump-get
 
+example-observability-metrics:
+    zig build run-example-observability-metrics
+
 example-bounded-body-sink:
     zig build run-example-bounded-body-sink
 

@@ -401,6 +401,25 @@ pub fn build(b: *std.Build) void {
     const run_manual_pump_step = b.step("run-example-manual-pump-get", "Run the manual event-loop pump GET example");
     run_manual_pump_step.dependOn(&run_manual_pump.step);
 
+    const observability_metrics_mod = b.createModule(.{
+        .root_source_file = b.path("examples/observability_metrics.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    observability_metrics_mod.addImport("http3_zig", http3_zig_mod);
+    observability_metrics_mod.addImport("quic_zig", quic_zig_mod);
+    const observability_metrics = b.addExecutable(.{
+        .name = "http3-zig-observability-metrics",
+        .root_module = observability_metrics_mod,
+    });
+    const install_observability_metrics = b.addInstallArtifact(observability_metrics, .{});
+    const observability_metrics_step = b.step("example-observability-metrics", "Build the observability metrics example");
+    observability_metrics_step.dependOn(&install_observability_metrics.step);
+
+    const run_observability_metrics = b.addRunArtifact(observability_metrics);
+    const run_observability_metrics_step = b.step("run-example-observability-metrics", "Run the observability metrics example");
+    run_observability_metrics_step.dependOn(&run_observability_metrics.step);
+
     const bounded_body_mod = b.createModule(.{
         .root_source_file = b.path("examples/bounded_body_sink.zig"),
         .target = target,
@@ -500,6 +519,7 @@ pub fn build(b: *std.Build) void {
     const examples_step = b.step("examples", "Build all runnable examples");
     examples_step.dependOn(&install_loopback_get.step);
     examples_step.dependOn(&install_manual_pump.step);
+    examples_step.dependOn(&install_observability_metrics.step);
     examples_step.dependOn(&install_bounded_body.step);
     examples_step.dependOn(&install_streaming_upload.step);
     examples_step.dependOn(&install_graceful_shutdown.step);
@@ -509,6 +529,7 @@ pub fn build(b: *std.Build) void {
     const run_examples_step = b.step("run-examples", "Run all in-process examples");
     run_examples_step.dependOn(&run_loopback_get.step);
     run_examples_step.dependOn(&run_manual_pump.step);
+    run_examples_step.dependOn(&run_observability_metrics.step);
     run_examples_step.dependOn(&run_bounded_body.step);
     run_examples_step.dependOn(&run_streaming_upload.step);
     run_examples_step.dependOn(&run_graceful_shutdown.step);

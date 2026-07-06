@@ -102,6 +102,8 @@ Runnable examples:
 - `examples/loopback_get.zig`: facade runners and complete response tracking.
 - `examples/manual_pump_get.zig`: the same GET while manually driving QUIC
   `tick` / `poll` / `handle` and HTTP/3 `drain`.
+- `examples/observability_metrics.zig`: trace callbacks plus metrics snapshots
+  around a real request/response loop.
 - `examples/bounded_body_sink.zig`: raw response events into caller-owned
   bounded storage.
 - `examples/streaming_upload.zig`: client upload pacing with
