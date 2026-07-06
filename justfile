@@ -3,6 +3,9 @@ set shell := ["bash", "-ceu"]
 test:
     zig build test
 
+check-api:
+    zig build check-api
+
 qpack-interop:
     cd interop/qpack_quic_go && go test -v
 

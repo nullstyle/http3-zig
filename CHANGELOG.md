@@ -42,7 +42,8 @@ breaking changes; see notes per release.
   limit.
 - Added aggregate `examples` / `run-examples` build steps and a CI gate that
   runs the in-process embedding cookbook on Ubuntu.
-- Added public API smoke coverage for the documented stable embedding surface.
+- Added public API smoke coverage for the documented stable embedding surface,
+  including a standalone `zig build check-api` audit target.
 - Added `wt_max_total_buffered_bytes` to cap aggregate pre-confirmation
   WebTransport buffering under `BufferedStreamPolicy.buffer`; production
   presets default it to 4 MiB and tests cover the aggregate cap.

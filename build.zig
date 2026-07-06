@@ -73,6 +73,20 @@ pub fn build(b: *std.Build) void {
     const run_integration_tests = b.addRunArtifact(integration_tests);
     test_step.dependOn(&run_integration_tests.step);
 
+    const public_api_smoke_mod = b.createModule(.{
+        .root_source_file = b.path("tests/integration/public_api_smoke.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    public_api_smoke_mod.addImport("http3_zig", http3_zig_mod);
+    const public_api_smoke_tests = b.addTest(.{ .root_module = public_api_smoke_mod });
+    const run_public_api_smoke_tests = b.addRunArtifact(public_api_smoke_tests);
+    const check_api_step = b.step(
+        "check-api",
+        "Compile-check the documented stable public API surface",
+    );
+    check_api_step.dependOn(&run_public_api_smoke_tests.step);
+
     // RFC-traceable conformance suites under tests/conformance/. Each
     // file mirrors a section of an RFC and uses BCP 14 keywords plus
     // `[RFC#### §X.Y ¶N]` citations in test names so failures point an
