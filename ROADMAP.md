@@ -41,6 +41,8 @@ See the [README](README.md) for the current capability surface and the
   field sections, concurrent peer streams, adversarial-reachable session maps
   (tracked priorities, received push promises, pending WebTransport sessions),
   and both per-stream and aggregate pre-confirmation WebTransport buffering.
-  See [`docs/production-limits.md`](docs/production-limits.md). Remaining:
-  continue converting caller-owned body/backpressure policy into examples and
-  higher-level helpers where that does not hide application semantics.
+  See [`docs/production-limits.md`](docs/production-limits.md). The
+  `examples/bounded_body_sink.zig` raw-event example now demonstrates
+  caller-owned streaming body storage plus send-side `canWrite` checks.
+  Remaining: consider higher-level helpers where they do not hide application
+  semantics.

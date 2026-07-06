@@ -22,6 +22,9 @@ breaking changes; see notes per release.
 - Added a committed JSON manifest and exporter for the RFC 9204 Appendix B
   dynamic QPACK fixture corpus, with the in-tree runner checking for drift
   between the neutral manifest and the Zig vectors.
+- Added a bounded body sink loopback example showing raw
+  `RequestEvent` / `ResponseEvent` consumption with caller-owned response-body
+  storage and send-side `ResponseWriter.canWrite` checks.
 - Added public API smoke coverage for the documented stable embedding surface.
 - Added `wt_max_total_buffered_bytes` to cap aggregate pre-confirmation
   WebTransport buffering under `BufferedStreamPolicy.buffer`; production

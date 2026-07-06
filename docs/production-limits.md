@@ -34,6 +34,10 @@ or `Server.Config.production.toSessionConfig()`.
   fails a write.
 - Drain-budget errors (`EventPayloadTooLarge`, `EventQueueFull`) are local
   backpressure signals. Callers should free emitted events and drain again.
+- Raw `RequestEvent` / `ResponseEvent` body events let embedders stream into
+  their own sinks instead of using facade tracker accumulation; response
+  producers can pair this with `ResponseWriter.canWrite` before emitting more
+  DATA.
 - WebTransport flow-control errors (`WebTransportFlowControlExceeded`,
   `WebTransportStreamLimitExceeded`, `WebTransportSessionDraining`) indicate
   session-level or peer-advertised limits rather than transport failure.
@@ -52,7 +56,8 @@ or `Server.Config.production.toSessionConfig()`.
   outside http3-zig's forwarding helper. The proxy example models those loops
   with explicit stream-id maps rather than hiding them in a library-level proxy.
 - Application body accumulation is owned by `RequestTracker` /
-  `ResponseTracker` budgets or by the caller if they consume raw events.
+  `ResponseTracker` budgets when using the facade runners, or entirely by the
+  caller when consuming raw events.
 - QPACK dynamic encoder table use is opt-in through the indexing policy and
   capacity knobs.
 - Third-party interop workflows are advisory signal, not production health
@@ -71,5 +76,8 @@ or `Server.Config.production.toSessionConfig()`.
 - `examples/webtransport_proxy.zig` is a compile-checked, runnable two-hop WT
   datapath example covering capsule, DATAGRAM, stream-data, FIN, and reset
   forwarding ownership.
+- `examples/bounded_body_sink.zig` is a compile-checked, runnable raw-event
+  example that streams response DATA into a fixed application budget while the
+  server side checks `ResponseWriter.canWrite`.
 - `bench/wt_memory.zig` / `zig build mem-profile` gates long-running
   WebTransport memory growth; see [memory-profile.md](memory-profile.md).

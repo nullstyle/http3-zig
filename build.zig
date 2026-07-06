@@ -382,6 +382,25 @@ pub fn build(b: *std.Build) void {
     const run_loopback_get_step = b.step("run-example-loopback-get", "Run the in-process HTTP/3 loopback example");
     run_loopback_get_step.dependOn(&run_loopback_get.step);
 
+    const bounded_body_mod = b.createModule(.{
+        .root_source_file = b.path("examples/bounded_body_sink.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    bounded_body_mod.addImport("http3_zig", http3_zig_mod);
+    bounded_body_mod.addImport("quic_zig", quic_zig_mod);
+    const bounded_body = b.addExecutable(.{
+        .name = "http3-zig-bounded-body-sink",
+        .root_module = bounded_body_mod,
+    });
+    const install_bounded_body = b.addInstallArtifact(bounded_body, .{});
+    const bounded_body_step = b.step("example-bounded-body-sink", "Build the bounded streaming body sink example");
+    bounded_body_step.dependOn(&install_bounded_body.step);
+
+    const run_bounded_body = b.addRunArtifact(bounded_body);
+    const run_bounded_body_step = b.step("run-example-bounded-body-sink", "Run the bounded streaming body sink example");
+    run_bounded_body_step.dependOn(&run_bounded_body.step);
+
     const loopback_wt_mod = b.createModule(.{
         .root_source_file = b.path("examples/loopback_wt.zig"),
         .target = target,

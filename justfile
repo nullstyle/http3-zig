@@ -26,6 +26,9 @@ external-h3-interop:
 example-loopback-get:
     zig build run-example-loopback-get
 
+example-bounded-body-sink:
+    zig build run-example-bounded-body-sink
+
 example-loopback-wt:
     zig build run-example-loopback-wt
 

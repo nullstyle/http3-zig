@@ -83,8 +83,12 @@ for the endpoint WebTransport variant. Intermediaries can start from
 [`examples/webtransport_proxy.zig`](examples/webtransport_proxy.zig), which
 forwards WT control capsules, QUIC DATAGRAM payloads, WT substream data, FIN,
 and resets across two in-process HTTP/3 pairs while keeping proxy policy in
-application code. For an application-author walkthrough of the WebTransport API
-(handshake, streams, datagrams, flow control, drain, close), see
+application code. Applications that need streaming response-body budgets can
+start from [`examples/bounded_body_sink.zig`](examples/bounded_body_sink.zig),
+which consumes raw response events into a caller-owned bounded sink instead of
+using the facade runners' body accumulation. For an application-author
+walkthrough of the WebTransport API (handshake, streams, datagrams, flow
+control, drain, close), see
 [`docs/webtransport-tour.md`](docs/webtransport-tour.md).
 
 ## Datagram sends
@@ -196,6 +200,7 @@ mise install
 just test
 just fuzz-smoke
 just example-loopback-get
+just example-bounded-body-sink
 just external-h3-client
 just external-h3-interop
 ```
@@ -413,6 +418,9 @@ just external-h3-interop
 - `just example-loopback-get` runs a compact in-process client/server example
   over `TransportLoopback` with the public `Client`, `Server`,
   `ClientRunner`, and `ServerRunner` APIs.
+- `just example-bounded-body-sink` runs the same in-process pattern with raw
+  `RequestEvent` / `ResponseEvent` classification and caller-owned streaming
+  body storage.
 - `just example-loopback-wt` runs the endpoint WebTransport loopback example.
 - `just example-webtransport-proxy` runs a two-hop WebTransport proxy datapath
   example over two in-process H3 pairs.
