@@ -18,6 +18,8 @@ test "public API smoke: stable embedding surface compiles" {
         _ = H.Session.resetStream;
         _ = H.Session.finishStream;
         _ = H.Session.streamSendState;
+        _ = H.Session.sendDatagramTracked;
+        _ = H.Session.sendDatagramWithContextTracked;
         _ = H.SessionConfig;
         _ = H.SessionConfig.production;
         _ = H.SessionProductionOptions;
@@ -29,6 +31,8 @@ test "public API smoke: stable embedding surface compiles" {
         _ = H.Client.request;
         _ = H.Client.startRequest;
         _ = H.Client.classify;
+        _ = H.Client.sendDatagramTracked;
+        _ = H.Client.sendDatagramWithContextTracked;
         _ = H.ClientRunner;
         _ = H.ClientRunner.init;
         _ = H.ClientRunner.observeBatch;
@@ -37,6 +41,8 @@ test "public API smoke: stable embedding surface compiles" {
         _ = H.Server.respond;
         _ = H.Server.push;
         _ = H.Server.classify;
+        _ = H.Server.sendDatagramTracked;
+        _ = H.Server.sendDatagramWithContextTracked;
         _ = H.ServerRunner;
         _ = H.ServerRunner.init;
         _ = H.ServerRunner.observeBatch;
@@ -47,7 +53,11 @@ test "public API smoke: stable embedding surface compiles" {
         _ = H.PushOptions;
         _ = H.PushHeadOptions;
         _ = H.RequestWriter;
+        _ = H.RequestWriter.datagramTracked;
+        _ = H.RequestWriter.datagramWithContextTracked;
         _ = H.ResponseWriter;
+        _ = H.ResponseWriter.datagramTracked;
+        _ = H.ResponseWriter.datagramWithContextTracked;
         _ = H.PushWriter;
         _ = H.RequestReader;
         _ = H.ResponseReader;
@@ -78,6 +88,7 @@ test "public API smoke: stable embedding surface compiles" {
         _ = H.WebTransportAcceptOptions;
         _ = H.WebTransportClientStream;
         _ = H.WebTransportClientStream.sendDatagram;
+        _ = H.WebTransportClientStream.sendDatagramTracked;
         _ = H.WebTransportClientStream.writeStream;
         _ = H.WebTransportClientStream.finishStream;
         _ = H.WebTransportClientStream.sendCapsule;
@@ -85,6 +96,7 @@ test "public API smoke: stable embedding surface compiles" {
         _ = H.WebTransportClientStream.close;
         _ = H.WebTransportServerStream;
         _ = H.WebTransportServerStream.sendDatagram;
+        _ = H.WebTransportServerStream.sendDatagramTracked;
         _ = H.WebTransportServerStream.writeStream;
         _ = H.WebTransportServerStream.finishStream;
         _ = H.WebTransportServerStream.sendCapsule;
@@ -93,7 +105,9 @@ test "public API smoke: stable embedding surface compiles" {
         _ = H.ConnectUdpOptions;
         _ = H.ConnectUdpAcceptOptions;
         _ = H.ConnectUdpClientStream;
+        _ = H.ConnectUdpClientStream.sendUdpTracked;
         _ = H.ConnectUdpServerStream;
+        _ = H.ConnectUdpServerStream.sendUdpTracked;
 
         // Events, errors, observability, and key codec re-exports.
         _ = H.session.Event;
