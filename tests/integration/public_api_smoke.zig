@@ -220,6 +220,7 @@ test "public API smoke: stable embedding surface compiles" {
         _ = H.TransportLoopback.init;
         _ = H.TransportLoopback.step;
         _ = H.TransportStepStats;
+        _ = H.TransportStepStats.madeProgress;
 
         // Extension facades.
         _ = H.WebSocketConnectOptions;

@@ -45,6 +45,8 @@ breaking changes; see notes per release.
 - Added public API smoke coverage for the documented stable embedding surface,
   including the transport-driver helpers, a standalone `zig build check-api`
   audit target, and a named CI gate.
+- Added `TransportStepStats.madeProgress()` for in-process examples and test
+  harnesses that pump until a transport loop goes idle.
 - Added `wt_max_total_buffered_bytes` to cap aggregate pre-confirmation
   WebTransport buffering under `BufferedStreamPolicy.buffer`; production
   presets default it to 4 MiB and tests cover the aggregate cap.

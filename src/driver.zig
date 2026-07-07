@@ -21,6 +21,16 @@ pub const StepStats = struct {
     client_events: usize = 0,
     server_events: usize = 0,
     session_events: usize = 0,
+
+    pub fn madeProgress(self: StepStats) bool {
+        return self.handled_datagrams != 0 or
+            self.sent_datagrams != 0 or
+            self.client_to_server_datagrams != 0 or
+            self.server_to_client_datagrams != 0 or
+            self.client_events != 0 or
+            self.server_events != 0 or
+            self.session_events != 0;
+    }
 };
 
 pub const Endpoint = struct {
@@ -96,6 +106,17 @@ pub const Endpoint = struct {
         return sent;
     }
 };
+
+test "StepStats reports whether a transport step made progress" {
+    try std.testing.expect(!(StepStats{}).madeProgress());
+    try std.testing.expect((StepStats{ .handled_datagrams = 1 }).madeProgress());
+    try std.testing.expect((StepStats{ .sent_datagrams = 1 }).madeProgress());
+    try std.testing.expect((StepStats{ .client_to_server_datagrams = 1 }).madeProgress());
+    try std.testing.expect((StepStats{ .server_to_client_datagrams = 1 }).madeProgress());
+    try std.testing.expect((StepStats{ .client_events = 1 }).madeProgress());
+    try std.testing.expect((StepStats{ .server_events = 1 }).madeProgress());
+    try std.testing.expect((StepStats{ .session_events = 1 }).madeProgress());
+}
 
 pub const LoopbackOptions = struct {
     now_us: u64 = 1_000_000,
