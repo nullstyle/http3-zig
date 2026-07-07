@@ -11,6 +11,9 @@ test "public API smoke: stable embedding surface compiles" {
         _ = H.Session.deinit;
         _ = H.Session.start;
         _ = H.Session.drain;
+        _ = H.Session.freeEvent;
+        _ = H.Session.freeEvents;
+        _ = H.Session.clearEvents;
         _ = H.Session.close;
         _ = H.Session.openRequest;
         _ = H.Session.sendGoaway;
@@ -34,6 +37,9 @@ test "public API smoke: stable embedding surface compiles" {
         _ = H.SessionConfig.production;
         _ = H.SessionProductionOptions;
         _ = H.SessionBufferedStreamPolicy;
+        _ = H.Event;
+        _ = H.deinitEvents;
+        _ = H.clearEvents;
 
         // Client/server facades, runners, and trackers.
         _ = H.Client;

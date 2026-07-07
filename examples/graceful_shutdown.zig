@@ -47,12 +47,12 @@ pub fn main(init: std.process.Init) !void {
 
     var client_events: std.ArrayList(http3_zig.session.Event) = .empty;
     defer {
-        clearEvents(allocator, &client_events);
+        http3_zig.clearEvents(allocator, &client_events);
         client_events.deinit(allocator);
     }
     var server_events: std.ArrayList(http3_zig.session.Event) = .empty;
     defer {
-        clearEvents(allocator, &server_events);
+        http3_zig.clearEvents(allocator, &server_events);
         server_events.deinit(allocator);
     }
     var completed_responses: std.ArrayList(*http3_zig.ResponseState) = .empty;
@@ -93,7 +93,7 @@ pub fn main(init: std.process.Init) !void {
                 else => {},
             }
         }
-        clearEvents(allocator, &server_events);
+        http3_zig.clearEvents(allocator, &server_events);
 
         for (client_events.items) |event| {
             switch (try client_runner.observe(event)) {
@@ -110,7 +110,7 @@ pub fn main(init: std.process.Init) !void {
                 else => {},
             }
         }
-        clearEvents(allocator, &client_events);
+        http3_zig.clearEvents(allocator, &client_events);
     }
 
     const response = completed_responses.items[0].reader();
@@ -179,12 +179,4 @@ fn connectQuic(client: *quic_zig.Connection, server: *quic_zig.Connection) !void
     try client.setLocalScid(&ClientCid);
     try server.setPeerDcid(&ClientCid);
     try server.setLocalScid(&ServerCid);
-}
-
-fn clearEvents(
-    allocator: std.mem.Allocator,
-    events: *std.ArrayList(http3_zig.session.Event),
-) void {
-    for (events.items) |event| event.deinit(allocator);
-    events.clearRetainingCapacity();
 }

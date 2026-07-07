@@ -14,8 +14,9 @@
 //!   1. Pump packets in / out of the underlying `quic_zig.Connection`.
 //!   2. Call `Session.drain(&events)` to emit a batch of typed events.
 //!   3. Process events; call back into `Session` to act on them.
-//!   4. Free each event with `event.deinit(allocator)` (the same
-//!      allocator the `Session` was constructed with).
+//!   4. Free drained events with `session.clearEvents(&events)` or
+//!      `http3_zig.clearEvents(allocator, &events)` using the same allocator
+//!      the `Session` was constructed with.
 //!   5. Repeat.
 //!
 //! For multi-connection servers, run one `Session` per connection on
@@ -57,17 +58,18 @@
 //!   WebTransport stream-data) are deep-cloned by the session out of
 //!   the session's allocator. The session retains no reference to
 //!   them after drain returns; ownership transfers to the caller.
-//! - For each yielded event the caller must call
-//!   `event.deinit(allocator)` using the **session's** allocator
-//!   (the one passed to `Session.init`), not the events list's
+//! - For each yielded event the caller must eventually call
+//!   `event.deinit(allocator)`, `session.clearEvents(&events)`, or
+//!   `http3_zig.clearEvents(allocator, &events)` using the **session's**
+//!   allocator (the one passed to `Session.init`), not the events list's
 //!   allocator. A typical pattern:
 //!
 //!       defer for (events.items) |ev| ev.deinit(session.allocator);
 //!       defer events.deinit(events_arena);
 //!
-//!   `event.deinit` is a no-op for variants whose payload is plain
-//!   scalars (peer_settings, flow_blocked, goaway, stream_finished,
-//!   stream_reset, request_rejected, datagram_acked/lost, push_stream,
+//!   `event.deinit` and the batch helpers are no-ops for variants whose
+//!   payload is plain scalars (peer_settings, flow_blocked, goaway,
+//!   stream_finished, stream_reset, request_rejected, datagram_acked/lost, push_stream,
 //!   cancel_push, ignored_unknown_frame, webtransport_stream_opened/
 //!   _finished/_reset/_flow_violated, connection_ids_needed). Calling
 //!   it on every event is always safe.
@@ -112,6 +114,7 @@ pub const client = @import("client.zig");
 pub const server = @import("server.zig");
 
 pub const Session = session.Session;
+pub const Event = session.Event;
 pub const SessionConfig = session.Config;
 pub const SessionProductionOptions = session.ProductionOptions;
 pub const SessionBufferedStreamPolicy = session.BufferedStreamPolicy;
@@ -266,6 +269,18 @@ pub const StreamError = errors.StreamError;
 /// `build_options` module so it can never drift from the manifest.
 pub fn version() []const u8 {
     return @import("build_options").version;
+}
+
+/// Releases deep-cloned payload bytes for every drained `Session` event.
+/// Pass the allocator used to initialize the session that produced them.
+pub fn deinitEvents(allocator: std.mem.Allocator, events: []const Event) void {
+    session.deinitEvents(allocator, events);
+}
+
+/// Releases drained `Session` event payloads, then clears the caller-owned
+/// list while retaining capacity for the next drain.
+pub fn clearEvents(allocator: std.mem.Allocator, events: *std.ArrayList(Event)) void {
+    session.clearEvents(allocator, events);
 }
 
 test {

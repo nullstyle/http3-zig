@@ -67,12 +67,12 @@ pub fn main(init: std.process.Init) !void {
 
     var client_events: std.ArrayList(http3_zig.session.Event) = .empty;
     defer {
-        clearEvents(allocator, &client_events);
+        http3_zig.clearEvents(allocator, &client_events);
         client_events.deinit(allocator);
     }
     var server_events: std.ArrayList(http3_zig.session.Event) = .empty;
     defer {
-        clearEvents(allocator, &server_events);
+        http3_zig.clearEvents(allocator, &server_events);
         server_events.deinit(allocator);
     }
 
@@ -86,8 +86,8 @@ pub fn main(init: std.process.Init) !void {
         while (client_h3.peer_settings == null or server_h3.peer_settings == null) : (iters += 1) {
             if (iters >= 20_000) return error.SettingsExchangeTimedOut;
             try pump(&client_quic, &server_quic, &client_h3, &server_h3, &client_events, &server_events, &now_us, &packet);
-            clearEvents(allocator, &server_events);
-            clearEvents(allocator, &client_events);
+            http3_zig.clearEvents(allocator, &server_events);
+            http3_zig.clearEvents(allocator, &client_events);
         }
     }
     if (!http3_zig.webtransport.peerEnabled(client_h3.peer_settings.?)) return error.PeerDidNotEnableWebTransport;
@@ -185,7 +185,7 @@ pub fn main(init: std.process.Init) !void {
                 else => {},
             }
         }
-        clearEvents(allocator, &server_events);
+        http3_zig.clearEvents(allocator, &server_events);
 
         for (client_events.items) |event| {
             switch (try client_runner.observe(event)) {
@@ -225,7 +225,7 @@ pub fn main(init: std.process.Init) !void {
                 else => {},
             }
         }
-        clearEvents(allocator, &client_events);
+        http3_zig.clearEvents(allocator, &client_events);
 
         // Once the round-trip side traffic has landed, send CLOSE.
         if (server_saw_datagram and client_saw_datagram and server_saw_uni_finish and !server_saw_close) {
@@ -306,12 +306,4 @@ fn connectQuic(client: *quic_zig.Connection, server: *quic_zig.Connection) !void
     try client.setLocalScid(&ClientCid);
     try server.setPeerDcid(&ClientCid);
     try server.setLocalScid(&ServerCid);
-}
-
-fn clearEvents(
-    allocator: std.mem.Allocator,
-    events: *std.ArrayList(http3_zig.session.Event),
-) void {
-    for (events.items) |event| event.deinit(allocator);
-    events.clearRetainingCapacity();
 }

@@ -44,12 +44,12 @@ pub fn main(init: std.process.Init) !void {
 
     var client_events: std.ArrayList(http3_zig.session.Event) = .empty;
     defer {
-        clearEvents(allocator, &client_events);
+        http3_zig.clearEvents(allocator, &client_events);
         client_events.deinit(allocator);
     }
     var server_events: std.ArrayList(http3_zig.session.Event) = .empty;
     defer {
-        clearEvents(allocator, &server_events);
+        http3_zig.clearEvents(allocator, &server_events);
         server_events.deinit(allocator);
     }
 
@@ -64,8 +64,8 @@ pub fn main(init: std.process.Init) !void {
     while (server_quic.stream(request_stream_id) == null) : (steps += 1) {
         if (steps >= 20_000) return error.ExampleTimedOut;
         _ = try driver.step(&packet);
-        clearEvents(allocator, &server_events);
-        clearEvents(allocator, &client_events);
+        http3_zig.clearEvents(allocator, &server_events);
+        http3_zig.clearEvents(allocator, &client_events);
     }
 
     try writer.reset(http3_zig.protocol.ErrorCode.request_cancelled);
@@ -104,8 +104,8 @@ pub fn main(init: std.process.Init) !void {
                 else => {},
             }
         }
-        clearEvents(allocator, &server_events);
-        clearEvents(allocator, &client_events);
+        http3_zig.clearEvents(allocator, &server_events);
+        http3_zig.clearEvents(allocator, &client_events);
     }
 }
 
@@ -138,12 +138,4 @@ fn connectQuic(client: *quic_zig.Connection, server: *quic_zig.Connection) !void
     try client.setLocalScid(&ClientCid);
     try server.setPeerDcid(&ClientCid);
     try server.setLocalScid(&ServerCid);
-}
-
-fn clearEvents(
-    allocator: std.mem.Allocator,
-    events: *std.ArrayList(http3_zig.session.Event),
-) void {
-    for (events.items) |event| event.deinit(allocator);
-    events.clearRetainingCapacity();
 }

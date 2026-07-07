@@ -222,10 +222,10 @@ const ProxyDemo = struct {
         self.up_to_down_streams.deinit();
         self.down_to_up_streams.deinit();
 
-        clearEvents(self.allocator, &self.downstream_client_events);
-        clearEvents(self.allocator, &self.downstream_proxy_events);
-        clearEvents(self.allocator, &self.upstream_proxy_events);
-        clearEvents(self.allocator, &self.upstream_server_events);
+        http3_zig.clearEvents(self.allocator, &self.downstream_client_events);
+        http3_zig.clearEvents(self.allocator, &self.downstream_proxy_events);
+        http3_zig.clearEvents(self.allocator, &self.upstream_proxy_events);
+        http3_zig.clearEvents(self.allocator, &self.upstream_server_events);
         self.downstream_client_events.deinit(self.allocator);
         self.downstream_proxy_events.deinit(self.allocator);
         self.upstream_proxy_events.deinit(self.allocator);
@@ -768,19 +768,19 @@ const ProxyDemo = struct {
     }
 
     fn clearDownstreamClientEvents(self: *ProxyDemo) void {
-        clearEvents(self.allocator, &self.downstream_client_events);
+        http3_zig.clearEvents(self.allocator, &self.downstream_client_events);
     }
 
     fn clearDownstreamProxyEvents(self: *ProxyDemo) void {
-        clearEvents(self.allocator, &self.downstream_proxy_events);
+        http3_zig.clearEvents(self.allocator, &self.downstream_proxy_events);
     }
 
     fn clearUpstreamProxyEvents(self: *ProxyDemo) void {
-        clearEvents(self.allocator, &self.upstream_proxy_events);
+        http3_zig.clearEvents(self.allocator, &self.upstream_proxy_events);
     }
 
     fn clearUpstreamServerEvents(self: *ProxyDemo) void {
-        clearEvents(self.allocator, &self.upstream_server_events);
+        http3_zig.clearEvents(self.allocator, &self.upstream_server_events);
     }
 };
 
@@ -861,12 +861,4 @@ fn connectQuic(client: *quic_zig.Connection, server: *quic_zig.Connection) !void
     try server.setPeerDcid(&ClientCid);
     try server.setLocalScid(&ServerCid);
     _ = server.markPathValidated(server.activePathId());
-}
-
-fn clearEvents(
-    allocator: std.mem.Allocator,
-    events: *std.ArrayList(http3_zig.session.Event),
-) void {
-    for (events.items) |event| event.deinit(allocator);
-    events.clearRetainingCapacity();
 }

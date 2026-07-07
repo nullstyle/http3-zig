@@ -55,12 +55,12 @@ pub fn main(init: std.process.Init) !void {
 
     var client_events: std.ArrayList(http3_zig.session.Event) = .empty;
     defer {
-        clearEvents(allocator, &client_events);
+        http3_zig.clearEvents(allocator, &client_events);
         client_events.deinit(allocator);
     }
     var server_events: std.ArrayList(http3_zig.session.Event) = .empty;
     defer {
-        clearEvents(allocator, &server_events);
+        http3_zig.clearEvents(allocator, &server_events);
         server_events.deinit(allocator);
     }
 
@@ -82,12 +82,12 @@ pub fn main(init: std.process.Init) !void {
         _ = try driver.step(&packet);
 
         try observeServerEvents(server_events.items, &server, allocator, request.stream_id, &response);
-        clearEvents(allocator, &server_events);
+        http3_zig.clearEvents(allocator, &server_events);
 
         try response.pump();
 
         try observeClientEvents(client_events.items, request.stream_id, &status, &sink);
-        clearEvents(allocator, &client_events);
+        http3_zig.clearEvents(allocator, &client_events);
     }
 
     if (!status.ok()) return error.UnexpectedStatus;
@@ -269,12 +269,4 @@ fn connectQuic(client: *quic_zig.Connection, server: *quic_zig.Connection) !void
     try client.setLocalScid(&ClientCid);
     try server.setPeerDcid(&ClientCid);
     try server.setLocalScid(&ServerCid);
-}
-
-fn clearEvents(
-    allocator: std.mem.Allocator,
-    events: *std.ArrayList(http3_zig.session.Event),
-) void {
-    for (events.items) |event| event.deinit(allocator);
-    events.clearRetainingCapacity();
 }

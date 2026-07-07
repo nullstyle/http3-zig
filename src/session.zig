@@ -831,6 +831,20 @@ pub const Event = union(enum) {
     }
 };
 
+/// Releases the deep-cloned bytes attached to every drained session event.
+/// Use the allocator passed to `Session.init`, not the allocator that backs
+/// the caller's event list.
+pub fn deinitEvents(allocator: std.mem.Allocator, events: []const Event) void {
+    for (events) |event| event.deinit(allocator);
+}
+
+/// Releases every drained event payload, then clears the event list while
+/// retaining its capacity for the next `Session.drain` call.
+pub fn clearEvents(allocator: std.mem.Allocator, events: *std.ArrayList(Event)) void {
+    deinitEvents(allocator, events.items);
+    events.clearRetainingCapacity();
+}
+
 // ---------------------------------------------------------------------------
 // Event role split (audit summary)
 //
@@ -1247,6 +1261,19 @@ pub const Session = struct {
     /// event.
     pub fn freeEvent(self: *const Session, event: Event) void {
         event.deinit(self.allocator);
+    }
+
+    /// Releases the deep-cloned bytes attached to every drained event using
+    /// the allocator stored by this session.
+    pub fn freeEvents(self: *const Session, events: []const Event) void {
+        deinitEvents(self.allocator, events);
+    }
+
+    /// Releases every drained event payload using the session allocator, then
+    /// clears the caller-owned list while retaining its capacity.
+    pub fn clearEvents(self: *const Session, events: *std.ArrayList(Event)) void {
+        deinitEvents(self.allocator, events.items);
+        events.clearRetainingCapacity();
     }
 
     pub fn start(self: *Session) Error!void {
@@ -5264,6 +5291,35 @@ test "session emits deep-owned message events" {
         else => return error.TestExpectedEqual,
     }
     try std.testing.expectEqual(@as(usize, 0), state.rx.items.len);
+}
+
+test "session event batch helpers release payloads and clear lists" {
+    const allocator = std.testing.allocator;
+    var events: std.ArrayList(Event) = .empty;
+    defer events.deinit(allocator);
+
+    try events.append(allocator, .{
+        .data = .{
+            .stream_id = 0,
+            .kind = .response,
+            .data = try allocator.dupe(u8, "owned body"),
+        },
+    });
+    try events.append(allocator, .{ .goaway = 4 });
+
+    clearEvents(allocator, &events);
+    try std.testing.expectEqual(@as(usize, 0), events.items.len);
+
+    try events.append(allocator, .{
+        .data = .{
+            .stream_id = 4,
+            .kind = .response,
+            .data = try allocator.dupe(u8, "owned again"),
+        },
+    });
+    deinitEvents(allocator, events.items);
+    events.clearRetainingCapacity();
+    try std.testing.expectEqual(@as(usize, 0), events.items.len);
 }
 
 const TraceRecorder = struct {

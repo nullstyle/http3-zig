@@ -45,8 +45,9 @@ order:
 5. Drain HTTP/3 events with `h3.drain(&events)`.
 6. Process events and call back into `Client`, `Server`, writer handles, or
    `Session` as your application policy requires.
-7. Free every drained event with the same allocator passed to `Session.init`,
-   then clear the event list.
+7. Free drained events with `h3.clearEvents(&events)` or
+   `http3_zig.clearEvents(allocator, &events)`, then reuse or deinit the event
+   list according to your loop's allocation policy.
 
 The small `http3_zig.TransportEndpoint` helper keeps the repeated QUIC/H3 order
 in one place without owning sockets or clocks:
@@ -67,9 +68,8 @@ while (try endpoint.poll(packet_buf[0..], now_us)) |n| {
 _ = try endpoint.drainSession();
 for (events.items) |event| {
     // Classify, route, and respond here.
-    event.deinit(allocator);
 }
-events.clearRetainingCapacity();
+h3.clearEvents(&events);
 ```
 
 `TransportLoopback` is just the in-process version of this pattern for examples
@@ -156,6 +156,7 @@ covered by the advertised limit, finish the already-accepted response, and let
 the client observe `RequestBlockedByGoaway` when it tries to open another
 request.
 
-Before `Session.deinit`, free all events that were yielded by prior drains.
+Before `Session.deinit`, free all events that were yielded by prior drains with
+`Session.clearEvents`, `http3_zig.clearEvents`, or per-event `event.deinit`.
 `Session.deinit` only releases state still owned by the session; drained event
 payloads belong to the caller.
