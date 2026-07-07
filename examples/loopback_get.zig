@@ -68,7 +68,8 @@ pub fn main(init: std.process.Init) !void {
     while (completed_responses.items.len == 0) : (steps += 1) {
         if (steps >= 20_000) return error.ExampleTimedOut;
 
-        _ = try driver.step(&packet);
+        const stats = try driver.step(&packet);
+        if (!stats.madeProgress()) return error.ExampleStalled;
 
         for (server_events.items) |event| {
             switch (try server_runner.observe(event)) {

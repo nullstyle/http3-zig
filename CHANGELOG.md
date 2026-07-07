@@ -47,6 +47,8 @@ breaking changes; see notes per release.
   audit target, and a named CI gate.
 - Added `TransportStepStats.madeProgress()` for in-process examples and test
   harnesses that pump until a transport loop goes idle.
+- Updated the loopback GET example to use `TransportStepStats.madeProgress()`
+  as an explicit stuck-loop guard.
 - Added `wt_max_total_buffered_bytes` to cap aggregate pre-confirmation
   WebTransport buffering under `BufferedStreamPolicy.buffer`; production
   presets default it to 4 MiB and tests cover the aggregate cap.
