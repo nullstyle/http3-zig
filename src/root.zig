@@ -236,6 +236,7 @@ pub const CapsuleDecoded = capsule.Decoded;
 pub const CapsuleReassembler = capsule.Reassembler;
 pub const DatagramContextPayload = datagram.ContextPayload;
 pub const TransportEndpoint = driver.Endpoint;
+pub const TransportLoopbackOptions = driver.LoopbackOptions;
 pub const TransportLoopback = driver.Loopback;
 pub const TransportStepStats = driver.StepStats;
 pub const ClientRunner = runner.ClientRunner;

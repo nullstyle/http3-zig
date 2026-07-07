@@ -207,12 +207,18 @@ test "public API smoke: stable embedding surface compiles" {
 
         // Transport-driving helpers.
         _ = H.TransportEndpoint;
+        _ = H.TransportEndpoint.init;
         _ = H.TransportEndpoint.withSession;
+        _ = H.TransportEndpoint.poll;
         _ = H.TransportEndpoint.drainSession;
         _ = H.TransportEndpoint.flush;
         _ = H.TransportEndpoint.handle;
         _ = H.TransportEndpoint.tick;
+        _ = H.TransportEndpoint.relayTo;
+        _ = H.TransportLoopbackOptions;
         _ = H.TransportLoopback;
+        _ = H.TransportLoopback.init;
+        _ = H.TransportLoopback.step;
         _ = H.TransportStepStats;
 
         // Extension facades.
