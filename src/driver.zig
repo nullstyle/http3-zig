@@ -2,8 +2,8 @@
 //!
 //! The helpers intentionally do not own sockets or clocks. Embedders still
 //! decide how packets are received, where outgoing datagrams are sent, and how
-//! time advances; this module just keeps the repeated quic_zig/http3_zig step order in
-//! one place.
+//! time advances; this module just keeps the repeated quic_zig/http3_zig step
+//! order in one place.
 
 const std = @import("std");
 const quic_zig = @import("quic_zig");
@@ -91,6 +91,14 @@ pub const Endpoint = struct {
         return out.items.len - before;
     }
 
+    pub fn clearEvents(self: *Endpoint) usize {
+        const h3 = self.session orelse return 0;
+        const out = self.events orelse return 0;
+        const count = out.items.len;
+        h3.clearEvents(out);
+        return count;
+    }
+
     pub fn flush(self: *Endpoint, packet_buffer: []u8, now_us: u64, sink: anytype) !usize {
         var sent: usize = 0;
         while (try self.poll(packet_buffer, now_us)) |n| {
@@ -155,6 +163,36 @@ test "StepStats accumulates transport loop counters" {
     try std.testing.expectEqual(@as(usize, 55), total.client_events);
     try std.testing.expectEqual(@as(usize, 66), total.server_events);
     try std.testing.expectEqual(@as(usize, 77), total.session_events);
+}
+
+test "Endpoint clears attached session events" {
+    const allocator = std.testing.allocator;
+    var quic: quic_zig.Connection = undefined;
+    var h3 = session_mod.Session.init(allocator, .client, &quic, .{});
+    defer h3.deinit();
+
+    var events: std.ArrayList(session_mod.Event) = .empty;
+    defer {
+        h3.clearEvents(&events);
+        events.deinit(allocator);
+    }
+
+    try events.append(allocator, .{ .goaway = 4 });
+    try events.append(allocator, .{
+        .data = .{
+            .stream_id = 0,
+            .kind = .response,
+            .data = try allocator.dupe(u8, "owned body"),
+        },
+    });
+
+    var endpoint = Endpoint.withSession(&quic, &h3, &events);
+    try std.testing.expectEqual(@as(usize, 2), endpoint.clearEvents());
+    try std.testing.expectEqual(@as(usize, 0), events.items.len);
+    try std.testing.expectEqual(@as(usize, 0), endpoint.clearEvents());
+
+    var transport_only = Endpoint.init(&quic);
+    try std.testing.expectEqual(@as(usize, 0), transport_only.clearEvents());
 }
 
 pub const LoopbackOptions = struct {

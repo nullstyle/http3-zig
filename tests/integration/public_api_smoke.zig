@@ -217,6 +217,7 @@ test "public API smoke: stable embedding surface compiles" {
         _ = H.TransportEndpoint.withSession;
         _ = H.TransportEndpoint.poll;
         _ = H.TransportEndpoint.drainSession;
+        _ = H.TransportEndpoint.clearEvents;
         _ = H.TransportEndpoint.flush;
         _ = H.TransportEndpoint.handle;
         _ = H.TransportEndpoint.tick;

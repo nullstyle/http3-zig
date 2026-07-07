@@ -56,6 +56,9 @@ breaking changes; see notes per release.
 - Added `deinitEvents` / `clearEvents` helpers, plus session-bound
   `freeEvents` / `clearEvents` methods, so embedders can release drained event
   batches without hand-rolled cleanup loops.
+- Added `TransportEndpoint.clearEvents()` so endpoint-based event loops can
+  release the attached session event batch through the same helper that drained
+  it.
 - Added `wt_max_total_buffered_bytes` to cap aggregate pre-confirmation
   WebTransport buffering under `BufferedStreamPolicy.buffer`; production
   presets default it to 4 MiB and tests cover the aggregate cap.

@@ -85,10 +85,10 @@ pub fn main(init: std.process.Init) !void {
                 else => {},
             }
         }
-        http3_zig.clearEvents(allocator, &server_events);
+        _ = driver.server.clearEvents();
 
         _ = try client_runner.observeBatch(client_events.items, &completed_responses);
-        http3_zig.clearEvents(allocator, &client_events);
+        _ = driver.client.clearEvents();
     }
 
     const response = completed_responses.items[0].reader();

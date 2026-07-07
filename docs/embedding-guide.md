@@ -69,7 +69,7 @@ _ = try endpoint.drainSession();
 for (events.items) |event| {
     // Classify, route, and respond here.
 }
-h3.clearEvents(&events);
+_ = endpoint.clearEvents();
 ```
 
 `TransportLoopback` is just the in-process version of this pattern for examples
@@ -82,6 +82,9 @@ open-coded version without `TransportLoopback`.
 in-process exchange goes idle without taking socket ownership into the library.
 Use `total.accumulate(stats)` when a harness wants aggregate packet/event
 counts across many explicit steps.
+When a `TransportEndpoint` owns the `(Session, events)` pairing, use
+`endpoint.clearEvents()` after processing a drained batch to release payloads
+through the session allocator and retain the event list for the next step.
 
 ## Choosing Event Surfaces
 
