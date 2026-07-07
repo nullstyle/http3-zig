@@ -61,6 +61,9 @@ breaking changes; see notes per release.
   it.
 - Added root `RequestEvent` / `ResponseEvent` aliases and refreshed embedding
   docs/examples to use the current event cleanup helpers.
+- Added `RunnerBatchStats.madeProgress()` and `accumulate()` so runner-based
+  harnesses can detect and aggregate application event activity without
+  duplicating counter math.
 - Added `wt_max_total_buffered_bytes` to cap aggregate pre-confirmation
   WebTransport buffering under `BufferedStreamPolicy.buffer`; production
   presets default it to 4 MiB and tests cover the aggregate cap.

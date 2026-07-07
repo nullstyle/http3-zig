@@ -91,6 +91,8 @@ test "public API smoke: stable embedding surface compiles" {
         _ = H.ClientObservation;
         _ = H.ServerObservation;
         _ = H.RunnerBatchStats;
+        _ = H.RunnerBatchStats.madeProgress;
+        _ = H.RunnerBatchStats.accumulate;
         _ = H.RequestOptions;
         _ = H.RequestHeadOptions;
         _ = H.ResponseOptions;

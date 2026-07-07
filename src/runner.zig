@@ -37,6 +37,58 @@ pub const BatchStats = struct {
     webtransport_streams_finished: usize = 0,
     webtransport_streams_reset: usize = 0,
     webtransport_flow_violations: usize = 0,
+
+    pub fn madeProgress(self: BatchStats) bool {
+        return self.observed != 0 or
+            self.ignored != 0 or
+            self.settings != 0 or
+            self.interim_headers != 0 or
+            self.push_state_updates != 0 or
+            self.push_completions != 0 or
+            self.datagrams != 0 or
+            self.datagram_acks != 0 or
+            self.datagram_losses != 0 or
+            self.flow_blocked != 0 or
+            self.connection_id_replenishments != 0 or
+            self.cancel_pushes != 0 or
+            self.priority_updates != 0 or
+            self.goaways != 0 or
+            self.connection_closes != 0 or
+            self.ignored_unknown_frames != 0 or
+            self.state_updates != 0 or
+            self.completions != 0 or
+            self.webtransport_streams_opened != 0 or
+            self.webtransport_stream_data != 0 or
+            self.webtransport_streams_finished != 0 or
+            self.webtransport_streams_reset != 0 or
+            self.webtransport_flow_violations != 0;
+    }
+
+    pub fn accumulate(self: *BatchStats, other: BatchStats) void {
+        self.observed += other.observed;
+        self.ignored += other.ignored;
+        self.settings += other.settings;
+        self.interim_headers += other.interim_headers;
+        self.push_state_updates += other.push_state_updates;
+        self.push_completions += other.push_completions;
+        self.datagrams += other.datagrams;
+        self.datagram_acks += other.datagram_acks;
+        self.datagram_losses += other.datagram_losses;
+        self.flow_blocked += other.flow_blocked;
+        self.connection_id_replenishments += other.connection_id_replenishments;
+        self.cancel_pushes += other.cancel_pushes;
+        self.priority_updates += other.priority_updates;
+        self.goaways += other.goaways;
+        self.connection_closes += other.connection_closes;
+        self.ignored_unknown_frames += other.ignored_unknown_frames;
+        self.state_updates += other.state_updates;
+        self.completions += other.completions;
+        self.webtransport_streams_opened += other.webtransport_streams_opened;
+        self.webtransport_stream_data += other.webtransport_stream_data;
+        self.webtransport_streams_finished += other.webtransport_streams_finished;
+        self.webtransport_streams_reset += other.webtransport_streams_reset;
+        self.webtransport_flow_violations += other.webtransport_flow_violations;
+    }
 };
 
 pub const ClientObservation = union(enum) {
@@ -88,6 +140,88 @@ pub const ServerObservation = union(enum) {
     webtransport_stream_reset: session_mod.WebTransportStreamResetEvent,
     webtransport_flow_violated: session_mod.WebTransportFlowViolationEvent,
 };
+
+test "BatchStats reports progress and accumulates runner counters" {
+    try std.testing.expect(!(BatchStats{}).madeProgress());
+
+    var total = BatchStats{
+        .observed = 1,
+        .ignored = 2,
+        .settings = 3,
+        .interim_headers = 4,
+        .push_state_updates = 5,
+        .push_completions = 6,
+        .datagrams = 7,
+        .datagram_acks = 8,
+        .datagram_losses = 9,
+        .flow_blocked = 10,
+        .connection_id_replenishments = 11,
+        .cancel_pushes = 12,
+        .priority_updates = 13,
+        .goaways = 14,
+        .connection_closes = 15,
+        .ignored_unknown_frames = 16,
+        .state_updates = 17,
+        .completions = 18,
+        .webtransport_streams_opened = 19,
+        .webtransport_stream_data = 20,
+        .webtransport_streams_finished = 21,
+        .webtransport_streams_reset = 22,
+        .webtransport_flow_violations = 23,
+    };
+
+    try std.testing.expect(total.madeProgress());
+
+    total.accumulate(.{
+        .observed = 10,
+        .ignored = 20,
+        .settings = 30,
+        .interim_headers = 40,
+        .push_state_updates = 50,
+        .push_completions = 60,
+        .datagrams = 70,
+        .datagram_acks = 80,
+        .datagram_losses = 90,
+        .flow_blocked = 100,
+        .connection_id_replenishments = 110,
+        .cancel_pushes = 120,
+        .priority_updates = 130,
+        .goaways = 140,
+        .connection_closes = 150,
+        .ignored_unknown_frames = 160,
+        .state_updates = 170,
+        .completions = 180,
+        .webtransport_streams_opened = 190,
+        .webtransport_stream_data = 200,
+        .webtransport_streams_finished = 210,
+        .webtransport_streams_reset = 220,
+        .webtransport_flow_violations = 230,
+    });
+
+    try std.testing.expectEqual(@as(usize, 11), total.observed);
+    try std.testing.expectEqual(@as(usize, 22), total.ignored);
+    try std.testing.expectEqual(@as(usize, 33), total.settings);
+    try std.testing.expectEqual(@as(usize, 44), total.interim_headers);
+    try std.testing.expectEqual(@as(usize, 55), total.push_state_updates);
+    try std.testing.expectEqual(@as(usize, 66), total.push_completions);
+    try std.testing.expectEqual(@as(usize, 77), total.datagrams);
+    try std.testing.expectEqual(@as(usize, 88), total.datagram_acks);
+    try std.testing.expectEqual(@as(usize, 99), total.datagram_losses);
+    try std.testing.expectEqual(@as(usize, 110), total.flow_blocked);
+    try std.testing.expectEqual(@as(usize, 121), total.connection_id_replenishments);
+    try std.testing.expectEqual(@as(usize, 132), total.cancel_pushes);
+    try std.testing.expectEqual(@as(usize, 143), total.priority_updates);
+    try std.testing.expectEqual(@as(usize, 154), total.goaways);
+    try std.testing.expectEqual(@as(usize, 165), total.connection_closes);
+    try std.testing.expectEqual(@as(usize, 176), total.ignored_unknown_frames);
+    try std.testing.expectEqual(@as(usize, 187), total.state_updates);
+    try std.testing.expectEqual(@as(usize, 198), total.completions);
+    try std.testing.expectEqual(@as(usize, 209), total.webtransport_streams_opened);
+    try std.testing.expectEqual(@as(usize, 220), total.webtransport_stream_data);
+    try std.testing.expectEqual(@as(usize, 231), total.webtransport_streams_finished);
+    try std.testing.expectEqual(@as(usize, 242), total.webtransport_streams_reset);
+    try std.testing.expectEqual(@as(usize, 253), total.webtransport_flow_violations);
+}
 
 pub const ClientRunnerConfig = struct {
     response_tracker: client_mod.ResponseTrackerConfig = .{},
