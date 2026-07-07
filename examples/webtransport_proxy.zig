@@ -105,10 +105,10 @@ const ProxyDemo = struct {
     upstream_proxy_runner: http3_zig.ClientRunner,
     upstream_server_runner: http3_zig.ServerRunner,
 
-    downstream_client_events: std.ArrayList(http3_zig.session.Event),
-    downstream_proxy_events: std.ArrayList(http3_zig.session.Event),
-    upstream_proxy_events: std.ArrayList(http3_zig.session.Event),
-    upstream_server_events: std.ArrayList(http3_zig.session.Event),
+    downstream_client_events: std.ArrayList(http3_zig.Event),
+    downstream_proxy_events: std.ArrayList(http3_zig.Event),
+    upstream_proxy_events: std.ArrayList(http3_zig.Event),
+    upstream_server_events: std.ArrayList(http3_zig.Event),
 
     down_to_up_streams: std.AutoHashMap(u64, u64),
     up_to_down_streams: std.AutoHashMap(u64, u64),
@@ -813,8 +813,8 @@ fn openMatchingStream(
 
 fn pumpPair(
     pair: *H3Pair,
-    client_events: *std.ArrayList(http3_zig.session.Event),
-    server_events: *std.ArrayList(http3_zig.session.Event),
+    client_events: *std.ArrayList(http3_zig.Event),
+    server_events: *std.ArrayList(http3_zig.Event),
     now_us: *u64,
 ) !void {
     var packet: [4096]u8 = undefined;

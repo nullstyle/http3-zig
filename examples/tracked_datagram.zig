@@ -37,12 +37,12 @@ pub fn main(init: std.process.Init) !void {
     var client = http3_zig.Client.init(&client_h3);
     var server = http3_zig.Server.init(&server_h3);
 
-    var client_events: std.ArrayList(http3_zig.session.Event) = .empty;
+    var client_events: std.ArrayList(http3_zig.Event) = .empty;
     defer {
         http3_zig.clearEvents(allocator, &client_events);
         client_events.deinit(allocator);
     }
-    var server_events: std.ArrayList(http3_zig.session.Event) = .empty;
+    var server_events: std.ArrayList(http3_zig.Event) = .empty;
     defer {
         http3_zig.clearEvents(allocator, &server_events);
         server_events.deinit(allocator);
@@ -161,8 +161,8 @@ fn waitForDatagramSettings(
     packet: []u8,
     client: *http3_zig.Client,
     server: *http3_zig.Server,
-    client_events: *std.ArrayList(http3_zig.session.Event),
-    server_events: *std.ArrayList(http3_zig.session.Event),
+    client_events: *std.ArrayList(http3_zig.Event),
+    server_events: *std.ArrayList(http3_zig.Event),
     allocator: std.mem.Allocator,
 ) !void {
     var client_saw_settings = false;

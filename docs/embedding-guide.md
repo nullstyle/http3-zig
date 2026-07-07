@@ -23,7 +23,7 @@ defer h3.deinit();
 
 var server = http3_zig.Server.init(&h3);
 
-var events: std.ArrayList(http3_zig.session.Event) = .empty;
+var events: std.ArrayList(http3_zig.Event) = .empty;
 defer events.deinit(allocator);
 ```
 

@@ -42,12 +42,12 @@ pub fn main(init: std.process.Init) !void {
     const request_stream_id = writer.stream_id;
     try writer.write("partial body");
 
-    var client_events: std.ArrayList(http3_zig.session.Event) = .empty;
+    var client_events: std.ArrayList(http3_zig.Event) = .empty;
     defer {
         http3_zig.clearEvents(allocator, &client_events);
         client_events.deinit(allocator);
     }
-    var server_events: std.ArrayList(http3_zig.session.Event) = .empty;
+    var server_events: std.ArrayList(http3_zig.Event) = .empty;
     defer {
         http3_zig.clearEvents(allocator, &server_events);
         server_events.deinit(allocator);

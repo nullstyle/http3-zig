@@ -53,12 +53,12 @@ pub fn main(init: std.process.Init) !void {
         .path = "/stream",
     });
 
-    var client_events: std.ArrayList(http3_zig.session.Event) = .empty;
+    var client_events: std.ArrayList(http3_zig.Event) = .empty;
     defer {
         http3_zig.clearEvents(allocator, &client_events);
         client_events.deinit(allocator);
     }
-    var server_events: std.ArrayList(http3_zig.session.Event) = .empty;
+    var server_events: std.ArrayList(http3_zig.Event) = .empty;
     defer {
         http3_zig.clearEvents(allocator, &server_events);
         server_events.deinit(allocator);
@@ -182,7 +182,7 @@ const Status = struct {
 };
 
 fn observeServerEvents(
-    events: []const http3_zig.session.Event,
+    events: []const http3_zig.Event,
     server: *http3_zig.Server,
     allocator: std.mem.Allocator,
     request_stream_id: u64,
@@ -208,7 +208,7 @@ fn observeServerEvents(
 }
 
 fn observeClientEvents(
-    events: []const http3_zig.session.Event,
+    events: []const http3_zig.Event,
     request_stream_id: u64,
     status: *Status,
     sink: *BodySink,

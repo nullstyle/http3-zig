@@ -65,12 +65,12 @@ pub fn main(init: std.process.Init) !void {
     var server_runner = http3_zig.ServerRunner.init(allocator);
     defer server_runner.deinit();
 
-    var client_events: std.ArrayList(http3_zig.session.Event) = .empty;
+    var client_events: std.ArrayList(http3_zig.Event) = .empty;
     defer {
         http3_zig.clearEvents(allocator, &client_events);
         client_events.deinit(allocator);
     }
-    var server_events: std.ArrayList(http3_zig.session.Event) = .empty;
+    var server_events: std.ArrayList(http3_zig.Event) = .empty;
     defer {
         http3_zig.clearEvents(allocator, &server_events);
         server_events.deinit(allocator);
@@ -257,8 +257,8 @@ fn pump(
     server: *quic_zig.Connection,
     client_h3: *http3_zig.Session,
     server_h3: *http3_zig.Session,
-    client_events: *std.ArrayList(http3_zig.session.Event),
-    server_events: *std.ArrayList(http3_zig.session.Event),
+    client_events: *std.ArrayList(http3_zig.Event),
+    server_events: *std.ArrayList(http3_zig.Event),
     now_us: *u64,
     packet: []u8,
 ) !void {
