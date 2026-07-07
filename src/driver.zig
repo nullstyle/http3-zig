@@ -31,6 +31,16 @@ pub const StepStats = struct {
             self.server_events != 0 or
             self.session_events != 0;
     }
+
+    pub fn accumulate(self: *StepStats, other: StepStats) void {
+        self.handled_datagrams += other.handled_datagrams;
+        self.sent_datagrams += other.sent_datagrams;
+        self.client_to_server_datagrams += other.client_to_server_datagrams;
+        self.server_to_client_datagrams += other.server_to_client_datagrams;
+        self.client_events += other.client_events;
+        self.server_events += other.server_events;
+        self.session_events += other.session_events;
+    }
 };
 
 pub const Endpoint = struct {
@@ -116,6 +126,35 @@ test "StepStats reports whether a transport step made progress" {
     try std.testing.expect((StepStats{ .client_events = 1 }).madeProgress());
     try std.testing.expect((StepStats{ .server_events = 1 }).madeProgress());
     try std.testing.expect((StepStats{ .session_events = 1 }).madeProgress());
+}
+
+test "StepStats accumulates transport loop counters" {
+    var total = StepStats{
+        .handled_datagrams = 1,
+        .sent_datagrams = 2,
+        .client_to_server_datagrams = 3,
+        .server_to_client_datagrams = 4,
+        .client_events = 5,
+        .server_events = 6,
+        .session_events = 7,
+    };
+    total.accumulate(.{
+        .handled_datagrams = 10,
+        .sent_datagrams = 20,
+        .client_to_server_datagrams = 30,
+        .server_to_client_datagrams = 40,
+        .client_events = 50,
+        .server_events = 60,
+        .session_events = 70,
+    });
+
+    try std.testing.expectEqual(@as(usize, 11), total.handled_datagrams);
+    try std.testing.expectEqual(@as(usize, 22), total.sent_datagrams);
+    try std.testing.expectEqual(@as(usize, 33), total.client_to_server_datagrams);
+    try std.testing.expectEqual(@as(usize, 44), total.server_to_client_datagrams);
+    try std.testing.expectEqual(@as(usize, 55), total.client_events);
+    try std.testing.expectEqual(@as(usize, 66), total.server_events);
+    try std.testing.expectEqual(@as(usize, 77), total.session_events);
 }
 
 pub const LoopbackOptions = struct {

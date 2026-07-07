@@ -80,6 +80,8 @@ open-coded version without `TransportLoopback`.
 `TransportLoopback.step` returns `TransportStepStats`; use
 `stats.madeProgress()` in tests or harnesses that want to pump until an
 in-process exchange goes idle without taking socket ownership into the library.
+Use `total.accumulate(stats)` when a harness wants aggregate packet/event
+counts across many explicit steps.
 
 ## Choosing Event Surfaces
 

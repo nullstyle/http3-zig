@@ -221,6 +221,7 @@ test "public API smoke: stable embedding surface compiles" {
         _ = H.TransportLoopback.step;
         _ = H.TransportStepStats;
         _ = H.TransportStepStats.madeProgress;
+        _ = H.TransportStepStats.accumulate;
 
         // Extension facades.
         _ = H.WebSocketConnectOptions;
