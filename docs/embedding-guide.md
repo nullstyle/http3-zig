@@ -76,6 +76,7 @@ events.clearRetainingCapacity();
 and tests. Production code usually keeps `TransportEndpoint` or open-codes the
 same order around its own socket API. `examples/manual_pump_get.zig` shows the
 open-coded version without `TransportLoopback`.
+
 `TransportLoopback.step` returns `TransportStepStats`; use
 `stats.madeProgress()` in tests or harnesses that want to pump until an
 in-process exchange goes idle without taking socket ownership into the library.

@@ -160,6 +160,7 @@ pub const Loopback = struct {
             self.max_datagrams_per_direction,
         );
         stats.sent_datagrams = stats.client_to_server_datagrams + stats.server_to_client_datagrams;
+        stats.handled_datagrams = stats.sent_datagrams;
 
         stats.server_events = try self.server.drainSession();
         stats.client_events = try self.client.drainSession();
