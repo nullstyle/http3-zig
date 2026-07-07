@@ -91,7 +91,7 @@ through the session allocator and retain the event list for the next step.
 Use the raw event classifiers when your application wants streaming ownership:
 
 ```zig
-const request_event = http3_zig.server.RequestEvent.from(event) orelse return;
+const request_event = http3_zig.RequestEvent.from(event) orelse return;
 switch (request_event) {
     .data => |data| try body_sink.write(data.bytes),
     .finished => |done| try respond(server, done.stream_id),
@@ -133,8 +133,9 @@ There are three independent backpressure signals to handle:
 - `RequestWriter.canWrite`, `ResponseWriter.canWrite`, and
   `StreamSendState` describe send-side bytes buffered below HTTP/3.
 - `EventPayloadTooLarge` and `EventQueueFull` from `Session.drain` mean the
-  event batch hit local drain limits. Free the events already emitted, clear the
-  list, and drain again.
+  event batch hit local drain limits. Use `Session.clearEvents`,
+  `TransportEndpoint.clearEvents`, or `http3_zig.clearEvents`, then drain
+  again.
 - Raw body events are storage-neutral. If you use raw `.data` events, your
   application must decide whether to append, stream to disk, pass to another
   service, reset the stream, or close the connection when its own budget is hit.

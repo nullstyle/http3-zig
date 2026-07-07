@@ -189,7 +189,7 @@ fn observeServerEvents(
     response: *StreamingResponse,
 ) !void {
     for (events) |event| {
-        const request_event = http3_zig.server.RequestEvent.from(event) orelse continue;
+        const request_event = http3_zig.RequestEvent.from(event) orelse continue;
         switch (request_event) {
             .headers => |headers| {
                 if (headers.stream_id != request_stream_id) continue;
@@ -214,7 +214,7 @@ fn observeClientEvents(
     sink: *BodySink,
 ) !void {
     for (events) |event| {
-        const response_event = http3_zig.client.ResponseEvent.from(event) orelse continue;
+        const response_event = http3_zig.ResponseEvent.from(event) orelse continue;
         switch (response_event) {
             .headers => |headers| {
                 if (headers.stream_id != request_stream_id) continue;

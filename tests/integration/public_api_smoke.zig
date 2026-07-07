@@ -195,9 +195,11 @@ test "public API smoke: stable embedding surface compiles" {
         _ = H.RequestState;
         _ = H.RequestState.deinit;
         _ = H.RequestState.reader;
+        _ = H.RequestEvent;
         _ = H.ResponseState;
         _ = H.ResponseState.deinit;
         _ = H.ResponseState.reader;
+        _ = H.ResponseEvent;
         _ = H.PushedResponseState;
         _ = H.PushedResponseState.deinit;
         _ = H.PushedResponseState.reader;
@@ -338,8 +340,6 @@ test "public API smoke: stable embedding surface compiles" {
 
         // Events, errors, observability, and key codec re-exports.
         _ = H.session.Event;
-        _ = H.client.ResponseEvent;
-        _ = H.server.RequestEvent;
         _ = H.DatagramEvent;
         _ = H.DatagramSendEvent;
         _ = H.FlowBlockedEvent;

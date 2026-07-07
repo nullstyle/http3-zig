@@ -33,7 +33,9 @@ or `Server.Config.production.toSessionConfig()`.
   bytes so embedders can pause producers before `max_stream_send_buffered`
   fails a write.
 - Drain-budget errors (`EventPayloadTooLarge`, `EventQueueFull`) are local
-  backpressure signals. Callers should free emitted events and drain again.
+  backpressure signals. Callers should release emitted events with
+  `Session.clearEvents`, `TransportEndpoint.clearEvents`, or
+  `http3_zig.clearEvents`, then drain again.
 - Raw `RequestEvent` / `ResponseEvent` body events let embedders stream into
   their own sinks instead of using facade tracker accumulation. Request and
   response producers can pair that with `RequestWriter.canWrite` or

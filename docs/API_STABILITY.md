@@ -29,9 +29,11 @@ but changes will be deliberate, called out in `CHANGELOG.md`, and kept minimal.
   `PushWriter`), and the reader/tracker convenience types (`ResponseReader` /
   `RequestReader`, `ResponseTracker` / `RequestTracker` /
   `PushedResponseTracker`, `ClientRunner` / `ServerRunner`).
-- **Event model:** `session.Event` (the tagged union `drain` yields),
-  `event.deinit`, and the ownership contract documented in `src/root.zig` —
-  subject to the forward-compatibility contract below.
+- **Event model:** `Event` / `session.Event` (the tagged union `drain` yields),
+  `RequestEvent` / `ResponseEvent` classifiers, `event.deinit`, the batch
+  cleanup helpers (`Session.clearEvents`, `TransportEndpoint.clearEvents`,
+  `http3_zig.clearEvents`), and the ownership contract documented in
+  `src/root.zig` — subject to the forward-compatibility contract below.
 - **Error model:** `errors.*` — `ApplicationError`, `ConnectionError`,
   `StreamError`, `ErrorScope` / `ErrorSource` / `ErrorCategory`, and the
   mapping from the `Error` set a public method documents to RFC 9114 / 9204 /

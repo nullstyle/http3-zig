@@ -256,8 +256,8 @@ loop:
 },
 .webtransport_stream_data => |data| {
     // data: { stream_id, session_id, kind, data: []u8 }
-    // `data.data` is owned by the caller after drain — free with
-    // event.deinit(session.allocator) per the allocator contract.
+    // `data.data` is owned by the caller after drain — release it with
+    // session.clearEvents(&events) or http3_zig.clearEvents(...).
     try buf.appendSlice(allocator, data.data);
 },
 .webtransport_stream_finished => |finished| {
@@ -651,21 +651,22 @@ a `WebTransportFlowViolationKind` describing what overflowed.
    error-code mapping (draft §4.6) and surfaces on the peer as
    `webtransport_stream_reset.application_error_code`.
 
-3. **Forgetting to drain before `Session.deinit`.** The session retains
+3. **Forgetting to free drained events before `Session.deinit`.** The session retains
    ownership of any events queued internally, but **events already yielded
-   by `drain()`** belong to the caller. You must call
-   `event.deinit(session.allocator)` on each one before
-   `Session.deinit` — see [`src/root.zig`](../src/root.zig) for the full
-   allocator contract.
+   by `drain()`** belong to the caller. Call `session.clearEvents(&events)`,
+   `http3_zig.clearEvents(session_allocator, &events)`, or per-event
+   `event.deinit(session_allocator)` before `Session.deinit` — see
+   [`src/root.zig`](../src/root.zig) for the full allocator contract.
 
-4. **Using the wrong allocator on `event.deinit`.** Events deep-clone their
+4. **Using the wrong allocator for event cleanup.** Events deep-clone their
    payloads (`data`, `payload`, `field_section`, etc.) out of the
    **session's** allocator. The `ArrayList` you pass to `drain()` can use a
-   per-drain arena, but `event.deinit` MUST receive the session's allocator.
-   A typical pattern:
+   per-drain arena, but event payload cleanup must use the session's
+   allocator. Typical patterns:
 
    ```zig
-   defer for (events.items) |ev| ev.deinit(session.allocator);
+   defer session.clearEvents(&events);
+   // or: defer http3_zig.clearEvents(session_allocator, &events);
    defer events.deinit(events_arena);
    ```
 
