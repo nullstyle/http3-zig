@@ -717,4 +717,3 @@ test "MUST NOT permit :protocol = websocket on a non-CONNECT method even with th
         headers.validateRequestWithOptions(&fields, .{ .enable_connect_protocol = true }),
     );
 }
-

@@ -1142,4 +1142,3 @@ test "MUST emit a close event with no code when the close payload is empty [RFC6
         else => return error.UnexpectedWebSocketEvent,
     }
 }
-

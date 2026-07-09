@@ -261,7 +261,18 @@ fn seedQpackInteger(io: std.Io, root: std.Io.Dir, buf: []u8) !void {
     // strict whitespace rules.
     const overflow = [_]u8{
         0xff, // initial marker, requires continuation
-        0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80,
+        0x80,
+        0x80,
+        0x80,
+        0x80,
+        0x80,
+        0x80,
+        0x80,
+        0x80,
+        0x80,
+        0x80,
+        0x80,
+        0x80,
         0x7f, // terminator
     };
     try writeSeed(io, root, "qpack-integer", "06-overflow", &overflow);

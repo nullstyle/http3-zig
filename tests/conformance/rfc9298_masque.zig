@@ -1186,4 +1186,3 @@ test "NORMATIVE capsuleProtocolEnabled returns true only for value \"?1\" [RFC92
     try std.testing.expect(!masque.capsuleProtocolEnabled(&disabled));
     try std.testing.expect(!masque.capsuleProtocolEnabled(&empty));
 }
-

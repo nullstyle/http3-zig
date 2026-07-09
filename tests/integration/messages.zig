@@ -208,4 +208,3 @@ test "response decoder surfaces multiple 1xx interim responses before final" {
         else => return error.ExpectedFinalHeaders,
     }
 }
-

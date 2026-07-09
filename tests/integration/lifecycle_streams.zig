@@ -447,4 +447,3 @@ test "session tracks open request streams for drain and deadlines" {
     // half of the exchange stays in the open set until it does.
     try std.testing.expectEqual(@as(usize, 1), pair.client_h3.openRequestStreamCount());
 }
-

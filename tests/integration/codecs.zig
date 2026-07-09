@@ -349,4 +349,3 @@ test "priority parser and stream frame validator" {
         validator.observe(http3_zig.protocol.FrameType.headers),
     );
 }
-

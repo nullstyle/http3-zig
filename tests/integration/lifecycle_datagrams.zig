@@ -363,4 +363,3 @@ test "session exchanges HTTP/3 datagrams over quic_zig datagram frames" {
         h3_client.sendDatagram(stream_id + 1, "bad stream"),
     );
 }
-

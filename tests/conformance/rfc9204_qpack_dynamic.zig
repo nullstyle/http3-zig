@@ -292,11 +292,13 @@ test "MUST reject a Set Dynamic Table Capacity that exceeds max_capacity [RFC920
 
 test "NORMATIVE Insert with Name Reference T=1 has the 11xxxxxx wire pattern [RFC9204 §4.3.2 ¶1]" {
     var buf: [16]u8 = undefined;
-    const instr: qpack.EncoderInstruction = .{ .insert_name_ref = .{
-        .table = .static,
-        .index = 17, // :method (idx 17 → :method "GET")
-        .value = "POST",
-    } };
+    const instr: qpack.EncoderInstruction = .{
+        .insert_name_ref = .{
+            .table = .static,
+            .index = 17, // :method (idx 17 → :method "GET")
+            .value = "POST",
+        },
+    };
     const n = try instructions_mod.encodeEncoderInstruction(&buf, instr);
     // First byte: 11 T=1 (6-bit index) → 0xc0 | 17 = 0xd1.
     try std.testing.expectEqual(@as(u8, 0xd1), buf[0]);
@@ -432,11 +434,13 @@ test "NORMATIVE applyEncoderInstruction inserts and evicts in lockstep with the 
     _ = try instructions_mod.applyEncoderInstruction(&table, .{ .set_capacity = 256 });
     try std.testing.expectEqual(@as(usize, 256), table.capacity);
 
-    const a = try instructions_mod.applyEncoderInstruction(&table, .{ .insert_name_ref = .{
-        .table = .static,
-        .index = 17, // :method ⇒ name=":method", value=insert.value
-        .value = "POST",
-    } });
+    const a = try instructions_mod.applyEncoderInstruction(&table, .{
+        .insert_name_ref = .{
+            .table = .static,
+            .index = 17, // :method ⇒ name=":method", value=insert.value
+            .value = "POST",
+        },
+    });
     try std.testing.expectEqual(@as(?u64, 0), a);
 
     const b = try instructions_mod.applyEncoderInstruction(&table, .{ .insert_literal = .{
