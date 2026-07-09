@@ -89,8 +89,23 @@
 //!   `Session` borrows it; `Session.deinit` does not free it.
 
 const std = @import("std");
-const boringssl = @import("boringssl");
-const quic_zig = @import("quic_zig");
+
+/// Re-export of the boringssl-zig module http3-zig links against. The TLS
+/// helpers (`server.initTlsContext` / `client.initTlsContext`) traffic in
+/// `boringssl.tls.Context`; consumers that need to construct or configure
+/// a context themselves must use this instance — a separately-declared
+/// boringssl-zig dependency produces a distinct module whose types do not
+/// unify with http3-zig's.
+pub const boringssl = @import("boringssl");
+
+/// Re-export of the quic-zig module http3-zig is built against. The
+/// embedding API is quic_zig-typed (`Session.init` takes a
+/// `*quic_zig.Connection`; the embedder owns the connection, socket, and
+/// clock), so every real endpoint needs these types. Import them from here
+/// (`http3_zig.quic_zig.Connection`) or via `dep.module("quic_zig")` in
+/// build.zig; a consumer-side quic-zig dependency declaration would not
+/// type-unify with this instance.
+pub const quic_zig = @import("quic_zig");
 
 pub const protocol = @import("protocol.zig");
 pub const settings = @import("settings.zig");

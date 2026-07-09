@@ -19,9 +19,10 @@ pub fn build(b: *std.Build) void {
     // quic_zig module here (to share http3-zig's boringssl instance across
     // the diamond, see build.zig.zon), we must supply that module too or a
     // reference to quic_zig.version() fails to compile. Value is cosmetic —
-    // http3-zig never calls version() — but kept correct for the pinned dep.
+    // http3-zig never calls version() — but must match the quic_zig tag
+    // pinned in build.zig.zon; tools/check-boringssl-pin.sh lints this.
     const quic_build_options = b.addOptions();
-    quic_build_options.addOption([]const u8, "version", "0.6.0");
+    quic_build_options.addOption([]const u8, "version", "0.7.5");
     const quic_build_options_mod = quic_build_options.createModule();
 
     // Single-source http3-zig's own version() from build.zig.zon so it can
@@ -46,6 +47,19 @@ pub fn build(b: *std.Build) void {
     http3_zig_mod.addImport("quic_zig", quic_zig_mod);
     http3_zig_mod.addImport("boringssl", boringssl_mod);
     http3_zig_mod.addImport("build_options", h3_build_options_mod);
+
+    // Export the exact module instances http3_zig itself links against.
+    // The public API is quic_zig-typed (`Session.init` takes a
+    // `*quic_zig.Connection`; TLS helpers take `boringssl.tls.Context`),
+    // so a consumer that declared its own quic-zig/boringssl dependency
+    // would get distinct module instances whose types do not unify with
+    // http3_zig's. Registering the shared instances lets consumers write
+    // `dep.module("quic_zig")` / `dep.module("boringssl")` and import
+    // types with the correct identity. See also the `pub const quic_zig`
+    // / `pub const boringssl` re-exports in src/root.zig, which cover
+    // consumers that only import `http3_zig`.
+    b.modules.put(b.graph.arena, "quic_zig", quic_zig_mod) catch @panic("OOM");
+    b.modules.put(b.graph.arena, "boringssl", boringssl_mod) catch @panic("OOM");
 
     const fuzz_codecs_lib_mod = b.createModule(.{
         .root_source_file = b.path("fuzz/codecs.zig"),

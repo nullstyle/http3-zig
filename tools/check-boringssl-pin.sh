@@ -103,3 +103,33 @@ if [ "$http3_boringssl_url" != "$quic_boringssl_url" ] ||
 fi
 
 printf 'boringssl_zig pin matches pinned quic-zig (%s)\n' "$http3_boringssl_hash"
+
+# build.zig recreates the quic_zig module and must hand it a build_options
+# "version" string. The value is cosmetic, but it must not drift from the
+# tag pinned in build.zig.zon (it did once: 0.6.0 vs v0.7.5).
+quic_tag=""
+case "$quic_url" in
+    git+https://github.com/*/*.git#*)
+        quic_tag=${quic_url#*.git#}
+        ;;
+    https://github.com/*/*/archive/refs/tags/*.tar.gz)
+        quic_tag=${quic_url#*/archive/refs/tags/}
+        quic_tag=${quic_tag%.tar.gz}
+        ;;
+esac
+case "$quic_tag" in
+    v*)
+        quic_version=${quic_tag#v}
+        build_zig=$(dirname "$http3_zon")/build.zig
+        [ -f "$build_zig" ] || die "missing build.zig next to $http3_zon"
+        if ! grep -q "addOption(\[\]const u8, \"version\", \"$quic_version\")" "$build_zig"; then
+            printf 'quic_zig build_options version in build.zig does not match pinned tag %s\n' "$quic_tag" >&2
+            grep -n 'addOption(\[\]const u8, "version"' "$build_zig" >&2 || true
+            exit 1
+        fi
+        printf 'quic_zig build_options version matches pinned tag (%s)\n' "$quic_tag"
+        ;;
+    *)
+        printf 'note: quic_zig pin is not a release tag (%s); skipping build_options version check\n' "${quic_tag:-$quic_url}"
+        ;;
+esac

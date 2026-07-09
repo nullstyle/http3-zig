@@ -5,6 +5,29 @@ HTTP/3 session state, typed events, QPACK, capsules, WebTransport helpers, and
 the client/server facades. Your application still owns sockets, timers,
 connection tables, routing policy, body storage, and worker scheduling.
 
+## Consuming From Your Own Project
+
+Add http3-zig as a `build.zig.zon` dependency and import three modules —
+`http3_zig` plus the `quic_zig`/`boringssl` instances it exports. The
+embedding API below is quic_zig-typed (your app constructs and owns the
+`*quic_zig.Connection`), and the TLS helpers traffic in
+`boringssl.tls.Context`, so both sibling modules are load-bearing. Never
+declare your own quic-zig or boringssl-zig dependency next to http3-zig:
+that creates second module instances whose types do not unify with
+http3-zig's (`expected quic_zig.Connection, found quic_zig.Connection`).
+
+```zig
+const http3_dep = b.dependency("http3_zig", .{ .target = target, .optimize = optimize });
+exe.root_module.addImport("http3_zig", http3_dep.module("http3_zig"));
+exe.root_module.addImport("quic_zig", http3_dep.module("quic_zig"));
+exe.root_module.addImport("boringssl", http3_dep.module("boringssl"));
+```
+
+If you prefer a single import, the same instances are re-exported as
+`http3_zig.quic_zig` and `http3_zig.boringssl`. A complete out-of-tree
+consumer (CI-checked) lives in
+[`tools/consumer-smoke/`](../tools/consumer-smoke/).
+
 ## One Connection Shape
 
 For each accepted or dialed QUIC connection, keep these objects together:

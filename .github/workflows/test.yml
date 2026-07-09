@@ -80,6 +80,17 @@ jobs:
         if: matrix.os == 'ubuntu-latest' && matrix.optimize == 'Debug'
         run: zig build run-examples --summary all
 
+      # Consume http3-zig from an out-of-tree project and prove the exported
+      # quic_zig/boringssl module instances type-unify with the public API
+      # (tools/consumer-smoke/src/main.zig). Module identity is
+      # platform-independent — one runner is enough.
+      - name: Consumer package smoke (module identity)
+        if: matrix.os == 'ubuntu-latest' && matrix.optimize == 'Debug'
+        run: |
+          cd tools/consumer-smoke
+          zig build --summary all
+          zig build run
+
   # Long-running-session memory regression gate. `zig build mem-profile` runs
   # the WebTransport long-lived-session profiler (always ReleaseSafe) and exits
   # non-zero if per-iteration retained-memory growth exceeds the gate in

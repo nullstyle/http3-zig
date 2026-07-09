@@ -1,6 +1,8 @@
 # http3-zig
 
-A Zig-first HTTP/3 implementation for Zig 0.16.0, built on top of
+A Zig-first HTTP/3 implementation for Zig 0.17.0-dev — the stack tracks
+Zig master; see [`mise.toml`](mise.toml) and `minimum_zig_version` in
+[`build.zig.zon`](build.zig.zon) for the verified floor. Built on top of
 [`quic-zig`](https://github.com/nullstyle/quic-zig) for QUIC transport
 and [`boringssl-zig`](https://github.com/nullstyle/boringssl-zig)
 for TLS 1.3 / ALPN configuration.
@@ -41,7 +43,23 @@ exe.root_module.addImport("http3_zig", http3_zig.module("http3_zig"));
 ```
 
 http3-zig pulls in `quic-zig` and `boringssl-zig` as transitive
-dependencies; no extra wiring is required for those.
+dependencies — do **not** declare your own copies of them. The embedding
+API is quic_zig-typed (`Session.init` takes a `*quic_zig.Connection` that
+your app owns), so every real endpoint needs those types with the same
+module identity http3-zig was built against; a separately-declared
+quic-zig dependency produces a second module instance whose types do not
+unify. http3-zig exports the shared instances:
+
+```zig
+// Same module instances http3_zig itself links against:
+exe.root_module.addImport("quic_zig", http3_zig.module("quic_zig"));
+exe.root_module.addImport("boringssl", http3_zig.module("boringssl"));
+```
+
+Alternatively, skip the extra imports and reach the same modules through
+the re-exports `http3_zig.quic_zig` and `http3_zig.boringssl`. A
+buildable out-of-tree consumer showing the full wiring lives in
+[`tools/consumer-smoke/`](tools/consumer-smoke/) and is checked in CI.
 
 ## Quick example
 
