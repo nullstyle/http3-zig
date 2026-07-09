@@ -22,7 +22,7 @@ pub fn build(b: *std.Build) void {
     // http3-zig never calls version() — but must match the quic_zig tag
     // pinned in build.zig.zon; tools/check-boringssl-pin.sh lints this.
     const quic_build_options = b.addOptions();
-    quic_build_options.addOption([]const u8, "version", "0.7.5");
+    quic_build_options.addOption([]const u8, "version", "0.9.0");
     const quic_build_options_mod = quic_build_options.createModule();
 
     // Single-source http3-zig's own version() from build.zig.zon so it can
