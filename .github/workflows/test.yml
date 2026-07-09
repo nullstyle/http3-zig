@@ -59,6 +59,11 @@ jobs:
           install: true
           cache: true
 
+      # Tracked files only: the zig-pkg package store (restored below) holds
+      # dependency sources that drift under new zig fmt and must not gate us.
+      - name: zig fmt check
+        run: git ls-files -z '*.zig' '*.zon' | xargs -0 zig fmt --check
+
       - name: Cache Zig packages
         uses: actions/cache@v4
         with:
