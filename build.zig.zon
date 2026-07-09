@@ -1,6 +1,6 @@
 .{
     .name = .http3_zig,
-    .version = "0.4.8",
+    .version = "0.4.9",
     .fingerprint = 0x71cd45b0dc74266b,
     .minimum_zig_version = "0.17.0-dev.1158+1d1193aa7",
     .dependencies = .{
@@ -9,7 +9,10 @@
         // accessors, stream-priority scheduler, and RFC 9000 §7.3
         // initial_source_connection_id fix. Pinned to the v0.7.5 tag. To bump:
         // run `zig fetch <new-tag-url>` and paste its hash here by hand — do
-        // NOT `zig fetch --save`, which mangles a dependency entry.
+        // NOT `zig fetch --save`, which mangles a dependency entry. Also
+        // update the quic_build_options "version" string in build.zig to the
+        // new tag (tools/check-boringssl-pin.sh lints this) and mirror any
+        // boringssl_zig pin change below byte-for-byte.
         .quic_zig = .{
             .url = "git+https://github.com/nullstyle/quic-zig.git#v0.7.5",
             .hash = "quic_zig-0.7.5-jMbGHUAGNgB1ak8ZfEnAnqe64TGwuSEIqZubN7UsrSC8",

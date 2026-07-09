@@ -9,8 +9,31 @@ breaking changes; see notes per release.
 
 ## [Unreleased]
 
+## [0.4.9] - 2026-07-09
+
+Verified toolchain: zig 0.17.0-dev.1252+e4b325c19.
+
 ### Changed
 
+- Exported the shared `quic_zig` and `boringssl` module instances from
+  build.zig — consumers can now `dep.module("quic_zig")` /
+  `dep.module("boringssl")` — and re-exported them in the root as
+  `http3_zig.quic_zig` / `http3_zig.boringssl`. The embedding API is
+  quic_zig-typed (`Session.init` takes a `*quic_zig.Connection`), and
+  previously no supported path existed for an out-of-tree consumer to name
+  those types with the correct module identity.
+- Added an out-of-tree consumer smoke package (`tools/consumer-smoke/`)
+  that depends on http3-zig like a real application and compile-asserts
+  the exported-module type identity; runs in CI.
+- Fixed the cosmetic quic_zig `build_options` version handed to the
+  recreated module (was a stale "0.6.0"; now matches the pinned v0.7.5
+  tag) and extended `tools/check-boringssl-pin.sh` to lint it against the
+  build.zig.zon pin so it cannot drift again.
+- Corrected the README Zig-version claim (0.16.0 → 0.17.0-dev master with
+  the verified floor in `build.zig.zon`), replaced the inaccurate
+  "no extra wiring is required" install note with real module-wiring
+  guidance, and added a "Consuming From Your Own Project" section to the
+  embedding guide.
 - Added WebTransport control-capsule forwarding helpers on client/server WT
   stream handles, with two-hop intermediary coverage for MAX_DATA, BLOCKED,
   DRAIN, unknown, and CLOSE capsule behavior.
