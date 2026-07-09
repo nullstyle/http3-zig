@@ -44,12 +44,12 @@ pub fn main(init: std.process.Init) !void {
 
     var client_events: std.ArrayList(http3_zig.Event) = .empty;
     defer {
-        http3_zig.clearEvents(allocator, &client_events);
+        client_h3.clearEvents(&client_events);
         client_events.deinit(allocator);
     }
     var server_events: std.ArrayList(http3_zig.Event) = .empty;
     defer {
-        http3_zig.clearEvents(allocator, &server_events);
+        server_h3.clearEvents(&server_events);
         server_events.deinit(allocator);
     }
 
@@ -64,8 +64,8 @@ pub fn main(init: std.process.Init) !void {
     while (server_quic.stream(request_stream_id) == null) : (steps += 1) {
         if (steps >= 20_000) return error.ExampleTimedOut;
         _ = try driver.step(&packet);
-        http3_zig.clearEvents(allocator, &server_events);
-        http3_zig.clearEvents(allocator, &client_events);
+        server_h3.clearEvents(&server_events);
+        client_h3.clearEvents(&client_events);
     }
 
     try writer.reset(http3_zig.protocol.ErrorCode.request_cancelled);
@@ -104,8 +104,8 @@ pub fn main(init: std.process.Init) !void {
                 else => {},
             }
         }
-        http3_zig.clearEvents(allocator, &server_events);
-        http3_zig.clearEvents(allocator, &client_events);
+        server_h3.clearEvents(&server_events);
+        client_h3.clearEvents(&client_events);
     }
 }
 

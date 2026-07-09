@@ -42,3 +42,32 @@ test "TLS context helpers accept keylog callbacks" {
     }, test_cert_pem, test_key_pem);
     defer server_tls.deinit();
 }
+
+test "TLS context helpers negotiate an overridden ALPN" {
+    const allocator = std.testing.allocator;
+
+    // The default stays "h3" (covered by the request/response exchange
+    // test); a multi-protocol deployment overrides both sides without
+    // dropping to a raw boringssl context.
+    const alpn = [_][]const u8{"x-test-proto"};
+    var client_tls = try http3_zig.client.initTlsContext(.{
+        .verify = .none,
+        .alpn = &alpn,
+    });
+    defer client_tls.deinit();
+    var server_tls = try http3_zig.server.initTlsContext(.{
+        .alpn = &alpn,
+    }, test_cert_pem, test_key_pem);
+    defer server_tls.deinit();
+
+    var client: quic_zig.Connection = undefined;
+    var server: quic_zig.Connection = undefined;
+    try initConnectedQuic(allocator, client_tls, server_tls, &client, &server);
+    defer {
+        server.deinit();
+        client.deinit();
+    }
+
+    try std.testing.expectEqualStrings("x-test-proto", client.inner.alpnSelected().?);
+    try std.testing.expectEqualStrings("x-test-proto", server.inner.alpnSelected().?);
+}

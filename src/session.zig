@@ -573,6 +573,44 @@ pub const ShutdownState = enum {
     closed,
 };
 
+/// One in-flight request/response exchange, yielded by
+/// `Session.openRequestStreams`. Plain scalars — safe to copy and hold
+/// across drains (though the stream it names may close in the meantime).
+pub const OpenRequestStream = struct {
+    stream_id: u64,
+    /// Connection-clock time (`quic_zig.Connection.last_activity_us`,
+    /// i.e. the same `now_us` domain the embedder feeds
+    /// `handle`/`tick`/`poll`) at which the session last surfaced an
+    /// event for this stream — or the stream's creation time if no
+    /// event has fired yet. Zero only before any packet activity.
+    /// Compare against the loop's current `now_us` to enforce
+    /// per-request deadlines.
+    last_event_us: u64,
+};
+
+/// Iterator over in-flight request streams; see
+/// `Session.openRequestStreams`. Borrows the session's stream table:
+/// iterate to completion before calling anything that can create or
+/// reclaim streams (`drain`, `openRequest`, …). Rejecting or resetting
+/// mid-iteration is safe today but collect-then-act is the robust
+/// pattern — see the embedding guide's "Request deadlines" section.
+pub const OpenRequestStreamIterator = struct {
+    session: *const Session,
+    inner: std.AutoHashMapUnmanaged(u64, *StreamState).Iterator,
+
+    pub fn next(self: *OpenRequestStreamIterator) ?OpenRequestStream {
+        while (self.inner.next()) |entry| {
+            const state = entry.value_ptr.*;
+            if (!self.session.isOpenRequestState(state)) continue;
+            return .{
+                .stream_id = state.id,
+                .last_event_us = state.last_event_us,
+            };
+        }
+        return null;
+    }
+};
+
 /// Re-export of `webtransport.StreamKind`. The session-level events
 /// (`WebTransportStreamOpenedEvent`, `WebTransportStreamDataEvent`,
 /// etc.) carry this kind so applications can branch on uni vs bidi
@@ -833,13 +871,18 @@ pub const Event = union(enum) {
 
 /// Releases the deep-cloned bytes attached to every drained session event.
 /// Use the allocator passed to `Session.init`, not the allocator that backs
-/// the caller's event list.
+/// the caller's event list — a mismatch is silent memory corruption that
+/// this function cannot detect. Prefer the session-bound
+/// `Session.clearEvents` / `Session.freeEvents`, which bind the right
+/// allocator implicitly.
 pub fn deinitEvents(allocator: std.mem.Allocator, events: []const Event) void {
     for (events) |event| event.deinit(allocator);
 }
 
 /// Releases every drained event payload, then clears the event list while
-/// retaining its capacity for the next `Session.drain` call.
+/// retaining its capacity for the next `Session.drain` call. Same allocator
+/// contract (and the same trap) as `deinitEvents`; prefer the session-bound
+/// `Session.clearEvents` when a session pointer is in scope.
 pub fn clearEvents(allocator: std.mem.Allocator, events: *std.ArrayList(Event)) void {
     deinitEvents(allocator, events.items);
     events.clearRetainingCapacity();
@@ -948,6 +991,14 @@ const StreamState = struct {
     /// quic-zig retains its own stream entry until the connection
     /// teardown — http3-zig handles its registry independently.
     locally_finished: bool = false,
+    /// Connection-clock time (`quic_zig.Connection.last_activity_us`,
+    /// i.e. the embedder's `now_us` domain) at which the session last
+    /// surfaced an event for this stream. Stamped at creation and again
+    /// in `appendReservedEvent` — the single choke point every emitted
+    /// event flows through — so request-deadline enforcement (see
+    /// `Session.openRequestStreams`) also times out streams that opened
+    /// and then went silent. Zero only before any packet activity.
+    last_event_us: u64 = 0,
 
     fn deinit(self: *StreamState, allocator: std.mem.Allocator) void {
         self.rx.deinit(allocator);
@@ -1144,6 +1195,18 @@ pub const Session = struct {
     peer_qpack_decoder_stream_id: ?u64 = null,
     sent_goaway_id: ?u64 = null,
     peer_goaway_id: ?u64 = null,
+    /// Highest client-initiated bidirectional stream id observed from the
+    /// peer (server role only — bumped in `ensureIncomingState` before any
+    /// per-stream rejection, so even auto-rejected streams count). This is
+    /// the "was or might be processed" bound RFC 9114 §5.2 asks a server's
+    /// GOAWAY id to cover. Null until the first such stream arrives, and
+    /// always null on clients. Read via `highestPeerRequestStreamId`.
+    highest_peer_request_stream_id: ?u64 = null,
+    /// Highest push id observed from the peer (client role only — stamped
+    /// in `validateReceivedPushId`, the choke point every received push id
+    /// passes through). The client-side analogue of
+    /// `highest_peer_request_stream_id` for `gracefulGoawayId`.
+    highest_peer_push_id: ?u64 = null,
     peer_max_push_id: ?u64 = null,
     next_push_id: u64 = 0,
     shutdown_state: ShutdownState = .active,
@@ -1271,6 +1334,15 @@ pub const Session = struct {
 
     /// Releases every drained event payload using the session allocator, then
     /// clears the caller-owned list while retaining its capacity.
+    ///
+    /// This is the recommended cleanup call: event payloads are deep-cloned
+    /// out of the *session's* allocator, and this binding supplies that
+    /// allocator implicitly, so it cannot be run with the wrong one. The
+    /// free-standing `http3_zig.clearEvents(allocator, …)` /
+    /// `deinitEvents(allocator, …)` forms exist for contexts without a
+    /// session pointer, but silently corrupt memory if handed any allocator
+    /// other than the one passed to `Session.init` (e.g. the events list's).
+    /// `TransportEndpoint.clearEvents` delegates here and is equally safe.
     pub fn clearEvents(self: *const Session, events: *std.ArrayList(Event)) void {
         deinitEvents(self.allocator, events.items);
         events.clearRetainingCapacity();
@@ -2193,6 +2265,40 @@ pub const Session = struct {
         });
     }
 
+    /// Highest client-initiated bidirectional stream id observed from the
+    /// peer — the stream that "was or might be processed" per RFC 9114
+    /// §5.2, recorded before any per-stream rejection so auto-rejected
+    /// streams count too. Extension streams sharing the client-bidi id
+    /// space (WebTransport bidi, RFC 9114 §6.1 carve-outs) are included;
+    /// they only raise the bound, which claims strictly less future work.
+    /// Null on clients (servers do not initiate request streams) and on a
+    /// server before the first client stream arrives. Feed into
+    /// `gracefulGoawayId` — or use it directly — instead of hand-tracking
+    /// stream ids from drained events.
+    pub fn highestPeerRequestStreamId(self: *const Session) ?u64 {
+        return self.highest_peer_request_stream_id;
+    }
+
+    /// The id to pass to `sendGoaway` for a graceful shutdown that admits
+    /// everything already seen and nothing new (RFC 9114 §5.2). Server
+    /// role: the next client bidi stream id after the highest observed
+    /// (`highestPeerRequestStreamId() + 4`), or `0` when no request
+    /// stream was ever observed — GOAWAY rejects ids >= the value, so `0`
+    /// is the §5.2 "no requests were processed" form. Client role: the
+    /// same shape over push ids (`highest + 1`, or `0` for "no pushes
+    /// processed"). Clamped to a previously sent GOAWAY id — §5.2 forbids
+    /// raising the bound, and streams observed after the first GOAWAY
+    /// were auto-rejected, not processed — so the result is always valid
+    /// for `sendGoaway`.
+    pub fn gracefulGoawayId(self: *const Session) u64 {
+        const next: u64 = switch (self.role) {
+            .server => if (self.highest_peer_request_stream_id) |id| id + 4 else 0,
+            .client => if (self.highest_peer_push_id) |id| id + 1 else 0,
+        };
+        const limit = self.sent_goaway_id orelse return next;
+        return @min(next, limit);
+    }
+
     /// Inbound abort. Sends QUIC STOP_SENDING with the given error code,
     /// asking the peer to stop sending us bytes on `stream_id`. Does NOT
     /// drop our own outbound bytes — pair with `resetStream` for a full
@@ -2220,6 +2326,60 @@ pub const Session = struct {
 
     pub fn shutdownState(self: *const Session) ShutdownState {
         return self.shutdown_state;
+    }
+
+    /// Number of in-flight request/response exchanges (see
+    /// `isOpenRequestState` for the exact predicate: bidi request streams
+    /// that are neither locally rejected nor fully closed, including
+    /// not-yet-classified peer streams and WebTransport CONNECT streams).
+    /// Pair with `shutdownState()` as the drain-complete condition after
+    /// `sendGoaway`: once the state is `.draining` and this reaches zero,
+    /// every request admitted before the GOAWAY has finished and the
+    /// connection can be closed without cutting work short.
+    pub fn openRequestStreamCount(self: *const Session) usize {
+        var count: usize = 0;
+        var it = self.streams.iterator();
+        while (it.next()) |entry| {
+            if (self.isOpenRequestState(entry.value_ptr.*)) count += 1;
+        }
+        return count;
+    }
+
+    /// True when `state` is an in-flight HTTP request/response exchange
+    /// the application may still be working on — the predicate behind
+    /// `openRequestStreamCount` / `openRequestStreams`. Bidi streams
+    /// only; excludes streams the session locally rejected (the
+    /// application never owned them) and fully-closed streams awaiting
+    /// the per-drain GC. A peer bidi stream not yet classified by
+    /// `processBidiState` counts — its first bytes are in flight and it
+    /// might be a request; over-counting is the safe direction for a
+    /// drain signal. An unclassified *locally*-initiated bidi counts only
+    /// if this session opened it as a request (`openRequest` registers
+    /// message state at open); raw QUIC streams opened behind the
+    /// session's back are not the session's work. Note WebTransport
+    /// CONNECT streams classify as `.request` (they are Extended CONNECT
+    /// requests) and count until the WT session ends.
+    fn isOpenRequestState(self: *const Session, state: *const StreamState) bool {
+        if (stream_mod.isUnidirectional(state.id)) return false;
+        if (state.locally_rejected) return false;
+        if (state.isFullyClosed()) return false;
+        if (state.bidi_kind) |kind| return kind == .request;
+        if (self.isLocalInitiated(state.id)) {
+            return state.message_decoder != null or state.message_encoder != null;
+        }
+        return true;
+    }
+
+    /// Iterates the in-flight request/response exchanges (same predicate
+    /// as `openRequestStreamCount`) together with each stream's
+    /// last-event time, for per-request deadline enforcement: walk the
+    /// iterator, compare `last_event_us` against the loop's current
+    /// `now_us`, and `rejectRequest` / `resetResponse` (server) or
+    /// `cancelRequest` / `resetRequest` (client) the expired ones. The
+    /// iterator borrows the session's stream table — do not interleave
+    /// with calls that create or reclaim streams (`drain`, `openRequest`).
+    pub fn openRequestStreams(self: *const Session) OpenRequestStreamIterator {
+        return .{ .session = self, .inner = self.streams.iterator() };
     }
 
     pub fn lastCloseError(self: *const Session) ?errors_mod.ConnectionError {
@@ -2326,6 +2486,27 @@ pub const Session = struct {
         while (it.next()) |entry| {
             const stream_id = entry.key_ptr.*;
             if (self.shouldSkipStream(stream_id)) continue;
+
+            // A stream quic-zig still yields but whose http3-side state
+            // `gcClosedStreams` already reclaimed: `.data_recvd` /
+            // `.data_read` are quic-zig's post-read FIN terminals (a
+            // complete-but-unread stream is held in `.size_known`) and
+            // `.reset_read` follows the reset path's `markRead`, so every
+            // byte (or the reset) was already delivered through a prior
+            // StreamState and all events for the stream have been surfaced.
+            // Recreating state here would resurrect the finished exchange
+            // as a permanently half-closed entry (its `locally_finished` is
+            // unrecoverable) and emit a duplicate `stream_finished` from
+            // the re-observed FIN. Skip it until quic-zig's own stream GC
+            // reaps the entry. `.reset_recvd` (reset not yet surfaced) is
+            // deliberately not skipped.
+            if (self.streams.get(stream_id) == null and
+                (entry.value_ptr.*.recv.state == .data_recvd or
+                    entry.value_ptr.*.recv.state == .data_read or
+                    entry.value_ptr.*.recv.state == .reset_read))
+            {
+                continue;
+            }
 
             const state = self.ensureIncomingState(stream_id) catch |err| switch (err) {
                 // PeerStreamLimitExceeded is a per-stream rejection,
@@ -3957,6 +4138,15 @@ pub const Session = struct {
         events: *std.ArrayList(Event),
         event: Event,
     ) Error!void {
+        // Every emitted event funnels through here, so this is the single
+        // choke point that keeps `StreamState.last_event_us` honest for
+        // `openRequestStreams`-based deadline enforcement. The stream may
+        // already be reclaimed (or the event stream-less) — both no-ops.
+        if (eventStreamId(event)) |stream_id| {
+            if (self.streams.get(stream_id)) |state| {
+                state.last_event_us = self.quic.last_activity_us;
+            }
+        }
         try appendRawEvent(self.allocator, events, event);
         self.traceEmittedEvent(event);
     }
@@ -4027,6 +4217,25 @@ pub const Session = struct {
     }
 
     fn ensureIncomingState(self: *Session, stream_id: u64) Error!*StreamState {
+        // Record the RFC 9114 §5.2 GOAWAY bound before any per-stream
+        // rejection below: a stream we observe at all "was or might [have
+        // been] processed", so the graceful GOAWAY id must cover it even
+        // when the per-stream limit (or the post-GOAWAY auto-reject path)
+        // refuses it. Client-initiated bidi only — that is the id space a
+        // server GOAWAY covers; extension streams sharing it (WebTransport
+        // bidi, RFC 9114 §6.1 carve-outs) only ever push the bound higher,
+        // which is safe: a larger id claims strictly less future work.
+        if (self.role == .server and
+            !stream_mod.isUnidirectional(stream_id) and
+            stream_mod.isClientInitiated(stream_id))
+        {
+            if (self.highest_peer_request_stream_id == null or
+                stream_id > self.highest_peer_request_stream_id.?)
+            {
+                self.highest_peer_request_stream_id = stream_id;
+            }
+        }
+
         if (self.streams.get(stream_id)) |state| return state;
 
         // Defense-in-depth: bound the size of `self.streams` against a
@@ -4140,7 +4349,13 @@ pub const Session = struct {
     fn createState(self: *Session, stream_id: u64) Error!*StreamState {
         const state = try self.allocator.create(StreamState);
         errdefer self.allocator.destroy(state);
-        state.* = .{ .id = stream_id };
+        state.* = .{
+            .id = stream_id,
+            // Baseline for request-deadline enforcement: a stream that
+            // opens and then never produces an event still ages from
+            // its creation time rather than sitting at 0 forever.
+            .last_event_us = self.quic.last_activity_us,
+        };
         try self.streams.put(self.allocator, stream_id, state);
         return state;
     }
@@ -4189,6 +4404,13 @@ pub const Session = struct {
         if (push_id > max_push_id) {
             self.closeForError(Error.InvalidPushId);
             return Error.InvalidPushId;
+        }
+        // All received-push-id observation points (push stream prefix,
+        // PUSH_PROMISE, client-side CANCEL_PUSH) funnel through here, so
+        // this is the choke point for the client-side GOAWAY bound
+        // (RFC 9114 §5.2: a client GOAWAY carries a push id).
+        if (self.highest_peer_push_id == null or push_id > self.highest_peer_push_id.?) {
+            self.highest_peer_push_id = push_id;
         }
     }
 
@@ -5121,6 +5343,33 @@ fn isLocalDrainBudgetError(err: anyerror) bool {
     };
 }
 
+/// The stream id an event is about, for per-stream activity stamping in
+/// `appendReservedEvent`. Null for connection-scoped variants (settings,
+/// goaway, cancel_push, connection lifecycle) and for `priority_update`,
+/// whose target may be a push id rather than a stream id.
+fn eventStreamId(event: Event) ?u64 {
+    return switch (event) {
+        .headers => |e| e.stream_id,
+        .interim_headers => |e| e.stream_id,
+        .data => |e| e.stream_id,
+        .trailers => |e| e.stream_id,
+        .datagram => |e| e.stream_id,
+        .push_promise => |e| e.stream_id,
+        .push_stream => |e| e.stream_id,
+        .stream_finished => |e| e.stream_id,
+        .stream_reset => |e| e.stream_id,
+        .request_rejected => |e| e.stream_id,
+        .ignored_unknown_frame => |e| e.stream_id,
+        .flow_blocked => |e| e.stream_id,
+        .webtransport_stream_opened => |e| e.stream_id,
+        .webtransport_stream_data => |e| e.stream_id,
+        .webtransport_stream_finished => |e| e.stream_id,
+        .webtransport_stream_reset => |e| e.stream_id,
+        .webtransport_flow_violated => |e| e.stream_id,
+        else => null,
+    };
+}
+
 fn eventOwnedPayloadBytes(event: Event) usize {
     return switch (event) {
         .headers => |field_event| fieldsOwnedBytes(field_event.fields),
@@ -5562,6 +5811,117 @@ test "session validates GOAWAY stream ids by role" {
     try std.testing.expectError(Error.InvalidGoawayId, client_session.observeGoaway(8));
     try std.testing.expect(client_session.peerAllowsRequest(0));
     try std.testing.expect(!client_session.peerAllowsRequest(4));
+}
+
+test "session derives the graceful GOAWAY id from observed peer streams" {
+    const allocator = std.testing.allocator;
+    var quic: quic_zig.Connection = undefined;
+    quic.last_activity_us = 0;
+
+    var server_session = Session.init(allocator, .server, &quic, .{});
+    defer server_session.deinit();
+
+    // No request stream observed yet: RFC 9114 §5.2's "no requests were
+    // processed" form — GOAWAY rejects ids >= the value, so 0 covers all.
+    try std.testing.expectEqual(@as(?u64, null), server_session.highestPeerRequestStreamId());
+    try std.testing.expectEqual(@as(u64, 0), server_session.gracefulGoawayId());
+
+    // Streams can be observed out of order; the bound is the maximum.
+    _ = try server_session.ensureIncomingState(0);
+    _ = try server_session.ensureIncomingState(8);
+    _ = try server_session.ensureIncomingState(4);
+    try std.testing.expectEqual(@as(?u64, 8), server_session.highestPeerRequestStreamId());
+    try std.testing.expectEqual(@as(u64, 12), server_session.gracefulGoawayId());
+
+    // Peer uni streams and re-observation leave the bound alone.
+    _ = try server_session.ensureIncomingState(2);
+    _ = try server_session.ensureIncomingState(8);
+    try std.testing.expectEqual(@as(?u64, 8), server_session.highestPeerRequestStreamId());
+
+    // Streams observed after a GOAWAY was sent are auto-rejected, not
+    // processed — the graceful id clamps to what was already advertised
+    // (§5.2 forbids raising it).
+    server_session.sent_goaway_id = 4;
+    _ = try server_session.ensureIncomingState(16);
+    try std.testing.expectEqual(@as(?u64, 16), server_session.highestPeerRequestStreamId());
+    try std.testing.expectEqual(@as(u64, 4), server_session.gracefulGoawayId());
+
+    // Client role: the id space is push ids (§5.2 ¶1), the increment 1.
+    var client_session = Session.init(allocator, .client, &quic, .{ .max_push_id = 8 });
+    defer client_session.deinit();
+    try std.testing.expectEqual(@as(?u64, null), client_session.highestPeerRequestStreamId());
+    try std.testing.expectEqual(@as(u64, 0), client_session.gracefulGoawayId());
+    try client_session.validateReceivedPushId(3);
+    try std.testing.expectEqual(@as(u64, 4), client_session.gracefulGoawayId());
+}
+
+test "session counts open request streams and stamps last-event activity" {
+    const allocator = std.testing.allocator;
+    var quic: quic_zig.Connection = undefined;
+    quic.last_activity_us = 111;
+
+    var session = Session.init(allocator, .server, &quic, .{});
+    defer session.deinit();
+
+    try std.testing.expectEqual(@as(usize, 0), session.openRequestStreamCount());
+
+    // An unclassified peer bidi stream counts — it may become a request —
+    // and the creation stamp seeds its deadline clock.
+    const pending = try session.ensureIncomingState(0);
+    try std.testing.expectEqual(@as(usize, 1), session.openRequestStreamCount());
+    try std.testing.expectEqual(@as(u64, 111), pending.last_event_us);
+
+    // Emitting an event through the single choke point refreshes the stamp.
+    quic.last_activity_us = 222;
+    const state = try session.ensureMessageState(4, .request, .response);
+    state.bidi_kind = .request;
+    var events: std.ArrayList(Event) = .empty;
+    defer {
+        session.clearEvents(&events);
+        events.deinit(allocator);
+    }
+    quic.last_activity_us = 333;
+    try session.appendReservedEvent(&events, .{
+        .stream_finished = .{ .stream_id = 4, .kind = .request },
+    });
+    // Only the event's own stream is restamped; stream 0 keeps its
+    // creation-time stamp.
+    try std.testing.expectEqual(@as(u64, 111), pending.last_event_us);
+    try std.testing.expectEqual(@as(u64, 333), state.last_event_us);
+
+    // Peer uni, WT-classified bidi, locally-rejected, and fully-closed
+    // streams are all excluded from the open-request view.
+    _ = try session.ensureIncomingState(2);
+    const wt = try session.ensureIncomingState(8);
+    wt.bidi_kind = .webtransport;
+    const rejected = try session.ensureIncomingState(12);
+    rejected.locally_rejected = true;
+    const closed = try session.ensureIncomingState(16);
+    closed.bidi_kind = .request;
+    closed.recv_finished = true;
+    closed.locally_finished = true;
+    try std.testing.expectEqual(@as(usize, 2), session.openRequestStreamCount());
+
+    var seen_pending = false;
+    var seen_request = false;
+    var rows: usize = 0;
+    var it = session.openRequestStreams();
+    while (it.next()) |open| : (rows += 1) {
+        switch (open.stream_id) {
+            0 => {
+                seen_pending = true;
+                try std.testing.expectEqual(@as(u64, 111), open.last_event_us);
+            },
+            4 => {
+                seen_request = true;
+                try std.testing.expectEqual(@as(u64, 333), open.last_event_us);
+            },
+            else => return error.TestExpectedEqual,
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 2), rows);
+    try std.testing.expect(seen_pending);
+    try std.testing.expect(seen_request);
 }
 
 test "session emits stream reset once" {

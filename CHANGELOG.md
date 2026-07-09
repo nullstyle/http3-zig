@@ -9,6 +9,54 @@ breaking changes; see notes per release.
 
 ## [Unreleased]
 
+### Added
+
+- Added `Session.highestPeerRequestStreamId` and `Session.gracefulGoawayId`
+  so a server can send the RFC 9114 §5.2 "covers nothing new" GOAWAY id
+  (highest observed client request stream + 4, or 0 when none was seen;
+  clamped to a previously sent GOAWAY) without hand-tracking stream ids
+  from drained events. The client role gets the symmetric push-id form.
+  `examples/graceful_shutdown.zig` now derives its GOAWAY id from the
+  accessor instead of hardcoding `4`.
+- Added `Session.openRequestStreamCount` and `Session.openRequestStreams`
+  (yielding `OpenRequestStream { stream_id, last_event_us }`) so shutdown
+  orchestration can poll `shutdownState() == .draining` plus a zero open
+  count as the drain-complete condition, and request-deadline enforcement
+  can walk in-flight exchanges without mirroring stream lifecycle in an
+  application map. Per-stream `last_event_us` is stamped at stream
+  creation and at the single event-emission choke point, in the same
+  clock domain as the `now_us` the embedder feeds the transport.
+- Added an optional `alpn` field to the client/server `TlsOptions` so
+  WebTransport-only or multi-protocol deployments can override the
+  default `"h3"` ALPN without dropping to a raw boringssl context;
+  existing callers compile unchanged.
+- Added embedding-guide sections for the session-derived shutdown shape,
+  request deadlines, and certificate rotation (new boringssl context for
+  new connections — BoringSSL up-refs `SSL_CTX` per `SSL_new`, so live
+  connections finish on the old one — with
+  `quic_zig.Server.replaceTlsContext` as the integrated wrapper path).
+
+### Changed
+
+- Blessed the session-bound `Session.clearEvents` as the recommended
+  event-cleanup call (it binds the session allocator implicitly, closing
+  the mismatched-allocator trap in the free-standing helpers) and
+  standardized every example and the docs on it; the free-standing
+  `http3_zig.clearEvents` / `deinitEvents` forms now document the trap
+  and remain for contexts without a session pointer.
+
+### Fixed
+
+- Fixed the drain loop resurrecting streams that `gcClosedStreams` had
+  already reclaimed: quic-zig keeps yielding a finished stream until its
+  own stream GC reaps it, and the recreated blank `StreamState` emitted a
+  duplicate `stream_finished` event and then lingered as a permanently
+  half-closed entry (its `locally_finished` flag is unrecoverable after
+  the reclaim). The drain loop now skips iterator entries with no
+  http3-side state whose transport recv half is in a post-read terminal
+  state (`data_recvd` / `data_read` / `reset_read`) — everything for such
+  a stream was already surfaced through the reclaimed state.
+
 ## [0.4.9] - 2026-07-09
 
 Verified toolchain: zig 0.17.0-dev.1252+e4b325c19.

@@ -60,12 +60,12 @@ pub fn main(init: std.process.Init) !void {
 
     var client_events: std.ArrayList(http3_zig.Event) = .empty;
     defer {
-        http3_zig.clearEvents(allocator, &client_events);
+        client_h3.clearEvents(&client_events);
         client_events.deinit(allocator);
     }
     var server_events: std.ArrayList(http3_zig.Event) = .empty;
     defer {
-        http3_zig.clearEvents(allocator, &server_events);
+        server_h3.clearEvents(&server_events);
         server_events.deinit(allocator);
     }
 
@@ -88,10 +88,10 @@ pub fn main(init: std.process.Init) !void {
         _ = try driver.step(&packet);
 
         try observeServerEvents(server_events.items, &server, allocator, upload.streamId(), &received);
-        http3_zig.clearEvents(allocator, &server_events);
+        server_h3.clearEvents(&server_events);
 
         try observeClientEvents(client_events.items, upload.streamId(), &response);
-        http3_zig.clearEvents(allocator, &client_events);
+        client_h3.clearEvents(&client_events);
     }
 
     if (!upload.finished) return error.UploadDidNotFinish;

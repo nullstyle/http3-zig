@@ -68,9 +68,13 @@ order:
 5. Drain HTTP/3 events with `h3.drain(&events)`.
 6. Process events and call back into `Client`, `Server`, writer handles, or
    `Session` as your application policy requires.
-7. Free drained events with `h3.clearEvents(&events)` or
-   `http3_zig.clearEvents(allocator, &events)`, then reuse or deinit the event
-   list according to your loop's allocation policy.
+7. Free drained events with `h3.clearEvents(&events)`, then reuse or deinit
+   the event list according to your loop's allocation policy. The
+   session-bound call is the recommended form: event payloads are cloned out
+   of the *session's* allocator, and this binding supplies it implicitly.
+   (`http3_zig.clearEvents(allocator, &events)` exists for contexts without
+   a session pointer; handing it any other allocator — e.g. the events
+   list's — is silent memory corruption.)
 
 The small `http3_zig.TransportEndpoint` helper keeps the repeated QUIC/H3 order
 in one place without owning sockets or clocks:
@@ -159,9 +163,8 @@ There are three independent backpressure signals to handle:
 - `RequestWriter.canWrite`, `ResponseWriter.canWrite`, and
   `StreamSendState` describe send-side bytes buffered below HTTP/3.
 - `EventPayloadTooLarge` and `EventQueueFull` from `Session.drain` mean the
-  event batch hit local drain limits. Use `Session.clearEvents`,
-  `TransportEndpoint.clearEvents`, or `http3_zig.clearEvents`, then drain
-  again.
+  event batch hit local drain limits. Use `Session.clearEvents` (or its
+  `TransportEndpoint.clearEvents` wrapper), then drain again.
 - Raw body events are storage-neutral. If you use raw `.data` events, your
   application must decide whether to append, stream to disk, pass to another
   service, reset the stream, or close the connection when its own budget is hit.
@@ -173,20 +176,87 @@ pre-confirmation buffering. See
 
 ## Shutdown
 
-For graceful HTTP/3 shutdown, call `Session.sendGoaway` or use facade-level
-close/reset helpers according to your application policy, then keep pumping the
-QUIC connection until pending events and outgoing packets are drained. A
+For graceful HTTP/3 shutdown, call
+`Session.sendGoaway(session.gracefulGoawayId())` — or use the facade-level
+close/reset helpers according to your application policy — then keep pumping
+the QUIC connection until pending events and outgoing packets are drained. A
 connection close appears as a typed `connection_closed` event; inspect its
 structured HTTP/3 error metadata before removing the connection from your
 tables.
 
-`examples/graceful_shutdown.zig` shows the common server-side shape: accept
-request stream `0`, send `GOAWAY(4)` so the next client request stream is
-covered by the advertised limit, finish the already-accepted response, and let
-the client observe `RequestBlockedByGoaway` when it tries to open another
-request.
+`Session.gracefulGoawayId` returns the RFC 9114 §5.2 "covers nothing new" id:
+the next client request stream id after the highest the session has observed
+(`Session.highestPeerRequestStreamId`), or `0` when no request was ever seen —
+so no server needs to hand-track stream ids from events to shut down
+correctly. The drain-complete condition is equally session-derived: once
+`shutdownState()` is `.draining` and `openRequestStreamCount()` reaches zero,
+every request admitted before the GOAWAY has finished and the connection can
+be closed without cutting work short.
 
-Before `Session.deinit`, free all events that were yielded by prior drains with
-`Session.clearEvents`, `http3_zig.clearEvents`, or per-event `event.deinit`.
-`Session.deinit` only releases state still owned by the session; drained event
-payloads belong to the caller.
+`examples/graceful_shutdown.zig` shows the common server-side shape: accept
+request stream `0`, send `GOAWAY` at `gracefulGoawayId()` (which is `4` after
+one request) so the next client request stream is covered by the advertised
+limit, finish the already-accepted response, pump until
+`openRequestStreamCount() == 0`, and let the client observe
+`RequestBlockedByGoaway` when it tries to open another request.
+
+Before `Session.deinit`, free all events that were yielded by prior drains —
+preferably with the session-bound `Session.clearEvents`, which binds the
+correct allocator implicitly (`http3_zig.clearEvents` and per-event
+`event.deinit` require the session's allocator). `Session.deinit` only
+releases state still owned by the session; drained event payloads belong to
+the caller.
+
+## Request Deadlines
+
+`Session.openRequestStreams` iterates the in-flight request/response
+exchanges together with each stream's last-activity time, so per-request
+timeouts need no application-side stream map either. `last_event_us` is in
+the same clock domain as the `now_us` your loop feeds
+`quic.handle`/`tick`/`poll`: it is stamped when the stream is created and
+every time the session surfaces an event for it, so a request that opened and
+went silent still ages. Collect expired ids first, then act — acting is safe
+mid-iteration today, but collect-then-act stays correct if stream teardown
+ever reshapes the table:
+
+```zig
+var expired: std.ArrayList(u64) = .empty;
+defer expired.deinit(allocator);
+var open = h3.openRequestStreams();
+while (open.next()) |req| {
+    if (now_us - req.last_event_us > request_deadline_us) {
+        try expired.append(allocator, req.stream_id);
+    }
+}
+for (expired.items) |stream_id| {
+    // Server-side: refuse the rest of the request body and drop the
+    // response; the client sees H3_REQUEST_REJECTED.
+    try h3.rejectRequest(stream_id);
+    try h3.resetResponse(stream_id, http3_zig.protocol.ErrorCode.request_rejected);
+}
+```
+
+Client-side enforcement is symmetric with `cancelRequest` (stop receiving the
+response) plus `resetRequest` (abort the request send). Note WebTransport
+CONNECT streams appear in the iterator for the lifetime of their session —
+exempt them (`RequestReader.isWebTransport`, or your own routing table) from
+request deadlines.
+
+## Certificate Rotation
+
+http3-zig adds nothing TLS-specific on top of quic-zig here; rotation is a
+transport-layer concern with one load-bearing BoringSSL property. For the
+raw-`Connection` embedding shape this guide uses, build a **new** boringssl
+context (`server.initTlsContext`) when certificates rotate and hand it to
+*new* connections only. Existing connections finish on the old context:
+BoringSSL up-refs the `SSL_CTX` on `SSL_new`, so each connection's TLS state
+keeps the context it was created against alive until that connection is torn
+down — deinit the old context after its last connection closes (or refcount
+it the way quic-zig's own wrapper does).
+
+If you embed via quic-zig's multi-connection `quic_zig.Server` wrapper
+instead, use `Server.replaceTlsContext` (`Server.TlsReload`): it swaps the
+context for future accepts, drains the old one behind a per-slot refcount,
+and documents the resumption caveat (session tickets minted under the old
+context cannot be decrypted under the new one — bridge ticket keys yourself
+if 0-RTT must survive rotation).

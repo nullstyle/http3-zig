@@ -14,9 +14,11 @@
 //!   1. Pump packets in / out of the underlying `quic_zig.Connection`.
 //!   2. Call `Session.drain(&events)` to emit a batch of typed events.
 //!   3. Process events; call back into `Session` to act on them.
-//!   4. Free drained events with `session.clearEvents(&events)` or
-//!      `http3_zig.clearEvents(allocator, &events)` using the same allocator
-//!      the `Session` was constructed with.
+//!   4. Free drained events with `session.clearEvents(&events)` — the
+//!      recommended form, because it binds the session's allocator
+//!      implicitly. (`http3_zig.clearEvents(allocator, &events)` exists
+//!      for contexts without a session pointer; it must be given the
+//!      session's allocator, never the events list's.)
 //!   5. Repeat.
 //!
 //! For multi-connection servers, run one `Session` per connection on
@@ -58,14 +60,18 @@
 //!   WebTransport stream-data) are deep-cloned by the session out of
 //!   the session's allocator. The session retains no reference to
 //!   them after drain returns; ownership transfers to the caller.
-//! - For each yielded event the caller must eventually call
-//!   `event.deinit(allocator)`, `session.clearEvents(&events)`, or
-//!   `http3_zig.clearEvents(allocator, &events)` using the **session's**
-//!   allocator (the one passed to `Session.init`), not the events list's
-//!   allocator. A typical pattern:
+//! - For each yielded event the caller must eventually release the
+//!   payload. Prefer `session.clearEvents(&events)`, which binds the
+//!   **session's** allocator implicitly; the equivalent free-standing
+//!   forms (`event.deinit(allocator)`, `http3_zig.clearEvents(allocator,
+//!   &events)`) require the allocator passed to `Session.init` — handing
+//!   them the events list's allocator is silent memory corruption. A
+//!   typical pattern:
 //!
-//!       defer for (events.items) |ev| ev.deinit(session.allocator);
-//!       defer events.deinit(events_arena);
+//!       defer {
+//!           session.clearEvents(&events);
+//!           events.deinit(events_arena);
+//!       }
 //!
 //!   `event.deinit` and the batch helpers are no-ops for variants whose
 //!   payload is plain scalars (peer_settings, flow_blocked, goaway,
@@ -134,6 +140,8 @@ pub const SessionConfig = session.Config;
 pub const SessionProductionOptions = session.ProductionOptions;
 pub const SessionBufferedStreamPolicy = session.BufferedStreamPolicy;
 pub const ShutdownState = session.ShutdownState;
+pub const OpenRequestStream = session.OpenRequestStream;
+pub const OpenRequestStreamIterator = session.OpenRequestStreamIterator;
 pub const Client = client.Client;
 pub const Server = server.Server;
 pub const RequestOptions = client.RequestOptions;

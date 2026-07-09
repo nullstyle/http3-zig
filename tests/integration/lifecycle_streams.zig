@@ -200,7 +200,11 @@ test "session exchanges HTTP/3 request and response over quic_zig streams" {
             try response_writer.write("po");
             try response_writer.write("ng");
             try response_writer.finish();
-            try h3_server.goaway(request_stream_id + 4);
+            // The session-tracked GOAWAY bound matches the hand-computed
+            // "covers nothing new" id (RFC 9114 §5.2).
+            try std.testing.expectEqual(@as(?u64, request_stream_id), server_h3.highestPeerRequestStreamId());
+            try std.testing.expectEqual(request_stream_id + 4, server_h3.gracefulGoawayId());
+            try h3_server.goaway(server_h3.gracefulGoawayId());
             response_sent = true;
         }
 
@@ -321,5 +325,126 @@ test "session exchanges HTTP/3 request and response over quic_zig streams" {
         clearSessionEvents(allocator, &server_events);
         clearSessionEvents(allocator, &client_events);
     }
+
+    // The auto-rejected late stream raised the observed bound, but the
+    // graceful id clamps to what the GOAWAY already advertised — §5.2
+    // forbids raising it, and the late stream was rejected, not processed.
+    try std.testing.expectEqual(@as(?u64, ignored_stream_id), server_h3.highestPeerRequestStreamId());
+    try std.testing.expectEqual(request_stream_id + 4, server_h3.gracefulGoawayId());
+
+    // Drain-complete: the completed exchange was reclaimed and the
+    // rejected stream never counted as application-owned work.
+    try std.testing.expectEqual(@as(usize, 0), server_h3.openRequestStreamCount());
+    try std.testing.expectEqual(@as(usize, 0), client_h3.openRequestStreamCount());
+}
+
+test "session tracks open request streams for drain and deadlines" {
+    const allocator = std.testing.allocator;
+
+    var pair: H3Pair = undefined;
+    try pair.initStarted(allocator, .{}, .{});
+    defer pair.deinit();
+    try exchangePairSettings(allocator, &pair);
+
+    var h3_client = http3_zig.Client.init(&pair.client_h3);
+    var h3_server = http3_zig.Server.init(&pair.server_h3);
+    const stream_id = try openGetAndAwaitServerHeaders(allocator, &pair, &h3_client);
+
+    // Request received, response not yet sent: one open exchange on each
+    // side, stamped with connection-clock activity in the pump's now_us
+    // domain (the fixtures pump from 1_000_000).
+    try std.testing.expectEqual(@as(usize, 1), pair.server_h3.openRequestStreamCount());
+    try std.testing.expectEqual(@as(usize, 1), pair.client_h3.openRequestStreamCount());
+    try std.testing.expectEqual(@as(?u64, stream_id), pair.server_h3.highestPeerRequestStreamId());
+    try std.testing.expectEqual(stream_id + 4, pair.server_h3.gracefulGoawayId());
+    try std.testing.expectEqual(@as(u64, 0), pair.client_h3.gracefulGoawayId());
+
+    var it = pair.server_h3.openRequestStreams();
+    const open = it.next() orelse return error.ExpectedOpenRequest;
+    try std.testing.expectEqual(stream_id, open.stream_id);
+    try std.testing.expect(open.last_event_us >= 1_000_000);
+    try std.testing.expect(it.next() == null);
+
+    var client_events: std.ArrayList(http3_zig.session.Event) = .empty;
+    defer {
+        pair.client_h3.clearEvents(&client_events);
+        client_events.deinit(allocator);
+    }
+    var server_events: std.ArrayList(http3_zig.session.Event) = .empty;
+    defer {
+        pair.server_h3.clearEvents(&server_events);
+        server_events.deinit(allocator);
+    }
+
+    // Finishing the exchange empties the open set on both sides — the
+    // drain-complete condition shutdown orchestration polls for.
+    _ = try h3_server.respond(allocator, stream_id, .{
+        .status = "200",
+        .body = "done",
+    });
+    var now_us: u64 = 1_000_000;
+    var iters: u32 = 0;
+    while (pair.server_h3.openRequestStreamCount() != 0 or
+        pair.client_h3.openRequestStreamCount() != 0) : (iters += 1)
+    {
+        try std.testing.expect(iters < 20_000);
+        try pumpH3(
+            &pair.client,
+            &pair.server,
+            &pair.client_h3,
+            &pair.server_h3,
+            &client_events,
+            &server_events,
+            &now_us,
+        );
+        pair.client_h3.clearEvents(&client_events);
+        pair.server_h3.clearEvents(&server_events);
+    }
+
+    // The documented deadline-enforcement shape: reject + reset an
+    // expired request, then pump until it leaves the open set.
+    const slow_request = try h3_client.startRequest(allocator, .{
+        .authority = "example.com",
+        .path = "/slow",
+    });
+    const slow_id = slow_request.stream_id;
+    iters = 0;
+    while (pair.server_h3.openRequestStreamCount() == 0) : (iters += 1) {
+        try std.testing.expect(iters < 20_000);
+        try pumpH3(
+            &pair.client,
+            &pair.server,
+            &pair.client_h3,
+            &pair.server_h3,
+            &client_events,
+            &server_events,
+            &now_us,
+        );
+        pair.client_h3.clearEvents(&client_events);
+        pair.server_h3.clearEvents(&server_events);
+    }
+
+    try pair.server_h3.rejectRequest(slow_id);
+    try pair.server_h3.resetResponse(slow_id, http3_zig.protocol.ErrorCode.request_rejected);
+    iters = 0;
+    while (pair.server_h3.openRequestStreamCount() != 0) : (iters += 1) {
+        try std.testing.expect(iters < 20_000);
+        try pumpH3(
+            &pair.client,
+            &pair.server,
+            &pair.client_h3,
+            &pair.server_h3,
+            &client_events,
+            &server_events,
+            &now_us,
+        );
+        pair.client_h3.clearEvents(&client_events);
+        pair.server_h3.clearEvents(&server_events);
+    }
+
+    // The client-side view mirrors application ownership: reacting to the
+    // rejection (reset/cancel) is the client application's move, so its
+    // half of the exchange stays in the open set until it does.
+    try std.testing.expectEqual(@as(usize, 1), pair.client_h3.openRequestStreamCount());
 }
 

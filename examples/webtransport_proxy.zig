@@ -222,10 +222,16 @@ const ProxyDemo = struct {
         self.up_to_down_streams.deinit();
         self.down_to_up_streams.deinit();
 
-        http3_zig.clearEvents(self.allocator, &self.downstream_client_events);
-        http3_zig.clearEvents(self.allocator, &self.downstream_proxy_events);
-        http3_zig.clearEvents(self.allocator, &self.upstream_proxy_events);
-        http3_zig.clearEvents(self.allocator, &self.upstream_server_events);
+        // Session-bound clearEvents binds the right allocator implicitly;
+        // an unstarted pair's lists are still empty, so nothing to release.
+        if (self.downstream_started) {
+            self.downstream.client_h3.clearEvents(&self.downstream_client_events);
+            self.downstream.server_h3.clearEvents(&self.downstream_proxy_events);
+        }
+        if (self.upstream_started) {
+            self.upstream.client_h3.clearEvents(&self.upstream_proxy_events);
+            self.upstream.server_h3.clearEvents(&self.upstream_server_events);
+        }
         self.downstream_client_events.deinit(self.allocator);
         self.downstream_proxy_events.deinit(self.allocator);
         self.upstream_proxy_events.deinit(self.allocator);
@@ -768,19 +774,19 @@ const ProxyDemo = struct {
     }
 
     fn clearDownstreamClientEvents(self: *ProxyDemo) void {
-        http3_zig.clearEvents(self.allocator, &self.downstream_client_events);
+        self.downstream.client_h3.clearEvents(&self.downstream_client_events);
     }
 
     fn clearDownstreamProxyEvents(self: *ProxyDemo) void {
-        http3_zig.clearEvents(self.allocator, &self.downstream_proxy_events);
+        self.downstream.server_h3.clearEvents(&self.downstream_proxy_events);
     }
 
     fn clearUpstreamProxyEvents(self: *ProxyDemo) void {
-        http3_zig.clearEvents(self.allocator, &self.upstream_proxy_events);
+        self.upstream.client_h3.clearEvents(&self.upstream_proxy_events);
     }
 
     fn clearUpstreamServerEvents(self: *ProxyDemo) void {
-        http3_zig.clearEvents(self.allocator, &self.upstream_server_events);
+        self.upstream.server_h3.clearEvents(&self.upstream_server_events);
     }
 };
 

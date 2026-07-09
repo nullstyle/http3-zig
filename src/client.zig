@@ -19,13 +19,19 @@ pub const TlsOptions = struct {
     verify: boringssl.tls.VerifyMode = .system,
     early_data_enabled: bool = false,
     keylog_callback: ?observability_mod.KeylogCallback = null,
+    /// ALPN protocols the client offers, in preference order. Defaults
+    /// to HTTP/3's `"h3"` (RFC 9114 §3.1). Override for multi-protocol or
+    /// WebTransport-only deployments without dropping to a raw boringssl
+    /// context. The slice is copied into the context at init; it does not
+    /// need to outlive this call.
+    alpn: []const []const u8 = &protocol.alpn_protocols,
 };
 
 pub fn initTlsContext(options: TlsOptions) boringssl.tls.Error!boringssl.tls.Context {
     var ctx = try boringssl.tls.Context.initClient(.{
         .verify = options.verify,
         .min_version = @intCast(boringssl.raw.TLS1_3_VERSION),
-        .alpn = &protocol.alpn_protocols,
+        .alpn = options.alpn,
         .early_data_enabled = options.early_data_enabled,
     });
     errdefer ctx.deinit();

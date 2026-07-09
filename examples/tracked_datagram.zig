@@ -39,12 +39,12 @@ pub fn main(init: std.process.Init) !void {
 
     var client_events: std.ArrayList(http3_zig.Event) = .empty;
     defer {
-        http3_zig.clearEvents(allocator, &client_events);
+        client_h3.clearEvents(&client_events);
         client_events.deinit(allocator);
     }
     var server_events: std.ArrayList(http3_zig.Event) = .empty;
     defer {
-        http3_zig.clearEvents(allocator, &server_events);
+        server_h3.clearEvents(&server_events);
         server_events.deinit(allocator);
     }
 
@@ -55,7 +55,7 @@ pub fn main(init: std.process.Init) !void {
     );
 
     var packet: [4096]u8 = undefined;
-    try waitForDatagramSettings(&driver, &packet, &client, &server, &client_events, &server_events, allocator);
+    try waitForDatagramSettings(&driver, &packet, &client, &server, &client_events, &server_events);
 
     var writer = try client.startRequest(allocator, .{
         .method = "CONNECT",
@@ -77,8 +77,8 @@ pub fn main(init: std.process.Init) !void {
                 else => {},
             }
         }
-        http3_zig.clearEvents(allocator, &server_events);
-        http3_zig.clearEvents(allocator, &client_events);
+        server_h3.clearEvents(&server_events);
+        client_h3.clearEvents(&client_events);
     }
 
     const client_send_id = try writer.datagramTracked("from-client");
@@ -142,8 +142,8 @@ pub fn main(init: std.process.Init) !void {
             }
         }
 
-        http3_zig.clearEvents(allocator, &server_events);
-        http3_zig.clearEvents(allocator, &client_events);
+        server_h3.clearEvents(&server_events);
+        client_h3.clearEvents(&client_events);
     }
 
     std.debug.print(
@@ -163,7 +163,6 @@ fn waitForDatagramSettings(
     server: *http3_zig.Server,
     client_events: *std.ArrayList(http3_zig.Event),
     server_events: *std.ArrayList(http3_zig.Event),
-    allocator: std.mem.Allocator,
 ) !void {
     var client_saw_settings = false;
     var server_saw_settings = false;
@@ -191,8 +190,8 @@ fn waitForDatagramSettings(
             }
         }
 
-        http3_zig.clearEvents(allocator, server_events);
-        http3_zig.clearEvents(allocator, client_events);
+        _ = driver.server.clearEvents();
+        _ = driver.client.clearEvents();
     }
 }
 

@@ -4,7 +4,6 @@ const quic_zig = @import("quic_zig");
 
 const ClientCid = [_]u8{ 0x47, 0x4f, 0x41, 0x57, 0x43, 0x6c, 0x69, 0x00 };
 const ServerCid = [_]u8{ 0x47, 0x4f, 0x41, 0x57, 0x53, 0x72, 0x76, 0x00 };
-const goaway_id: u64 = 4;
 
 pub fn main(init: std.process.Init) !void {
     const allocator = init.gpa;
@@ -47,12 +46,12 @@ pub fn main(init: std.process.Init) !void {
 
     var client_events: std.ArrayList(http3_zig.Event) = .empty;
     defer {
-        http3_zig.clearEvents(allocator, &client_events);
+        client_h3.clearEvents(&client_events);
         client_events.deinit(allocator);
     }
     var server_events: std.ArrayList(http3_zig.Event) = .empty;
     defer {
-        http3_zig.clearEvents(allocator, &server_events);
+        server_h3.clearEvents(&server_events);
         server_events.deinit(allocator);
     }
     var completed_responses: std.ArrayList(*http3_zig.ResponseState) = .empty;
@@ -66,6 +65,7 @@ pub fn main(init: std.process.Init) !void {
 
     var response_sent = false;
     var goaway_seen = false;
+    var sent_goaway_id: ?u64 = null;
     var packet: [4096]u8 = undefined;
     var steps: u32 = 0;
     while (completed_responses.items.len == 0 or !goaway_seen) : (steps += 1) {
@@ -85,7 +85,14 @@ pub fn main(init: std.process.Init) !void {
                             .status = "200",
                             .body = "completed before drain\n",
                         });
+                        // gracefulGoawayId derives the RFC 9114 §5.2
+                        // "covers nothing new" id from the highest client
+                        // request stream the session has observed — no
+                        // hand-tracking stream ids from events. One request
+                        // on stream 0 means GOAWAY(4) here.
+                        const goaway_id = server_h3.gracefulGoawayId();
                         try server.goaway(goaway_id);
+                        sent_goaway_id = goaway_id;
                         response_sent = true;
                     }
                 },
@@ -93,7 +100,7 @@ pub fn main(init: std.process.Init) !void {
                 else => {},
             }
         }
-        http3_zig.clearEvents(allocator, &server_events);
+        server_h3.clearEvents(&server_events);
 
         for (client_events.items) |event| {
             switch (try client_runner.observe(event)) {
@@ -103,14 +110,25 @@ pub fn main(init: std.process.Init) !void {
                     }
                 },
                 .goaway => |id| {
-                    if (id != goaway_id) return error.UnexpectedGoawayId;
+                    if (id != sent_goaway_id) return error.UnexpectedGoawayId;
                     goaway_seen = true;
                 },
                 .connection_closed => return error.ClientConnectionClosed,
                 else => {},
             }
         }
-        http3_zig.clearEvents(allocator, &client_events);
+        client_h3.clearEvents(&client_events);
+    }
+
+    // Drain-complete condition: the session is draining (GOAWAY sent) and
+    // every request admitted before the GOAWAY has finished — no
+    // application-side stream map needed.
+    var drain_steps: u32 = 0;
+    while (server_h3.openRequestStreamCount() != 0) : (drain_steps += 1) {
+        if (drain_steps >= 1_000) return error.DrainTimedOut;
+        _ = try driver.step(&packet);
+        server_h3.clearEvents(&server_events);
+        client_h3.clearEvents(&client_events);
     }
 
     const response = completed_responses.items[0].reader();
@@ -132,13 +150,14 @@ pub fn main(init: std.process.Init) !void {
     }
 
     std.debug.print(
-        "status={s}\nbody={s}goaway={d}\nclient_state={s}\nserver_state={s}\nnew_request_blocked=true\n",
+        "status={s}\nbody={s}goaway={d}\nclient_state={s}\nserver_state={s}\nopen_requests={d}\nnew_request_blocked=true\n",
         .{
             response.status() orelse "",
             response.body(),
-            goaway_id,
+            sent_goaway_id.?,
             @tagName(client_h3.shutdownState()),
             @tagName(server_h3.shutdownState()),
+            server_h3.openRequestStreamCount(),
         },
     );
 }

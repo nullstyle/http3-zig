@@ -17,6 +17,11 @@ test "public API smoke: stable embedding surface compiles" {
         _ = H.Session.close;
         _ = H.Session.openRequest;
         _ = H.Session.sendGoaway;
+        _ = H.Session.shutdownState;
+        _ = H.Session.highestPeerRequestStreamId;
+        _ = H.Session.gracefulGoawayId;
+        _ = H.Session.openRequestStreamCount;
+        _ = H.Session.openRequestStreams;
         _ = H.Session.cancelPush;
         _ = H.Session.stopSending;
         _ = H.Session.resetStream;
@@ -37,11 +42,19 @@ test "public API smoke: stable embedding surface compiles" {
         _ = H.SessionConfig.production;
         _ = H.SessionProductionOptions;
         _ = H.SessionBufferedStreamPolicy;
+        _ = H.ShutdownState;
+        _ = H.OpenRequestStream;
+        _ = H.OpenRequestStreamIterator;
+        _ = H.OpenRequestStreamIterator.next;
         _ = H.Event;
         _ = H.deinitEvents;
         _ = H.clearEvents;
 
         // Client/server facades, runners, and trackers.
+        _ = H.client.TlsOptions;
+        _ = H.client.initTlsContext;
+        _ = H.server.TlsOptions;
+        _ = H.server.initTlsContext;
         _ = H.Client;
         _ = H.Client.init;
         _ = H.Client.request;
