@@ -63,6 +63,16 @@ buildable out-of-tree consumer showing the full wiring lives in
 
 ## Quick example
 
+For a real server or client, start with
+[`examples/udp_server.zig`](examples/udp_server.zig) and
+[`examples/udp_client.zig`](examples/udp_client.zig): real UDP sockets,
+multi-connection accept via `quic_zig.Server` + `runUdpServer`, one
+`Session` per connection hung off `Slot.user_data`, ordered teardown in
+`on_connection_will_close`, and a SIGINT GOAWAY drain
+(`zig build run-udp-smoke` proves the pair end-to-end in one process).
+Note that `SessionConfig.production(.{})` is the deployment posture — the
+bare `.{}` defaults are a compatibility posture with unbounded buffers.
+
 The simplest end-to-end shape is the in-process loopback under
 [`examples/loopback_get.zig`](examples/loopback_get.zig):
 
@@ -236,6 +246,7 @@ mise install
 just test
 just fuzz-smoke
 just run-examples
+just udp-smoke
 just example-loopback-get
 just example-manual-pump-get
 just example-observability-metrics
@@ -466,6 +477,10 @@ just external-h3-interop
   [docs/h3-third-party-interop.md](docs/h3-third-party-interop.md).
 - `just examples` builds every runnable in-process example; `just run-examples`
   runs the full example cookbook and is covered by CI on Ubuntu.
+- `just udp-smoke` runs the real-socket smoke for the production server
+  skeleton: the `examples/udp_server.zig` loop on a background thread, the
+  `examples/udp_client.zig` GET against it over loopback UDP, and a hard
+  assertion on the 200 + body. Covered by CI on Ubuntu after `run-examples`.
 - `just example-loopback-get` runs a compact in-process client/server example
   over `TransportLoopback` with the public `Client`, `Server`,
   `ClientRunner`, and `ServerRunner` APIs.

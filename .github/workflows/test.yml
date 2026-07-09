@@ -80,6 +80,13 @@ jobs:
         if: matrix.os == 'ubuntu-latest' && matrix.optimize == 'Debug'
         run: zig build run-examples --summary all
 
+      # Real-socket proof for the production server skeleton: udp_server
+      # loop on a background thread, udp_client GET / against it over
+      # loopback UDP, non-zero exit unless a 200 + expected body came back.
+      - name: zig build run-udp-smoke
+        if: matrix.os == 'ubuntu-latest' && matrix.optimize == 'Debug'
+        run: zig build run-udp-smoke --summary all
+
       # Consume http3-zig from an out-of-tree project and prove the exported
       # quic_zig/boringssl module instances type-unify with the public API
       # (tools/consumer-smoke/src/main.zig). Module identity is

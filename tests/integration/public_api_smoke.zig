@@ -237,6 +237,7 @@ test "public API smoke: stable embedding surface compiles" {
         _ = H.TransportEndpoint.clearEvents;
         _ = H.TransportEndpoint.flush;
         _ = H.TransportEndpoint.handle;
+        _ = H.TransportEndpoint.advance;
         _ = H.TransportEndpoint.tick;
         _ = H.TransportEndpoint.relayTo;
         _ = H.TransportLoopbackOptions;

@@ -11,6 +11,46 @@ breaking changes; see notes per release.
 
 ### Added
 
+- Added `examples/udp_server.zig` — the production HTTP/3 server skeleton:
+  real UDP socket, multi-connection accept via `quic_zig.Server` +
+  `transport.runUdpServer`, one `Session` (production preset) + facade +
+  `ServerRunner` + `TransportEndpoint` per connection hung off
+  `Slot.user_data` (created on first sight in the `on_iteration` hook),
+  ordered teardown in `on_connection_will_close` (the hook runs inside
+  `reap` while `slot.conn` is still valid — the pattern that makes reap
+  safe for a borrowing `Session`), and a two-phase SIGINT shutdown
+  (per-session `sendGoaway(gracefulGoawayId())`, pump until
+  `openRequestStreamCount() == 0` or a drain deadline, then hand off to
+  the loop's CONNECTION_CLOSE grace window).
+- Added `examples/udp_client.zig` — the real-socket HTTP/3 client:
+  `quic_zig.Client.connect` (system trust store by default, `--insecure`
+  for self-signed demos), `transport.runUdpClient`, the request gated on
+  `handshakeDone()`, response assembly via `ClientRunner`, and a clean
+  H3_NO_ERROR close. Interops with `examples/udp_server.zig`.
+- Added `examples/udp_smoke.zig` + `zig build run-udp-smoke` — one-process
+  real-loopback proof of the pair (server loop on a background thread,
+  client GET / against an ephemeral port, non-zero exit unless a 200 with
+  the exact expected body round-trips); wired into CI on the Ubuntu Debug
+  leg after `run-examples`.
+- Added `TransportEndpoint.advance` (delegates to `Connection.advance`):
+  the client bootstrap step real-network embedders need to emit the first
+  ClientHello — `quic_zig.Client.connect` defers it for 0-RTT staging, and
+  loopback tests use the in-process peer shim instead. Documented as pump
+  order step 0 in the embedding guide and pinned in the public-API smoke.
+- Added embedding-guide sections for multi-connection accept ("Accepting
+  Connections": `quic_zig.Server` owns accept/demux/Retry/rate limits;
+  init per-slot sessions in the `on_iteration` hook, deinit in
+  `on_connection_will_close` before reap destroys the connection),
+  clocks and wakeups (one monotonic `now_us` domain owned by the
+  `runUdp*` loops; open-coded loops size poll timeouts with
+  `nextTimerDeadline`, never wall-clock), and a 0-RTT status note
+  (transport-level 0-RTT is end-to-end in quic-zig 0.9.0, but http3-zig
+  has no blessed 0-RTT request path yet — HTTP/3 early data is
+  unsupported/untested and requests before `handshakeDone()` are
+  undefined; tracked as future work).
+- Stated the config posture prominently in the README and embedding
+  guide: `SessionConfig.production(.{})` is the deployment posture; the
+  bare `.{}` defaults are a compatibility posture with unbounded buffers.
 - Added `Session.highestPeerRequestStreamId` and `Session.gracefulGoawayId`
   so a server can send the RFC 9114 §5.2 "covers nothing new" GOAWAY id
   (highest observed client request stream + 4, or 0 when none was seen;

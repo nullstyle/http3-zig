@@ -54,11 +54,50 @@ defer events.deinit(allocator);
 Pin the `Session` to one thread or shard. Public operations mutate state
 directly and do not lock internally.
 
+`SessionConfig.production(.{})` is the deployment posture: every buffer,
+event batch, and tracked-state map is bounded. Bare `.{}` defaults are a
+compatibility posture with unbounded buffers — fine for tests and trusted
+loopback fixtures, not for peers you don't control. See
+[`production-limits.md`](production-limits.md).
+
+## Accepting Connections (multi-connection servers)
+
+A real server does not build `quic_zig.Connection`s by hand — the
+`quic_zig.Server` wrapper owns accept, packet demux, Retry/NEW_TOKEN
+address validation, per-source rate limits, and the connection (slot)
+table, and `quic_zig.transport.runUdpServer` owns the socket and the
+receive/tick/drain loop. http3-zig layers one `Session` per slot on top:
+
+- **Init on first sight, in the `on_iteration` hook.** The hook is the one
+  place application code may touch a loop-owned `Server` (no internal
+  locking; the hook runs on the loop thread). For each `server.iterator()`
+  slot whose `user_data` is null, allocate your per-connection state —
+  `Session` (init against `slot.conn`), facade, runner, event list,
+  `TransportEndpoint.withSession` — and hang it off `slot.user_data`.
+- **Deinit in `Server.Config.on_connection_will_close`, and nowhere else.**
+  The hook runs inside `reap` while `slot.conn` and `slot.user_data` are
+  still valid — the last safe moment for a `Session` that borrows
+  `slot.conn` to clear its drained events and deinit. Reap destroys the
+  connection immediately after; a session torn down anywhere later is a
+  use-after-free. The auto-reap runs on the loop thread too, so the two
+  hooks never race.
+
+`examples/udp_server.zig` is the skeleton: real UDP socket,
+multi-connection, `ServerRunner` request assembly, SIGINT GOAWAY drain.
+
 ## Pump Order
 
 In a socket-backed event loop, each ready connection normally follows this
 order:
 
+0. Clients only, once at connect time: run the handshake state machine with
+   `quic.advance()` (or `TransportEndpoint.advance`) so the first ClientHello
+   is queued for step 3. `quic_zig.Client.connect` deliberately defers this
+   so 0-RTT data can be staged first — on a real network there is no inbound
+   packet to bootstrap from, so a client that skips `advance` hangs before
+   its first flight. `quic_zig.transport.runUdpClient` performs the call
+   itself; loopback examples/tests rely on the in-process peer shim instead
+   and never need it.
 1. Read UDP datagrams from your socket and pass each one to `quic.handle`.
 2. Advance QUIC timers with `quic.tick(now_us)`.
 3. Poll outgoing QUIC datagrams with `quic.poll` until it returns `null`, then
@@ -113,6 +152,21 @@ When a `TransportEndpoint` owns the `(Session, events)` pairing, use
 `endpoint.clearEvents()` after processing a drained batch to release payloads
 through the session allocator and retain the event list for the next step.
 
+## Clocks and Wakeups
+
+Every `now_us` in the stack — `quic.handle`/`tick`/`poll`, `Session` event
+stamps (`OpenRequestStream.last_event_us`), request deadlines — is one
+monotonic microsecond domain. Never feed wall-clock time: skew drags QUIC
+recovery timers backwards. `runUdpServer`/`runUdpClient` own the clock
+(`Timestamp.now(io, .awake)` deltas since loop start) and pass it to the
+`on_iteration` hook, so hook code just uses the `now_us` parameter.
+
+Open-coded loops own wakeups too: size the poll/recv timeout with
+`quic_zig.Server.nextTimerDeadline(now_us)` (the earliest deadline across
+slots) or per-connection `Connection.nextTimerDeadline`, rather than a
+fixed sleep — that keeps PTO/loss-detection firing on schedule at idle
+without busy-spinning.
+
 ## Choosing Event Surfaces
 
 Use the raw event classifiers when your application wants streaming ownership:
@@ -138,6 +192,10 @@ activity across many drain batches.
 Runnable examples:
 
 - Run the full cookbook with `zig build run-examples` or `just run-examples`.
+- `examples/udp_server.zig` / `examples/udp_client.zig`: start here for a
+  real server/client — UDP sockets, multi-connection accept via
+  `quic_zig.Server`, per-slot `Session` lifecycle, SIGINT GOAWAY drain.
+  `zig build run-udp-smoke` proves the pair end-to-end in one process.
 - `examples/loopback_get.zig`: facade runners and complete response tracking.
 - `examples/manual_pump_get.zig`: the same GET while manually driving QUIC
   `tick` / `poll` / `handle` and HTTP/3 `drain`.
@@ -260,3 +318,15 @@ context for future accepts, drains the old one behind a per-slot refcount,
 and documents the resumption caveat (session tickets minted under the old
 context cannot be decrypted under the new one — bridge ticket keys yourself
 if 0-RTT must survive rotation).
+
+## 0-RTT
+
+quic-zig 0.9.0 supports 0-RTT end-to-end at the transport layer: server-side
+context install (`Server.Config.enable_0rtt` + anti-replay tracker) and
+client-side resumption with rejection recovery
+(`Client.Config.resumption_state` / `new_session_callback`). http3-zig has **no blessed
+0-RTT request path yet**: early data at the HTTP/3 layer is not supported or
+tested, and sending requests before the transport reports
+`handshakeDone()` is undefined — the client examples gate the first request
+on it. Tracked as future work; until then, treat 0-RTT as
+transport-resumption-only (faster handshakes, no early requests).

@@ -62,6 +62,15 @@ example-loopback-wt:
 example-webtransport-proxy:
     zig build run-example-webtransport-proxy
 
+example-udp-server:
+    zig build example-udp-server
+
+example-udp-client:
+    zig build example-udp-client
+
+udp-smoke:
+    zig build run-udp-smoke
+
 fuzz-codecs:
     zig build fuzz-codecs
 

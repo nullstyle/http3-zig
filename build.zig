@@ -582,6 +582,59 @@ pub fn build(b: *std.Build) void {
     const run_wt_proxy_step = b.step("run-example-webtransport-proxy", "Run the in-process WebTransport proxy datapath example");
     run_wt_proxy_step.dependOn(&run_wt_proxy.step);
 
+    const udp_server_mod = b.createModule(.{
+        .root_source_file = b.path("examples/udp_server.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    udp_server_mod.addImport("http3_zig", http3_zig_mod);
+    udp_server_mod.addImport("quic_zig", quic_zig_mod);
+    const udp_server = b.addExecutable(.{
+        .name = "http3-zig-udp-server",
+        .root_module = udp_server_mod,
+    });
+    const install_udp_server = b.addInstallArtifact(udp_server, .{});
+    const udp_server_step = b.step("example-udp-server", "Build the real-socket multi-connection HTTP/3 server example");
+    udp_server_step.dependOn(&install_udp_server.step);
+
+    const udp_client_mod = b.createModule(.{
+        .root_source_file = b.path("examples/udp_client.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    udp_client_mod.addImport("http3_zig", http3_zig_mod);
+    udp_client_mod.addImport("quic_zig", quic_zig_mod);
+    const udp_client = b.addExecutable(.{
+        .name = "http3-zig-udp-client",
+        .root_module = udp_client_mod,
+    });
+    const install_udp_client = b.addInstallArtifact(udp_client, .{});
+    const udp_client_step = b.step("example-udp-client", "Build the real-socket HTTP/3 client example");
+    udp_client_step.dependOn(&install_udp_client.step);
+
+    // One-process real-loopback smoke for the udp_server/udp_client
+    // pair. Deliberately NOT part of `run-examples` (the pair is
+    // long-running / two-process); `run-udp-smoke` is the CI-runnable
+    // proof the skeleton serves over a real socket.
+    const udp_smoke_mod = b.createModule(.{
+        .root_source_file = b.path("examples/udp_smoke.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    udp_smoke_mod.addImport("http3_zig", http3_zig_mod);
+    udp_smoke_mod.addImport("quic_zig", quic_zig_mod);
+    const udp_smoke = b.addExecutable(.{
+        .name = "http3-zig-udp-smoke",
+        .root_module = udp_smoke_mod,
+    });
+    const install_udp_smoke = b.addInstallArtifact(udp_smoke, .{});
+    const udp_smoke_step = b.step("example-udp-smoke", "Build the one-process udp_server/udp_client smoke harness");
+    udp_smoke_step.dependOn(&install_udp_smoke.step);
+
+    const run_udp_smoke = b.addRunArtifact(udp_smoke);
+    const run_udp_smoke_step = b.step("run-udp-smoke", "Run the real-socket udp_server/udp_client smoke harness");
+    run_udp_smoke_step.dependOn(&run_udp_smoke.step);
+
     const examples_step = b.step("examples", "Build all runnable examples");
     examples_step.dependOn(&install_loopback_get.step);
     examples_step.dependOn(&install_manual_pump.step);
@@ -593,6 +646,9 @@ pub fn build(b: *std.Build) void {
     examples_step.dependOn(&install_graceful_shutdown.step);
     examples_step.dependOn(&install_loopback_wt.step);
     examples_step.dependOn(&install_wt_proxy.step);
+    examples_step.dependOn(&install_udp_server.step);
+    examples_step.dependOn(&install_udp_client.step);
+    examples_step.dependOn(&install_udp_smoke.step);
 
     const run_examples_step = b.step("run-examples", "Run all in-process examples");
     run_examples_step.dependOn(&run_loopback_get.step);

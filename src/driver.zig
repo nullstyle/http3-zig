@@ -74,6 +74,22 @@ pub const Endpoint = struct {
         try self.quic.handle(datagram, from, now_us);
     }
 
+    /// Run the QUIC handshake state machine (`Connection.advance`): feed
+    /// buffered CRYPTO to TLS and queue any resulting flight for the next
+    /// `poll`/`flush`. Real-network clients MUST call this once after
+    /// `quic_zig.Client.connect` (and may call it once per loop iteration)
+    /// — `connect` deliberately defers the first `advance` so 0-RTT data
+    /// can be staged before the ClientHello, which means there is no
+    /// inbound packet to bootstrap from and the very first ClientHello
+    /// only reaches the wire via `advance` -> `poll` -> socket send.
+    /// (`quic_zig.transport.runUdpClient` performs this bootstrap call
+    /// itself; open-coded client loops own it.) Loopback examples and
+    /// tests instead use the in-process peer shim, whose `advance` calls
+    /// shuttle packets directly. Idempotent when there is nothing to do.
+    pub fn advance(self: *Endpoint) Error!void {
+        try self.quic.advance();
+    }
+
     pub fn poll(self: *Endpoint, packet_buffer: []u8, now_us: u64) Error!?usize {
         return self.quic.poll(packet_buffer, now_us);
     }
