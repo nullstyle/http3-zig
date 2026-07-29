@@ -4,24 +4,34 @@
     .fingerprint = 0x71cd45b0dc74266b,
     .minimum_zig_version = "0.17.0-dev.1158+1d1193aa7",
     .dependencies = .{
-        // quic-zig 0.9.0 — the application-readiness release: lifecycle
-        // events (handshake_established / stream_opened), Slot.user_data +
+        // quic-zig 0.10.0 — the consumer-adoption release, and the first
+        // tagged cut since v0.7.6 (0.8.0 and 0.9.0 were prepared but
+        // deliberately never tagged, so this pin finally rides a real tag
+        // instead of a release-prep commit). Carries everything the 0.9.0
+        // release-prep pin had — lifecycle events
+        // (handshake_established / stream_opened), Slot.user_data +
         // on_connection_will_close ordered teardown, on_iteration loop
-        // hooks, Server.nextTimerDeadline, wrapper 0-RTT (server context
-        // install + client rejection recovery + new_session_callback),
-        // auto CID replenish for client migration, negotiatedAlpn().
-        // Temporarily pinned to the release-prep COMMIT while the v0.9.0
-        // tag waits on its rc-fuzz gate; flip the ref to #v0.9.0 once
-        // tagged (same commit → same content hash). To bump: run
-        // `zig fetch <git-url>#<ref>` and paste its hash here by hand — do
-        // NOT `zig fetch --save`, which mangles a dependency entry. Also
-        // update the quic_build_options "version" string in build.zig to
-        // the new release (tools/check-boringssl-pin.sh lints this on tag
-        // pins) and mirror any boringssl_zig pin change below
+        // hooks, Server.nextTimerDeadline, wrapper 0-RTT, auto CID
+        // replenish, negotiatedAlpn() — plus private-CA/mTLS through the
+        // wrappers (Client.Config.ca_pem / client_cert_pem / client_key_pem,
+        // Server.Config.client_ca_pem) and a slimmer consumer archive.
+        //
+        // BREAKING in 0.10.0, but only for Server.Config, which http3-zig
+        // does not construct: six nullable rate/quota fields collapsed onto
+        // Server.RateLimit, the 0-RTT pair became Server.EarlyData,
+        // versions -> accepted_versions, max_auto_replenish_cids usize -> u8.
+        // http3-zig's only reach into quic-zig internals is
+        // quic_zig.conn.state.Error (src/session.zig), which is unaffected.
+        //
+        // To bump: run `zig fetch <git-url>#<ref>` and paste its hash here
+        // by hand — do NOT `zig fetch --save`, which mangles a dependency
+        // entry. Also update the quic_build_options "version" string in
+        // build.zig to the new release (tools/check-boringssl-pin.sh lints
+        // this on tag pins) and mirror any boringssl_zig pin change below
         // byte-for-byte.
         .quic_zig = .{
-            .url = "git+https://github.com/nullstyle/quic-zig.git#2aa11ad33dd69d98a4523edc2c5989916b57b164",
-            .hash = "quic_zig-0.9.0-jMbGHZioNwDLDh5bFJ0SxlenJGTmognWRPPoQzozMv5e",
+            .url = "git+https://github.com/nullstyle/quic-zig.git#v0.10.0",
+            .hash = "quic_zig-0.10.0-jMbGHfXQJQA4jqdbJtcW7cMSNWCuLLM4GVHW2XYow_zF",
         },
         // MUST match quic-zig's boringssl_zig entry byte-for-byte so the
         // package manager dedupes to a single boringssl module instance;
