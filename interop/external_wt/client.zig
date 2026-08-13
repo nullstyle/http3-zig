@@ -65,6 +65,10 @@ const Options = struct {
     max_time_ms: u64 = 30_000,
     max_iterations: u32 = 100_000,
     verify: boringssl.tls.VerifyMode = .none,
+    /// Which single draft era to advertise: `modern` (default),
+    /// `draft07`, or `draft02` — forcing the era the connection must
+    /// resolve to (the server may speak several).
+    era: []const u8 = "modern",
 };
 
 const ParsedUrl = struct {
@@ -167,7 +171,9 @@ fn runHarness(allocator: std.mem.Allocator, io: std.Io, options: Options) !void 
             .qpack_blocked_streams = 4,
             .h3_datagram = true,
             .enable_connect_protocol = true,
-            .wt_enabled = true,
+            .wt_enabled = std.mem.eql(u8, options.era, "modern"),
+            .wt_draft02 = std.mem.eql(u8, options.era, "draft02"),
+            .wt_draft07_max_sessions = if (std.mem.eql(u8, options.era, "draft07")) @as(?u64, 4) else null,
         },
         .qpack_encoder_table_capacity = 256,
         .qpack_indexing = http3_zig.QpackIndexingPolicy.aggressive,
@@ -206,7 +212,13 @@ fn runHarness(allocator: std.mem.Allocator, io: std.Io, options: Options) !void 
         clearEvents(allocator, &events);
         now_us += http3_zig.driver.default_step_us;
     }
-    if (!http3_zig.webtransport.peerEnabled(h3.peer_settings.?)) {
+    std.debug.print("OBSERVED negotiated era={s}\n", .{
+        @tagName(h3.webTransportNegotiatedDraft() orelse .draft16),
+    });
+    if (!http3_zig.webtransport.peerEnabledFor(
+        h3.peer_settings.?,
+        http3_zig.webtransport.localEras(h3.local_settings),
+    )) {
         std.debug.print("external_wt: peer SETTINGS do not advertise WebTransport\n", .{});
         return error.PeerDidNotEnableWebTransport;
     }
@@ -483,6 +495,8 @@ fn parseArgs(init: std.process.Init, allocator: std.mem.Allocator) !Options {
             options.sni = args.next() orelse return error.MissingSni;
         } else if (std.mem.eql(u8, arg, "--authority")) {
             options.authority = args.next() orelse return error.MissingAuthority;
+        } else if (std.mem.eql(u8, arg, "--era")) {
+            options.era = args.next() orelse return error.MissingEra;
         } else if (std.mem.eql(u8, arg, "--max-time-ms")) {
             options.max_time_ms = try std.fmt.parseInt(u64, args.next() orelse return error.MissingTimeout, 10);
         } else if (std.mem.eql(u8, arg, "--max-iterations")) {

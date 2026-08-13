@@ -98,6 +98,65 @@ jobs:
             wait "$PID" 2>/dev/null || true
           fi
 
-      - name: Server log (for debugging)
+      # Second gating leg: the BROWSER-ERA negotiation path. A
+      # draft-02-only client (the wire shape shipped Chrome and Firefox
+      # speak) against a server advertising every era must resolve to
+      # draft02 and complete the full echo flow — the same negotiation
+      # the advisory browser legs exercise with a real Chrome.
+      - name: Start the all-eras server (legacy leg)
+        run: |
+          set -euo pipefail
+          zig build external-wt-client
+          ./zig-out/bin/http3-zig-external-wt-server \
+            --listen 127.0.0.1:0 \
+            --cert tests/data/test_cert.pem \
+            --key tests/data/test_key.pem \
+            --max-sessions 1 \
+            --max-lifetime-ms 60000 \
+            --eras modern,draft07,draft02 \
+            > "${{ runner.temp }}/wt-era-server.log" 2>&1 &
+          echo "$!" > "${{ runner.temp }}/wt-era-server.pid"
+          for i in $(seq 1 200); do
+            grep -q "^READY " "${{ runner.temp }}/wt-era-server.log" && break
+            sleep 0.05
+          done
+          grep -q "^READY " "${{ runner.temp }}/wt-era-server.log" || {
+            echo "::error::era server never reported READY"
+            cat "${{ runner.temp }}/wt-era-server.log"
+            exit 2
+          }
+          PORT=$(awk '/^READY / {print $2; exit}' "${{ runner.temp }}/wt-era-server.log")
+          echo "WT_ERA_SERVER_PORT=$PORT" >> "$GITHUB_ENV"
+
+      - name: Run the draft-02 client against the all-eras server
+        env:
+          WT_INTEROP_URL: "https://127.0.0.1:${{ env.WT_ERA_SERVER_PORT }}/wt-era-self-test"
+        run: |
+          set -euo pipefail
+          ./zig-out/bin/http3-zig-external-wt-client --era draft02 --max-time-ms 15000 \
+            | tee "${{ runner.temp }}/wt-era-client.log"
+          grep -q "OBSERVED negotiated era=draft02" "${{ runner.temp }}/wt-era-client.log" || {
+            echo "::error::client did not negotiate the draft-02 era"
+            exit 1
+          }
+          # The server's view agrees (belt-and-suspenders; the log line
+          # is written mid-run so it is reliably present here).
+          grep -q "era=draft02" "${{ runner.temp }}/wt-era-server.log" || {
+            echo "::error::server never logged a draft-02 acceptance"
+            exit 1
+          }
+
+      - name: Tear down the era server
         if: always()
-        run: cat "${{ runner.temp }}/wt-server.log" || true
+        run: |
+          if [ -f "${{ runner.temp }}/wt-era-server.pid" ]; then
+            PID=$(cat "${{ runner.temp }}/wt-era-server.pid")
+            kill "$PID" 2>/dev/null || true
+            wait "$PID" 2>/dev/null || true
+          fi
+
+      - name: Server logs (for debugging)
+        if: always()
+        run: |
+          cat "${{ runner.temp }}/wt-server.log" || true
+          cat "${{ runner.temp }}/wt-era-server.log" || true

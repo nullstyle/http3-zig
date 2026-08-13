@@ -100,7 +100,22 @@ pub fn run(allocator: std.mem.Allocator, bytes: []const u8) !void {
     // struct by value would invalidate those pointers.
     const harness = try allocator.create(Harness);
     defer allocator.destroy(harness);
-    try Harness.init(harness, allocator);
+    // Byte 0 selects the ERA WIRING and is consumed before the opcode
+    // stream: bits 0-1 = client era set, bits 2-3 = server era set,
+    // where 0 = modern-only, 1 = modern+draft07, 2 = all three eras,
+    // 3 = draft-02 only (browser-shaped). A wiring with no common era
+    // must reach quiescence with zero WT sessions and no connection
+    // close; a pair that resolves to a legacy era must never emit
+    // `webtransport_flow_violated` (modern flow capsules are unknown
+    // types there) — both asserted by the harness.
+    const era_byte: u8 = if (bytes.len > 0) bytes[0] else 0;
+    const op_bytes = if (bytes.len > 0) bytes[1..] else bytes;
+    try Harness.init(
+        harness,
+        allocator,
+        @truncate(era_byte & 0x3),
+        @truncate((era_byte >> 2) & 0x3),
+    );
     defer harness.deinit();
 
     try harness.exchangeSettings();
@@ -120,12 +135,12 @@ pub fn run(allocator: std.mem.Allocator, bytes: []const u8) !void {
 
     var ip: usize = 0;
     var ops_run: u32 = 0;
-    while (ip < bytes.len and ops_run < max_ops) : (ops_run += 1) {
-        const opcode_byte = bytes[ip];
+    while (ip < op_bytes.len and ops_run < max_ops) : (ops_run += 1) {
+        const opcode_byte = op_bytes[ip];
         ip += 1;
         const op = opcode_byte & 0x0f;
         const side: Side = if ((opcode_byte & 0x10) != 0) .server else .client;
-        const cursor = Cursor{ .bytes = bytes, .pos = ip };
+        const cursor = Cursor{ .bytes = op_bytes, .pos = ip };
         // Any error from dispatchOp that isn't a memory-allocation
         // failure is treated as a "this op didn't apply" — the fuzz
         // harness cares about panics, leaks, and unexpected close
@@ -293,13 +308,30 @@ const Harness = struct {
     server_events: std.ArrayList(http3_zig.session.Event),
     now_us: u64 = 1_000_000,
 
-    fn init(self: *Harness, allocator: std.mem.Allocator) !void {
-        const wt_settings: http3_zig.Settings = .{
+    fn eraSettings(set: u2) http3_zig.Settings {
+        return .{
             .enable_connect_protocol = true,
             .h3_datagram = true,
-            .wt_enabled = true,
+            .wt_enabled = set != 3,
+            .wt_draft07_max_sessions = if (set == 1 or set == 2) @as(?u64, max_sessions) else null,
+            .wt_draft02 = set == 2 or set == 3,
         };
-        try self.pair.initStarted(allocator, .{ .settings = wt_settings }, .{ .settings = wt_settings });
+    }
+
+    fn init(self: *Harness, allocator: std.mem.Allocator, client_set: u2, server_set: u2) !void {
+        try self.pair.initStarted(
+            allocator,
+            .{ .settings = eraSettings(client_set) },
+            .{
+                .settings = eraSettings(server_set),
+                // Advertisement equals enforcement when draft-07 is in
+                // the server's set.
+                .max_wt_sessions = if (server_set == 1 or server_set == 2)
+                    @as(?usize, max_sessions)
+                else
+                    null,
+            },
+        );
         errdefer self.pair.deinit();
 
         self.allocator = allocator;
@@ -384,10 +416,23 @@ const Harness = struct {
         // that depends on classified events makes progress) but discard
         // the application-level outputs — the fuzz harness doesn't
         // assert on event content.
+        // Era invariant: a pair resolved to a legacy era can never see a
+        // flow violation — the modern flow capsules are unknown types
+        // to it and no receive-side credit is ever seeded.
+        const legacy_pair = if (self.pair.server_h3.webTransportNegotiatedDraft()) |era|
+            era != .draft16
+        else
+            false;
         for (self.server_events.items) |event| {
+            if (legacy_pair and event == .webtransport_flow_violated) {
+                return error.FlowViolationOnLegacyPair;
+            }
             _ = self.server_runner.observe(event) catch {};
         }
         for (self.client_events.items) |event| {
+            if (legacy_pair and event == .webtransport_flow_violated) {
+                return error.FlowViolationOnLegacyPair;
+            }
             _ = self.client_runner.observe(event) catch {};
         }
         clearSessionEvents(self.allocator, &self.client_events);

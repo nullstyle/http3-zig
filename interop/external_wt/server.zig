@@ -44,6 +44,10 @@ const Options = struct {
     /// Wallclock cap on the server's lifetime, in milliseconds.
     /// Defends against a stuck client wedging the harness in CI.
     max_lifetime_ms: u64 = 30_000,
+    /// Comma-separated draft eras to advertise: any of
+    /// `modern`,`draft07`,`draft02`. Browsers need `draft02`; the
+    /// matrix's foreign servers speak `modern`.
+    eras: []const u8 = "modern",
 };
 
 const Category = enum { protocol, setup };
@@ -90,6 +94,12 @@ fn runServer(allocator: std.mem.Allocator, io: std.Io, options: Options) !void {
     defer conn.destroy();
     try conn.setLocalScid(&server_cid);
 
+    const era_modern = std.mem.indexOf(u8, options.eras, "modern") != null;
+    const era_draft07 = std.mem.indexOf(u8, options.eras, "draft07") != null;
+    const era_draft02 = std.mem.indexOf(u8, options.eras, "draft02") != null;
+    // Advertisement equals enforcement: the draft-07 SETTINGS value and
+    // the enforced cap both come from --max-sessions (min 1).
+    const draft07_cap: u64 = @max(options.max_sessions, 1);
     var h3 = http3_zig.Session.init(allocator, .server, conn, .{
         .settings = .{
             .qpack_max_table_capacity = 256,
@@ -97,8 +107,11 @@ fn runServer(allocator: std.mem.Allocator, io: std.Io, options: Options) !void {
             .max_field_section_size = 16 * 1024 * 1024,
             .enable_connect_protocol = true,
             .h3_datagram = true,
-            .wt_enabled = true,
+            .wt_enabled = era_modern,
+            .wt_draft02 = era_draft02,
+            .wt_draft07_max_sessions = if (era_draft07) @as(?u64, draft07_cap) else null,
         },
+        .max_wt_sessions = if (era_draft07) @as(?usize, @intCast(draft07_cap)) else null,
         .qpack_encoder_table_capacity = 256,
         .qpack_indexing = http3_zig.QpackIndexingPolicy.aggressive,
         .max_field_section_size = 16 * 1024 * 1024,
@@ -110,11 +123,13 @@ fn runServer(allocator: std.mem.Allocator, io: std.Io, options: Options) !void {
     var app = App.init(allocator, options.max_sessions);
     defer app.deinit();
 
-    var stdout_buf: [256]u8 = undefined;
-    var stdout_writer = std.Io.File.stdout().writer(io, &stdout_buf);
-    const stdout = &stdout_writer.interface;
-    try stdout.print("READY {d}\n", .{sock.address.getPort()});
-    try stdout.flush();
+    // Everything goes to stderr: on current Zig master the buffered
+    // stdout writer flushes at its own logical offset (pwrite
+    // semantics), which CLOBBERS interleaved stderr bytes when both are
+    // redirected to one log file — the READY/EXIT lines were observed
+    // partially overwriting OBSERVED lines. std.debug.print is
+    // append-consistent; harness drivers capture with `2>&1` anyway.
+    std.debug.print("READY {d}\n", .{sock.address.getPort()});
 
     var peer: ?Net.IpAddress = null;
     var transport_params_set = false;
@@ -149,8 +164,7 @@ fn runServer(allocator: std.mem.Allocator, io: std.Io, options: Options) !void {
 
     while (!conn.isClosed() and !app.isDone(now_us)) {
         if (now_us - start_us > lifetime_us) {
-            try stdout.print("EXIT lifetime {d}ms exceeded\n", .{options.max_lifetime_ms});
-            try stdout.flush();
+            std.debug.print("EXIT lifetime {d}ms exceeded\n", .{options.max_lifetime_ms});
             break;
         }
 
@@ -200,11 +214,10 @@ fn runServer(allocator: std.mem.Allocator, io: std.Io, options: Options) !void {
         now_us += http3_zig.driver.default_step_us;
     }
 
-    try stdout.print(
+    std.debug.print(
         "EXIT sessions={d}/{d} closed={any}\n",
         .{ app.sessions_completed, options.max_sessions, conn.isClosed() },
     );
-    try stdout.flush();
 }
 
 const App = struct {
@@ -284,13 +297,42 @@ const App = struct {
             else => {},
         }
 
+        switch (event) {
+            // Browsers end sessions with CLOSE_WEBTRANSPORT_SESSION; the
+            // native fold surfaces it (and tears the session down) the
+            // moment it arrives — count completion here so a peer whose
+            // FIN trails (or never lands cleanly) still completes.
+            .webtransport_session_closed => |closed| {
+                if (self.accepted.getPtr(closed.session_id)) |entry| {
+                    if (!entry.completed) {
+                        entry.completed = true;
+                        self.sessions_completed += 1;
+                        if (self.max_sessions != 0 and
+                            self.sessions_completed >= self.max_sessions and
+                            self.completed_at_us == null)
+                        {
+                            self.completed_at_us = now_us;
+                        }
+                    }
+                    std.debug.print("OBSERVED wt session closed session={d} how={s} total={d}\n", .{
+                        closed.session_id,
+                        @tagName(closed.how),
+                        self.sessions_completed,
+                    });
+                }
+            },
+            else => {},
+        }
         switch (try self.runner.observe(event)) {
             .request_updated, .request_complete => |request_state| {
                 const request = request_state.reader();
                 if (!self.accepted.contains(request.streamId()) and request.headers().len > 0 and request.isWebTransport()) {
                     const wt = try server.acceptWebTransport(self.allocator, request, .{});
                     try self.accepted.put(self.allocator, request.streamId(), .{ .wt = wt });
-                    std.debug.print("OBSERVED wt accepted session={d}\n", .{request.streamId()});
+                    std.debug.print("OBSERVED wt accepted session={d} era={s}\n", .{
+                        request.streamId(),
+                        @tagName(server.session.webTransportNegotiatedDraft() orelse .draft16),
+                    });
                 }
                 if (request.complete()) {
                     if (self.accepted.getPtr(request.streamId())) |entry| {
@@ -357,6 +399,8 @@ fn parseArgs(init: std.process.Init, allocator: std.mem.Allocator) !Options {
             options.max_sessions = try std.fmt.parseInt(u64, args.next() orelse return error.MissingSessionCount, 10);
         } else if (std.mem.eql(u8, arg, "--max-lifetime-ms")) {
             options.max_lifetime_ms = try std.fmt.parseInt(u64, args.next() orelse return error.MissingLifetime, 10);
+        } else if (std.mem.eql(u8, arg, "--eras")) {
+            options.eras = args.next() orelse return error.MissingEras;
         } else {
             return error.UnknownArgument;
         }
