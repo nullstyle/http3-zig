@@ -191,6 +191,19 @@ breaking changes; see notes per release.
   on it) now returns `error.UnknownWebTransportSession` when invoked on a
   stream id that is unknown or carries no WebTransport session
   association, instead of silently writing unmetered bytes.
+- Added the reserved WebTransport error-code wiring
+  [draft-ietf-webtrans-http3 §9.5]: `Server.rejectWebTransport(request,
+  .alpn_failed | .requirements_not_met | .{ .wire_code = … })` aborts a
+  pending session's CONNECT with WT_ALPN_ERROR / WT_REQUIREMENTS_NOT_MET
+  (the peer observes a `.reset` session close carrying the code); facade
+  `close()` now truncates oversized reasons at a UTF-8 codepoint boundary
+  (`webtransport.truncateCloseReasonUtf8`) and refuses invalid UTF-8 with
+  the new `InvalidCloseReason` [§5.4]; root-level aliases
+  `webtransportAppErrorToHttp3` / `webtransportHttp3ToAppError` and the
+  `WebTransportErrorCode` namespace (session_gone,
+  buffered_stream_rejected, flow_control_error, alpn_error,
+  requirements_not_met) expose the §4.6/§9.5 code surface without module
+  reach-through.
 - **The Session now speaks WebTransport capsules natively.** WT CONNECT
   stream bodies are fed through a per-session reassembler (a capsule may
   legally span DATA frames — previously a split capsule was unparseable),

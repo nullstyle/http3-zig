@@ -47,6 +47,7 @@
 //!   draft-ietf-webtrans-http3 §5.4 ¶?  MUST     CLOSE_WEBTRANSPORT_SESSION value carries 32-bit code + UTF-8 reason
 //!   draft-ietf-webtrans-http3 §5.4 ¶?  MUST NOT CLOSE_WEBTRANSPORT_SESSION reason exceeds 1024 bytes
 //!   draft-ietf-webtrans-http3 §5.4 ¶?  MUST     reason MUST be valid UTF-8
+//!   draft-ietf-webtrans-http3 §5.4 ¶?  MUST     sender truncates an oversized reason at a UTF-8 codepoint boundary
 //!   draft-ietf-webtrans-http3 §5.5 ¶?  MUST     DRAIN_WEBTRANSPORT_SESSION capsule type is 0x78ae
 //!   draft-ietf-webtrans-http3 §5.5 ¶?  MUST     DRAIN_WEBTRANSPORT_SESSION value is empty
 //!   draft-ietf-webtrans-http3 §5.6.4 ¶? MUST    WT_MAX_DATA capsule type is 0x190b4d3d, value is a single varint
@@ -57,9 +58,11 @@
 //!   draft-ietf-webtrans-http3 §5.6.3 ¶? MUST    WT_STREAMS_BLOCKED_UNI capsule type is 0x190b4d44, value is a single varint
 //!   draft-ietf-webtrans-http3 §5.6   ¶? MUST    flow-control capsule values MUST contain exactly one QUIC varint
 //!
-//! Visible debt (burning down across the 2026-08 capsule-native rework;
-//! each row is deleted by the commit that lands the behavior):
-//!   draft-ietf-webtrans-http3 §5.4 ¶?   MUST  sender truncates close reasons at a UTF-8 boundary
+//! Visible debt:
+//!   none — the 2026-08 capsule-native rework burned every row down: the
+//!   -16 behavioral MUSTs are covered at the codec level here and at the
+//!   session level in tests/integration/webtransport.zig (see the
+//!   Out-of-scope pointers below).
 //!
 //! Out of scope (covered elsewhere):
 //!   draft-ietf-webtrans-http3 §3       handshake/bootstrapping interplay,
@@ -283,6 +286,23 @@ test "NORMATIVE: WEBTRANSPORT_BUFFERED_STREAM_REJECTED reserved as 0x3994bd84 [d
 test "NORMATIVE: WEBTRANSPORT_SESSION_GONE reserved as 0x170d7b68 [draft-ietf-webtrans-http3 §4.6]" {
     try std.testing.expectEqual(@as(u64, 0x170d7b68), wt.session_gone_code);
     try std.testing.expect(wt.isReservedStreamCode(0x170d7b68));
+}
+
+test "MUST: a sender truncates the close reason at a UTF-8 codepoint boundary [draft-ietf-webtrans-http3 §5.4]" {
+    // 1023 ASCII bytes then a 3-byte codepoint straddling the 1024-byte
+    // cap: a naive byte cut would ship a lone UTF-8 lead byte.
+    var reason: [1026]u8 = undefined;
+    @memset(reason[0..1023], 'a');
+    reason[1023] = 0xE2;
+    reason[1024] = 0x82;
+    reason[1025] = 0xAC;
+    const cut = wt.truncateCloseReasonUtf8(&reason);
+    try std.testing.expect(cut.len <= wt.max_close_reason_len);
+    try std.testing.expectEqual(@as(usize, 1023), cut.len);
+    try std.testing.expect(std.unicode.utf8ValidateSlice(cut));
+    // The truncated reason encodes cleanly.
+    var enc: [16 + 4 + wt.max_close_reason_len]u8 = undefined;
+    _ = try wt.encodeCloseSession(&enc, 0, cut);
 }
 
 test "MUST: CLOSE_WEBTRANSPORT_SESSION capsule type is 0x2843 [draft-ietf-webtrans-http3 §5.4]" {

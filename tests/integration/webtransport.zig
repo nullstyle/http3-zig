@@ -1988,6 +1988,261 @@ test "WebTransport oversized and malformed flow capsules terminate the session, 
     );
 }
 
+test "WebTransport malformed CLOSE is a message-scoped H3_MESSAGE_ERROR, oversized reasons truncate, and rejectWebTransport signals on the wire" {
+    // Three §5.4/§9.5 behaviors in one pair-per-phase test:
+    //   1. A malformed CLOSE value (shorter than the 32-bit code) aborts
+    //      the CONNECT stream with H3_MESSAGE_ERROR — message-scoped,
+    //      never a connection error.
+    //   2. `Server.rejectWebTransport(.alpn_failed)` resets the CONNECT
+    //      with WT_ALPN_ERROR; the pending client session observes a
+    //      `.reset` close carrying that code.
+    //   3. A facade `close()` with an oversized reason truncates at a
+    //      UTF-8 codepoint boundary before it reaches the wire.
+    const allocator = std.testing.allocator;
+    const h3_settings: http3_zig.Settings = .{
+        .enable_connect_protocol = true,
+        .h3_datagram = true,
+        .wt_enabled = true,
+    };
+    var pair: H3Pair = undefined;
+    try pair.initStarted(allocator, .{ .settings = h3_settings }, .{ .settings = h3_settings });
+    defer pair.deinit();
+    try exchangePairSettings(allocator, &pair);
+
+    var h3_client = http3_zig.Client.init(&pair.client_h3);
+    var h3_server = http3_zig.Server.init(&pair.server_h3);
+    var client_runner = http3_zig.ClientRunner.init(allocator);
+    defer client_runner.deinit();
+    var server_runner = http3_zig.ServerRunner.init(allocator);
+    defer server_runner.deinit();
+    var client_events: std.ArrayList(http3_zig.session.Event) = .empty;
+    defer {
+        clearSessionEvents(allocator, &client_events);
+        client_events.deinit(allocator);
+    }
+    var server_events: std.ArrayList(http3_zig.session.Event) = .empty;
+    defer {
+        clearSessionEvents(allocator, &server_events);
+        server_events.deinit(allocator);
+    }
+
+    // Phase 1: malformed CLOSE value → message error.
+    var wt1 = try h3_client.startWebTransport(allocator, .{
+        .authority = "localhost",
+        .path = "/wt-malformed",
+    });
+    const sid1 = wt1.sessionId();
+    var server_wt1: ?http3_zig.WebTransportServerStream = null;
+    var malformed_sent = false;
+    var phase1_done = false;
+
+    var now_us: u64 = 1_000_000;
+    var iters: u32 = 0;
+    while (!phase1_done) : (iters += 1) {
+        try std.testing.expect(iters < 20_000);
+        try pumpH3(
+            &pair.client,
+            &pair.server,
+            &pair.client_h3,
+            &pair.server_h3,
+            &client_events,
+            &server_events,
+            &now_us,
+        );
+        for (server_events.items) |event| {
+            switch (event) {
+                .webtransport_session_closed => |closed| {
+                    if (closed.session_id == sid1) {
+                        try std.testing.expectEqual(
+                            http3_zig.session.WebTransportSessionClosedHow.protocol_violation,
+                            closed.how,
+                        );
+                        try std.testing.expectEqual(
+                            @as(?u64, http3_zig.protocol.ErrorCode.message_error),
+                            closed.wire_error_code,
+                        );
+                        phase1_done = true;
+                    }
+                },
+                else => {},
+            }
+            switch (try server_runner.observe(event)) {
+                .request_updated, .request_complete => |request_state| {
+                    const request = request_state.reader();
+                    if (server_wt1 == null and request.headers().len > 0 and
+                        request.isWebTransport() and request.streamId() == sid1)
+                    {
+                        server_wt1 = try h3_server.acceptWebTransport(allocator, request, .{});
+                    }
+                },
+                else => {},
+            }
+        }
+        clearSessionEvents(allocator, &server_events);
+        for (client_events.items) |event| {
+            switch (try client_runner.observe(event)) {
+                .response_updated, .response_complete => |response_state| {
+                    const response = response_state.reader();
+                    if (!malformed_sent and response.streamId() == sid1 and
+                        response.headers().len > 0 and response.webTransportAccepted())
+                    {
+                        // CLOSE value shorter than the mandatory 32-bit
+                        // code — malformed.
+                        try wt1.writer.capsule(
+                            http3_zig.webtransport.CapsuleType.close_session,
+                            "xx",
+                        );
+                        malformed_sent = true;
+                    }
+                },
+                else => {},
+            }
+        }
+        clearSessionEvents(allocator, &client_events);
+    }
+    // Message-scoped: the connection is still alive (phase 2 proves it).
+    try std.testing.expect(pair.server_h3.webTransportSessionState(sid1) == .none);
+
+    // Phase 2: rejectWebTransport(.alpn_failed) → client sees the code.
+    var wt2 = try h3_client.startWebTransport(allocator, .{
+        .authority = "localhost",
+        .path = "/wt-reject",
+        .subprotocols = &.{"chat-v9"},
+    });
+    const sid2 = wt2.sessionId();
+    var rejected = false;
+    var client_saw_alpn_reset = false;
+    iters = 0;
+    while (!client_saw_alpn_reset) : (iters += 1) {
+        try std.testing.expect(iters < 20_000);
+        try pumpH3(
+            &pair.client,
+            &pair.server,
+            &pair.client_h3,
+            &pair.server_h3,
+            &client_events,
+            &server_events,
+            &now_us,
+        );
+        for (server_events.items) |event| {
+            switch (try server_runner.observe(event)) {
+                .request_updated, .request_complete => |request_state| {
+                    const request = request_state.reader();
+                    if (!rejected and request.headers().len > 0 and
+                        request.isWebTransport() and request.streamId() == sid2)
+                    {
+                        // The server can't honor "chat-v9": signal it.
+                        try h3_server.rejectWebTransport(request, .alpn_failed);
+                        rejected = true;
+                    }
+                },
+                else => {},
+            }
+        }
+        clearSessionEvents(allocator, &server_events);
+        for (client_events.items) |event| {
+            switch (event) {
+                .webtransport_session_closed => |closed| {
+                    if (closed.session_id == sid2) {
+                        try std.testing.expectEqual(
+                            http3_zig.session.WebTransportSessionClosedHow.reset,
+                            closed.how,
+                        );
+                        try std.testing.expectEqual(
+                            @as(?u64, http3_zig.WebTransportErrorCode.alpn_error),
+                            closed.wire_error_code,
+                        );
+                        client_saw_alpn_reset = true;
+                    }
+                },
+                else => {},
+            }
+            _ = try client_runner.observe(event);
+        }
+        clearSessionEvents(allocator, &client_events);
+    }
+
+    // Phase 3: oversized close reason truncates at a codepoint boundary.
+    var wt3 = try h3_client.startWebTransport(allocator, .{
+        .authority = "localhost",
+        .path = "/wt-truncate",
+    });
+    const sid3 = wt3.sessionId();
+    // 1023 ASCII bytes, a 3-byte codepoint straddling the 1024 cap, then
+    // padding — the wire reason must be the 1023-byte prefix.
+    var big_reason: [1400]u8 = undefined;
+    @memset(big_reason[0..1023], 'a');
+    big_reason[1023] = 0xE2;
+    big_reason[1024] = 0x82;
+    big_reason[1025] = 0xAC;
+    @memset(big_reason[1026..], 'b');
+    var server_wt3: ?http3_zig.WebTransportServerStream = null;
+    var close3_sent = false;
+    var phase3_done = false;
+    iters = 0;
+    while (!phase3_done) : (iters += 1) {
+        try std.testing.expect(iters < 20_000);
+        try pumpH3(
+            &pair.client,
+            &pair.server,
+            &pair.client_h3,
+            &pair.server_h3,
+            &client_events,
+            &server_events,
+            &now_us,
+        );
+        for (server_events.items) |event| {
+            switch (event) {
+                .webtransport_session_closed => |closed| {
+                    if (closed.session_id == sid3) {
+                        try std.testing.expectEqual(
+                            http3_zig.session.WebTransportSessionClosedHow.close_capsule,
+                            closed.how,
+                        );
+                        try std.testing.expectEqual(@as(usize, 1023), closed.reason.len);
+                        try std.testing.expect(std.unicode.utf8ValidateSlice(closed.reason));
+                        phase3_done = true;
+                    }
+                },
+                else => {},
+            }
+            switch (try server_runner.observe(event)) {
+                .request_updated, .request_complete => |request_state| {
+                    const request = request_state.reader();
+                    if (server_wt3 == null and request.headers().len > 0 and
+                        request.isWebTransport() and request.streamId() == sid3)
+                    {
+                        server_wt3 = try h3_server.acceptWebTransport(allocator, request, .{});
+                    }
+                },
+                else => {},
+            }
+        }
+        clearSessionEvents(allocator, &server_events);
+        for (client_events.items) |event| {
+            switch (try client_runner.observe(event)) {
+                .response_updated, .response_complete => |response_state| {
+                    const response = response_state.reader();
+                    if (!close3_sent and response.streamId() == sid3 and
+                        response.headers().len > 0 and response.webTransportAccepted())
+                    {
+                        // Invalid UTF-8 is refused before anything ships...
+                        try std.testing.expectError(
+                            error.InvalidCloseReason,
+                            wt3.close(1, "\xff\xfe"),
+                        );
+                        // ...and the oversized valid reason truncates.
+                        try wt3.close(1, &big_reason);
+                        close3_sent = true;
+                    }
+                },
+                else => {},
+            }
+        }
+        clearSessionEvents(allocator, &client_events);
+    }
+}
+
 test "Buffered streams: .reject policy never surfaces stream events for the held bytes" {
     const allocator = std.testing.allocator;
     const h3_settings: http3_zig.Settings = .{

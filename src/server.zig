@@ -643,8 +643,16 @@ pub const WebTransportServerStream = struct {
         code: u32,
         reason: []const u8,
     ) (session_mod.Error || webtransport_mod.Error)!void {
+        // Sender obligations [draft-ietf-webtrans-http3 §5.4]: an
+        // oversized reason is truncated at a UTF-8 codepoint boundary;
+        // invalid UTF-8 is refused outright (`InvalidCloseReason`) —
+        // shipping it would hand the receiver an H3_MESSAGE_ERROR.
+        if (!std.unicode.utf8ValidateSlice(reason)) {
+            return webtransport_mod.Error.InvalidCloseReason;
+        }
+        const bounded = webtransport_mod.truncateCloseReasonUtf8(reason);
         var stack_buf: [16 + 4 + webtransport_mod.max_close_reason_len]u8 = undefined;
-        const n = try webtransport_mod.encodeCloseSession(&stack_buf, code, reason);
+        const n = try webtransport_mod.encodeCloseSession(&stack_buf, code, bounded);
         try self.writer.write(stack_buf[0..n]);
         try self.writer.finish();
     }
@@ -1472,6 +1480,44 @@ pub const Server = struct {
         // this session are replayed at the start of the next drain.
         try self.session.confirmWebTransportSession(request.streamId());
         return .{ .writer = writer };
+    }
+
+    /// Which wire signal a WebTransport rejection sends on the CONNECT
+    /// stream's RESET [draft-ietf-webtrans-http3 §9.5].
+    pub const WebTransportRejectReason = union(enum) {
+        /// `WT_ALPN_ERROR` — application-protocol negotiation failed
+        /// (no offered subprotocol is acceptable).
+        alpn_failed,
+        /// `WT_REQUIREMENTS_NOT_MET` — the peer's SETTINGS or transport
+        /// parameters miss something this application requires.
+        requirements_not_met,
+        /// Any other wire code, e.g. an application code mapped through
+        /// `webtransportAppErrorToHttp3`.
+        wire_code: u64,
+    };
+
+    /// Rejects a pending WebTransport session with a wire-visible
+    /// signal: aborts the CONNECT stream both directions with the
+    /// mapped WT_* code and clears the pending registry state (the
+    /// peer observes a `.reset` session close carrying the code).
+    /// The polite-refusal alternative — responding with an HTTP status
+    /// (e.g. 429) instead of a reset — arrives with the session-cap
+    /// work; `acceptWebTransport`'s validation errors (like
+    /// `SubprotocolNotOffered`) intentionally do NOT auto-reject so the
+    /// application chooses the signal.
+    pub fn rejectWebTransport(
+        self: *Server,
+        request: RequestReader,
+        reason: WebTransportRejectReason,
+    ) (session_mod.Error || webtransport_mod.Error)!void {
+        if (!request.isWebTransport()) return error.NotWebTransport;
+        const code: u64 = switch (reason) {
+            .alpn_failed => webtransport_mod.alpn_error_code,
+            .requirements_not_met => webtransport_mod.requirements_not_met_code,
+            .wire_code => |c| c,
+        };
+        self.session.stopSending(request.streamId(), code) catch {};
+        try self.session.resetStream(request.streamId(), code);
     }
 
     pub fn classify(self: *const Server, event: session_mod.Event) ?RequestEvent {

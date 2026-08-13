@@ -603,8 +603,16 @@ pub const WebTransportClientStream = struct {
         code: u32,
         reason: []const u8,
     ) (session_mod.Error || webtransport_mod.Error)!void {
+        // Sender obligations [draft-ietf-webtrans-http3 §5.4]: an
+        // oversized reason is truncated at a UTF-8 codepoint boundary;
+        // invalid UTF-8 is refused outright (`InvalidCloseReason`) —
+        // shipping it would hand the receiver an H3_MESSAGE_ERROR.
+        if (!std.unicode.utf8ValidateSlice(reason)) {
+            return webtransport_mod.Error.InvalidCloseReason;
+        }
+        const bounded = webtransport_mod.truncateCloseReasonUtf8(reason);
         var stack_buf: [16 + 4 + webtransport_mod.max_close_reason_len]u8 = undefined;
-        const n = try webtransport_mod.encodeCloseSession(&stack_buf, code, reason);
+        const n = try webtransport_mod.encodeCloseSession(&stack_buf, code, bounded);
         try self.writer.write(stack_buf[0..n]);
         try self.writer.finish();
     }

@@ -342,6 +342,16 @@ test "public API smoke: stable embedding surface compiles" {
         _ = H.WebTransportServerStream.sendMaxStreamsUni;
         _ = H.WebTransportServerStream.sendCapsule;
         _ = H.WebTransportServerStream.forwardSessionEventTo;
+        _ = H.Server.rejectWebTransport;
+        _ = H.Server.WebTransportRejectReason;
+        _ = H.webtransport.truncateCloseReasonUtf8;
+        _ = H.webtransportAppErrorToHttp3;
+        _ = H.webtransportHttp3ToAppError;
+        _ = H.WebTransportErrorCode.session_gone;
+        _ = H.WebTransportErrorCode.buffered_stream_rejected;
+        _ = H.WebTransportErrorCode.flow_control_error;
+        _ = H.WebTransportErrorCode.alpn_error;
+        _ = H.WebTransportErrorCode.requirements_not_met;
         _ = H.WebTransportServerStream.flowState;
         _ = H.WebTransportServerStream.close;
         _ = H.WebTransportServerStream.finish;

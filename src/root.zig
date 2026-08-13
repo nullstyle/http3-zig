@@ -131,6 +131,24 @@ pub const observability = @import("observability.zig");
 pub const websocket = @import("websocket.zig");
 pub const webtransport = @import("webtransport.zig");
 pub const masque = @import("masque.zig");
+
+/// §4.6 stream error-code mapping, aliased at the root so intermediaries
+/// and embedders don't reach through the module for the two most-used
+/// mapping functions.
+pub const webtransportAppErrorToHttp3 = webtransport.appErrorToHttp3;
+pub const webtransportHttp3ToAppError = webtransport.http3ToAppError;
+
+/// The reserved WebTransport wire codes [draft-ietf-webtrans-http3
+/// §4.6/§9.5], namespaced for matching against
+/// `webtransport_session_closed.wire_error_code` and
+/// `webtransport_stream_reset.error_code`.
+pub const WebTransportErrorCode = struct {
+    pub const session_gone = webtransport.session_gone_code;
+    pub const buffered_stream_rejected = webtransport.buffered_stream_rejected_code;
+    pub const flow_control_error = webtransport.flow_control_error_code;
+    pub const alpn_error = webtransport.alpn_error_code;
+    pub const requirements_not_met = webtransport.requirements_not_met_code;
+};
 pub const session = @import("session.zig");
 pub const client = @import("client.zig");
 pub const server = @import("server.zig");

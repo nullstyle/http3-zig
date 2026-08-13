@@ -60,6 +60,21 @@ pub const protocol_header = "wt-protocol";
 /// bytes.
 pub const max_close_reason_len: usize = 1024;
 
+/// Sender-side reason truncation [draft-ietf-webtrans-http3 §5.4]: cut
+/// an application-supplied close reason to at most
+/// `max_close_reason_len` bytes AT A UTF-8 CODEPOINT BOUNDARY — a
+/// sender MUST NOT split a codepoint when truncating. Input must
+/// already be valid UTF-8 (the facades validate first and refuse
+/// garbage with `InvalidCloseReason`).
+pub fn truncateCloseReasonUtf8(reason: []const u8) []const u8 {
+    if (reason.len <= max_close_reason_len) return reason;
+    var end: usize = max_close_reason_len;
+    // Back off while the first EXCLUDED byte is a continuation byte —
+    // then the kept prefix ends exactly on a codepoint boundary.
+    while (end > 0 and (reason[end] & 0b1100_0000) == 0b1000_0000) end -= 1;
+    return reason[0..end];
+}
+
 /// Soft cap on the number of subprotocols an incoming WebTransport
 /// request may offer before we surface a parser error. Bounds the
 /// allocation `parseAvailableProtocols` performs.
@@ -147,6 +162,10 @@ pub const Error = error{
     UnknownWebTransportCapsule,
     WebTransportSettingsMissing,
     CloseReasonTooLarge,
+    /// Facade `close()` was handed a reason that is not valid UTF-8.
+    /// Garbage must not reach the wire: the receiver would treat the
+    /// CLOSE as a message error, making our bug their protocol event.
+    InvalidCloseReason,
     BufferTooSmall,
     /// One of the offered subprotocols is empty, contains
     /// HTTP-disallowed characters, or exceeds `max_subprotocol_len`.
@@ -969,6 +988,29 @@ test "CLOSE_WEBTRANSPORT_SESSION capsule round-trip" {
 
     const event = try classifyCapsule(decoded.capsule);
     try std.testing.expect(event.isClose());
+}
+
+test "truncateCloseReasonUtf8 cuts at a codepoint boundary, never mid-sequence" {
+    // Short reasons pass through untouched.
+    try std.testing.expectEqualStrings("bye", truncateCloseReasonUtf8("bye"));
+    // Build a reason where a 3-byte codepoint straddles the 1024 cap:
+    // 1023 ASCII bytes then "\u{20AC}" (E2 82 AC) — a naive cut at 1024
+    // would keep a lone lead byte.
+    var buf: [1026]u8 = undefined;
+    @memset(buf[0..1023], 'a');
+    buf[1023] = 0xE2;
+    buf[1024] = 0x82;
+    buf[1025] = 0xAC;
+    const cut = truncateCloseReasonUtf8(&buf);
+    try std.testing.expectEqual(@as(usize, 1023), cut.len);
+    try std.testing.expect(std.unicode.utf8ValidateSlice(cut));
+    // Exactly-at-cap multibyte survives intact.
+    var exact: [1024]u8 = undefined;
+    @memset(exact[0..1021], 'b');
+    exact[1021] = 0xE2;
+    exact[1022] = 0x82;
+    exact[1023] = 0xAC;
+    try std.testing.expectEqual(@as(usize, 1024), truncateCloseReasonUtf8(&exact).len);
 }
 
 test "CLOSE_WEBTRANSPORT_SESSION rejects oversized reasons and invalid UTF-8" {
