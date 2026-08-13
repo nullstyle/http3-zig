@@ -59,6 +59,8 @@ test "public API smoke: stable embedding surface compiles" {
         _ = H.Client.init;
         _ = H.Client.request;
         _ = H.Client.startRequest;
+        _ = H.Client.startConnect;
+        _ = H.ConnectOptions;
         _ = H.Client.classify;
         _ = H.Client.sendDatagram;
         _ = H.Client.sendDatagramTracked;

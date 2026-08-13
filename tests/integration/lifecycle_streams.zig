@@ -445,3 +445,88 @@ test "session tracks open request streams for drain and deadlines" {
     // half of the exchange stays in the open set until it does.
     try std.testing.expectEqual(@as(usize, 1), pair.client_h3.openRequestStreamCount());
 }
+
+test "classic CONNECT tunnel carries opaque bytes both directions" {
+    // RFC 9114 §4.4: `:method = "CONNECT"` with no `:protocol`;
+    // `:scheme`/`:path` omitted. A 2xx final response establishes the
+    // tunnel, after which DATA on the stream is opaque payload both ways.
+    const allocator = std.testing.allocator;
+
+    var pair: H3Pair = undefined;
+    try pair.initStarted(allocator, .{}, .{});
+    defer pair.deinit();
+    try exchangePairSettings(allocator, &pair);
+
+    var h3_client = http3_zig.Client.init(&pair.client_h3);
+    var h3_server = http3_zig.Server.init(&pair.server_h3);
+
+    var tunnel = try h3_client.startConnect(allocator, .{ .authority = "example.com:443" });
+
+    var client_events: std.ArrayList(http3_zig.session.Event) = .empty;
+    defer {
+        clearSessionEvents(allocator, &client_events);
+        client_events.deinit(allocator);
+    }
+    var server_events: std.ArrayList(http3_zig.session.Event) = .empty;
+    defer {
+        clearSessionEvents(allocator, &server_events);
+        server_events.deinit(allocator);
+    }
+
+    var server_writer: ?http3_zig.ResponseWriter = null;
+    var server_rx: std.ArrayList(u8) = .empty;
+    defer server_rx.deinit(allocator);
+    var client_rx: std.ArrayList(u8) = .empty;
+    defer client_rx.deinit(allocator);
+    var tunnel_established = false;
+    var client_sent = false;
+
+    var now_us: u64 = 1_000_000;
+    var iters: u32 = 0;
+    while (!(std.mem.eql(u8, server_rx.items, "client->server") and
+        std.mem.eql(u8, client_rx.items, "server->client"))) : (iters += 1)
+    {
+        try std.testing.expect(iters < 20_000);
+        try pumpH3(
+            &pair.client,
+            &pair.server,
+            &pair.client_h3,
+            &pair.server_h3,
+            &client_events,
+            &server_events,
+            &now_us,
+        );
+
+        for (server_events.items) |event| switch (event) {
+            .headers => |h| if (h.kind == .request) {
+                try std.testing.expectEqualStrings("CONNECT", fieldValue(h.fields, ":method").?);
+                try std.testing.expect(fieldValue(h.fields, ":scheme") == null);
+                try std.testing.expect(fieldValue(h.fields, ":path") == null);
+                server_writer = try h3_server.startResponse(allocator, h.stream_id, .{
+                    .status = "200",
+                });
+                try server_writer.?.write("server->client");
+            },
+            .data => |d| if (d.kind == .request)
+                try server_rx.appendSlice(allocator, d.data),
+            else => {},
+        };
+        clearSessionEvents(allocator, &server_events);
+
+        for (client_events.items) |event| switch (event) {
+            .headers => |h| if (h.kind == .response) {
+                try std.testing.expectEqualStrings("200", fieldValue(h.fields, ":status").?);
+                tunnel_established = true;
+            },
+            .data => |d| if (d.kind == .response)
+                try client_rx.appendSlice(allocator, d.data),
+            else => {},
+        };
+        clearSessionEvents(allocator, &client_events);
+
+        if (tunnel_established and !client_sent) {
+            try tunnel.write("client->server");
+            client_sent = true;
+        }
+    }
+}

@@ -123,6 +123,13 @@ pub const RequestOptions = struct {
     end_stream: bool = true,
 };
 
+/// Options for `Client.startConnect` (classic CONNECT, RFC 9114 §4.4).
+/// `authority` is the tunnel target (`host:port`).
+pub const ConnectOptions = struct {
+    authority: []const u8,
+    headers: []const qpack.FieldLine = &.{},
+};
+
 pub const RequestHeadOptions = struct {
     method: []const u8 = "GET",
     scheme: []const u8 = "https",
@@ -1702,6 +1709,27 @@ pub const Client = struct {
             .client = self,
             .stream_id = try self.open(fields),
         };
+    }
+
+    /// Classic CONNECT tunnel (RFC 9114 §4.4): opens the request stream
+    /// with `:method = "CONNECT"` and no `:protocol`; `:scheme`/`:path`
+    /// are omitted per ¶3 (the request builder and validator both enforce
+    /// the shape). A 2xx final response establishes the tunnel; from then
+    /// on DATA frames on this stream are opaque tunnel payload in both
+    /// directions — write through the returned writer, read the peer's
+    /// bytes as `data` events (tunnels usually want the raw-event surface,
+    /// not the runners' body accumulation). Do not `finish()` until the
+    /// tunnel should half-close; the stream ending ends the tunnel.
+    pub fn startConnect(
+        self: *Client,
+        allocator: std.mem.Allocator,
+        options: ConnectOptions,
+    ) session_mod.Error!RequestWriter {
+        return try self.startRequest(allocator, .{
+            .method = "CONNECT",
+            .authority = options.authority,
+            .headers = options.headers,
+        });
     }
 
     pub fn startConnectUdp(

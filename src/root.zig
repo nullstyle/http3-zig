@@ -146,6 +146,7 @@ pub const OpenRequestStreamIterator = session.OpenRequestStreamIterator;
 pub const Client = client.Client;
 pub const Server = server.Server;
 pub const RequestOptions = client.RequestOptions;
+pub const ConnectOptions = client.ConnectOptions;
 pub const RequestHeadOptions = client.RequestHeadOptions;
 pub const RequestWriter = client.RequestWriter;
 pub const ResponseState = client.ResponseState;
