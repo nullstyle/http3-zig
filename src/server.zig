@@ -1368,6 +1368,10 @@ pub const Server = struct {
     ///   present but missing one or more of the three required entries.
     /// - `error.NotWebTransport` — the request itself isn't a WT CONNECT.
     /// - `error.InvalidAcceptStatus` — `options.status` isn't 2xx.
+    /// - `error.WebTransportSettingsMissing` — our OWN settings don't
+    ///   advertise what WebTransport requires (both endpoints MUST send
+    ///   `SETTINGS_WT_ENABLED`, and the server side additionally
+    ///   `ENABLE_CONNECT_PROTOCOL`; draft-ietf-webtrans-http3 §3.1).
     ///
     /// When `options.subprotocol` is non-null, the server must have advertised
     /// the chosen token in the client's `wt-available-protocols` list — this
@@ -1383,6 +1387,7 @@ pub const Server = struct {
         if (!webtransport_mod.isAcceptedStatus(options.status)) return error.InvalidAcceptStatus;
         const peer = self.session.peer_settings orelse return webtransport_mod.Error.PeerSettingsNotReceived;
         if (!webtransport_mod.peerEnabled(peer)) return webtransport_mod.Error.PeerDidNotEnableWebTransport;
+        try webtransport_mod.validateLocalSettings(.server, self.session.local_settings);
 
         var writer: ResponseWriter = undefined;
         if (options.subprotocol) |selected| {

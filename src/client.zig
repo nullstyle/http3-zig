@@ -1798,6 +1798,10 @@ pub const Client = struct {
     ///   peer hasn't landed yet. Pump the session loop and retry.
     /// - `error.PeerDidNotEnableWebTransport` — the peer's SETTINGS are
     ///   present but missing one or more of the three required entries.
+    /// - `error.WebTransportSettingsMissing` — our OWN settings don't
+    ///   advertise what WebTransport requires (both endpoints MUST send
+    ///   `SETTINGS_WT_ENABLED`; draft-ietf-webtrans-http3 §3.1) — fix
+    ///   the `Settings` passed at session init.
     ///
     /// When `options.subprotocols` is non-empty, a `wt-available-protocols`
     /// header is added to the request carrying the comma-separated list of
@@ -1810,6 +1814,7 @@ pub const Client = struct {
     ) (session_mod.Error || webtransport_mod.Error)!WebTransportClientStream {
         const peer = self.session.peer_settings orelse return webtransport_mod.Error.PeerSettingsNotReceived;
         if (!webtransport_mod.peerEnabled(peer)) return webtransport_mod.Error.PeerDidNotEnableWebTransport;
+        try webtransport_mod.validateLocalSettings(.client, self.session.local_settings);
 
         var writer: RequestWriter = undefined;
         if (options.subprotocols.len == 0) {

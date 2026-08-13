@@ -78,6 +78,37 @@ test "WebTransport helper rejects bootstrap before peer SETTINGS arrive" {
     );
 }
 
+test "WebTransport helper rejects a client whose own settings lack WebTransport" {
+    // Both endpoints MUST advertise `SETTINGS_WT_ENABLED`
+    // (draft-ietf-webtrans-http3 §3.1) — a peer that advertises WT does
+    // not excuse a local config that doesn't. The local-settings gate
+    // sits AFTER the eager peer checks, so the peer-side errors keep
+    // their established priority; with a WT-capable peer and a default
+    // (non-WT) local config, `startWebTransport` must refuse with
+    // `WebTransportSettingsMissing` before anything goes on the wire.
+    const allocator = std.testing.allocator;
+    const wt_settings: http3_zig.Settings = .{
+        .enable_connect_protocol = true,
+        .h3_datagram = true,
+        .wt_enabled = true,
+    };
+
+    var pair: H3Pair = undefined;
+    try pair.initStarted(allocator, .{}, .{ .settings = wt_settings });
+    defer pair.deinit();
+
+    try exchangePairSettings(allocator, &pair);
+
+    var h3_client = http3_zig.Client.init(&pair.client_h3);
+    try std.testing.expectError(
+        error.WebTransportSettingsMissing,
+        h3_client.startWebTransport(allocator, .{
+            .authority = "localhost",
+            .path = "/wt",
+        }),
+    );
+}
+
 test "WebTransport over HTTP/3 establishes session, exchanges datagrams, and closes" {
     const allocator = std.testing.allocator;
     const h3_settings: http3_zig.Settings = .{
@@ -179,7 +210,7 @@ test "WebTransport over HTTP/3 establishes session, exchanges datagrams, and clo
                                 .close_session => |close| seen_close = close,
                                 .other => {},
                                 // Flow-control capsules
-                                // (draft-ietf-webtrans-http3-13 §5.6) are not
+                                // (draft-ietf-webtrans-http3 §5.6) are not
                                 // exercised by this integration test.
                                 .max_data,
                                 .data_blocked,

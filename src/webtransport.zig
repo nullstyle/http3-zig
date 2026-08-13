@@ -106,19 +106,19 @@ pub const StreamPrefix = struct {
 pub const CapsuleType = struct {
     pub const close_session: u64 = 0x2843;
     pub const drain_session: u64 = 0x78ae;
-    /// WT_MAX_DATA capsule (draft-ietf-webtrans-http3-13 §5.6.4 / §9.6).
+    /// WT_MAX_DATA capsule (draft-ietf-webtrans-http3 §5.6.4 / §9.6).
     /// Verified against the IANA "Capsule Types" registry table in
     /// the draft published 2025-09-25.
     pub const max_data: u64 = 0x190b4d3d;
-    /// WT_MAX_STREAMS_BIDI capsule (draft-ietf-webtrans-http3-13 §5.6.2).
+    /// WT_MAX_STREAMS_BIDI capsule (draft-ietf-webtrans-http3 §5.6.2).
     pub const max_streams_bidi: u64 = 0x190b4d3f;
-    /// WT_MAX_STREAMS_UNI capsule (draft-ietf-webtrans-http3-13 §5.6.2).
+    /// WT_MAX_STREAMS_UNI capsule (draft-ietf-webtrans-http3 §5.6.2).
     pub const max_streams_uni: u64 = 0x190b4d40;
-    /// WT_DATA_BLOCKED capsule (draft-ietf-webtrans-http3-13 §5.6.5).
+    /// WT_DATA_BLOCKED capsule (draft-ietf-webtrans-http3 §5.6.5).
     pub const data_blocked: u64 = 0x190b4d41;
-    /// WT_STREAMS_BLOCKED_BIDI capsule (draft-ietf-webtrans-http3-13 §5.6.3).
+    /// WT_STREAMS_BLOCKED_BIDI capsule (draft-ietf-webtrans-http3 §5.6.3).
     pub const streams_blocked_bidi: u64 = 0x190b4d43;
-    /// WT_STREAMS_BLOCKED_UNI capsule (draft-ietf-webtrans-http3-13 §5.6.3).
+    /// WT_STREAMS_BLOCKED_UNI capsule (draft-ietf-webtrans-http3 §5.6.3).
     pub const streams_blocked_uni: u64 = 0x190b4d44;
 };
 
@@ -200,6 +200,12 @@ pub fn isAcceptedStatus(status: []const u8) bool {
     return std.ascii.isDigit(status[1]) and std.ascii.isDigit(status[2]);
 }
 
+/// Codec-level predicate: does a raw response field list carry a 2xx
+/// `:status`? For embedders and intermediaries inspecting field lines
+/// directly. `Session`'s own confirm path deliberately does NOT route
+/// through this helper — it must treat a 1xx interim response as
+/// "keep waiting for the final response", which a boolean accept
+/// predicate cannot express.
 pub fn responseAccepted(fields: []const qpack.FieldLine) bool {
     const status = fieldValue(fields, ":status") orelse return false;
     return isAcceptedStatus(status);
@@ -514,7 +520,7 @@ pub fn encodeDrainSession(dst: []u8) Error!usize {
 }
 
 // ---------------------------------------------------------------------------
-// Flow-control capsules (draft-ietf-webtrans-http3-13 §5.6)
+// Flow-control capsules (draft-ietf-webtrans-http3 §5.6)
 // ---------------------------------------------------------------------------
 //
 // Each of WT_MAX_DATA, WT_DATA_BLOCKED, WT_MAX_STREAMS_{BIDI,UNI}, and
@@ -553,7 +559,7 @@ fn encodeFlowControlCapsule(dst: []u8, capsule_type: u64, value: u64) Error!usiz
 
 /// Decodes the VALUE of a single-varint flow-control capsule. The input
 /// MUST be exactly the encoded varint with no trailing bytes
-/// (draft-ietf-webtrans-http3-13 §5.6.{2..5}). Returns
+/// (draft-ietf-webtrans-http3 §5.6.{2..5}). Returns
 /// `error.InvalidCloseCapsule` for any malformed value, mirroring the
 /// catch-all malformed-WT-capsule mapping used for CLOSE_WEBTRANSPORT_SESSION.
 fn decodeFlowControlValue(src: []const u8) Error!u64 {
@@ -689,22 +695,22 @@ pub const CapsuleEvent = union(enum) {
     close_session: CloseSession,
     drain_session: void,
     /// WT_MAX_DATA value (bytes the receiver is willing to accept on the
-    /// session, draft-ietf-webtrans-http3-13 §5.6.4).
+    /// session, draft-ietf-webtrans-http3 §5.6.4).
     max_data: u64,
     /// WT_DATA_BLOCKED value (the session-level limit at which the sender
-    /// blocked, draft-ietf-webtrans-http3-13 §5.6.5).
+    /// blocked, draft-ietf-webtrans-http3 §5.6.5).
     data_blocked: u64,
     /// WT_MAX_STREAMS_BIDI value (cumulative bidi streams allowed,
-    /// draft-ietf-webtrans-http3-13 §5.6.2).
+    /// draft-ietf-webtrans-http3 §5.6.2).
     max_streams_bidi: u64,
     /// WT_STREAMS_BLOCKED_BIDI value (the bidi stream limit at which the
-    /// sender blocked, draft-ietf-webtrans-http3-13 §5.6.3).
+    /// sender blocked, draft-ietf-webtrans-http3 §5.6.3).
     streams_blocked_bidi: u64,
     /// WT_MAX_STREAMS_UNI value (cumulative uni streams allowed,
-    /// draft-ietf-webtrans-http3-13 §5.6.2).
+    /// draft-ietf-webtrans-http3 §5.6.2).
     max_streams_uni: u64,
     /// WT_STREAMS_BLOCKED_UNI value (the uni stream limit at which the
-    /// sender blocked, draft-ietf-webtrans-http3-13 §5.6.3).
+    /// sender blocked, draft-ietf-webtrans-http3 §5.6.3).
     streams_blocked_uni: u64,
     other: capsule_mod.Capsule,
 
@@ -987,7 +993,7 @@ test "isReservedStreamCode classifies session/buffered codes" {
     try std.testing.expect(!isReservedStreamCode(appErrorToHttp3(0)));
 }
 
-test "WT_MAX_DATA capsule round-trip (draft-ietf-webtrans-http3-13 §5.6.4)" {
+test "WT_MAX_DATA capsule round-trip (draft-ietf-webtrans-http3 §5.6.4)" {
     var buf: [32]u8 = undefined;
     const n = try encodeMaxData(&buf, 0x1234_5678);
     try std.testing.expectEqual(maxDataEncodedLen(0x1234_5678), n);
@@ -1003,7 +1009,7 @@ test "WT_MAX_DATA capsule round-trip (draft-ietf-webtrans-http3-13 §5.6.4)" {
     }
 }
 
-test "WT_DATA_BLOCKED capsule round-trip (draft-ietf-webtrans-http3-13 §5.6.5)" {
+test "WT_DATA_BLOCKED capsule round-trip (draft-ietf-webtrans-http3 §5.6.5)" {
     var buf: [32]u8 = undefined;
     const n = try encodeDataBlocked(&buf, 42);
     try std.testing.expectEqual(dataBlockedEncodedLen(42), n);
@@ -1019,7 +1025,7 @@ test "WT_DATA_BLOCKED capsule round-trip (draft-ietf-webtrans-http3-13 §5.6.5)"
     }
 }
 
-test "WT_MAX_STREAMS_BIDI capsule round-trip (draft-ietf-webtrans-http3-13 §5.6.2)" {
+test "WT_MAX_STREAMS_BIDI capsule round-trip (draft-ietf-webtrans-http3 §5.6.2)" {
     var buf: [32]u8 = undefined;
     const n = try encodeMaxStreamsBidi(&buf, 99);
     try std.testing.expectEqual(maxStreamsBidiEncodedLen(99), n);
@@ -1035,7 +1041,7 @@ test "WT_MAX_STREAMS_BIDI capsule round-trip (draft-ietf-webtrans-http3-13 §5.6
     }
 }
 
-test "WT_STREAMS_BLOCKED_BIDI capsule round-trip (draft-ietf-webtrans-http3-13 §5.6.3)" {
+test "WT_STREAMS_BLOCKED_BIDI capsule round-trip (draft-ietf-webtrans-http3 §5.6.3)" {
     var buf: [32]u8 = undefined;
     const n = try encodeStreamsBlockedBidi(&buf, 7);
     try std.testing.expectEqual(streamsBlockedBidiEncodedLen(7), n);
@@ -1051,7 +1057,7 @@ test "WT_STREAMS_BLOCKED_BIDI capsule round-trip (draft-ietf-webtrans-http3-13 �
     }
 }
 
-test "WT_MAX_STREAMS_UNI capsule round-trip (draft-ietf-webtrans-http3-13 §5.6.2)" {
+test "WT_MAX_STREAMS_UNI capsule round-trip (draft-ietf-webtrans-http3 §5.6.2)" {
     var buf: [32]u8 = undefined;
     const n = try encodeMaxStreamsUni(&buf, 1024);
     try std.testing.expectEqual(maxStreamsUniEncodedLen(1024), n);
@@ -1067,7 +1073,7 @@ test "WT_MAX_STREAMS_UNI capsule round-trip (draft-ietf-webtrans-http3-13 §5.6.
     }
 }
 
-test "WT_STREAMS_BLOCKED_UNI capsule round-trip (draft-ietf-webtrans-http3-13 §5.6.3)" {
+test "WT_STREAMS_BLOCKED_UNI capsule round-trip (draft-ietf-webtrans-http3 §5.6.3)" {
     var buf: [32]u8 = undefined;
     const n = try encodeStreamsBlockedUni(&buf, 3);
     try std.testing.expectEqual(streamsBlockedUniEncodedLen(3), n);

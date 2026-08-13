@@ -13,11 +13,11 @@ on:
 # in the real-socket pump path that the in-process integration tests
 # don't reach.
 #
-# The third-party WebTransport interop matrix
-# (`wt-interop.yml`, scheduled weekly) covers the cross-implementation
-# story; this workflow stays as the per-push real-socket gate and
-# uses only http3-zig binaries so it doesn't depend on any external
-# server staying alive.
+# The third-party WebTransport interop matrix (`wt-interop.yml`,
+# advisory: runs per-push and on a weekly cron backstop) covers the
+# cross-implementation story; this workflow stays as the per-push
+# real-socket HARD GATE and uses only http3-zig binaries so it doesn't
+# depend on any external server staying alive.
 jobs:
   self-test:
     runs-on: ubuntu-latest

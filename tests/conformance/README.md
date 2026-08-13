@@ -45,6 +45,13 @@ test "SHOULD send PRIORITY_UPDATE only on a stream the peer has accepted [RFC921
 test "MAY include the SETTINGS_H3_DATAGRAM=1 setting [RFC9297 §2.1 ¶1]" {}
 ```
 
+Suites that track an IETF draft rather than a published RFC use the
+draft name in the citation: `[draft-ietf-webtrans-http3 §X.Y ¶N]`. The
+tracked revision is pinned in the suite's file header, so unsuffixed
+citations refer to that revision. When a claim is specific to a
+*superseded* revision (e.g. a legacy compatibility codepoint), pin the
+revision in the citation itself: `[draft-ietf-webtrans-http3-02 §X.Y]`.
+
 ### Skipping (visible conformance debt)
 
 Use `skip_` as a name prefix **and** return `error.SkipZigTest` from
@@ -81,6 +88,7 @@ tests/
     rfc6455_websocket.zig                    # WebSocket frame + message codecs
     rfc9297_datagrams.zig                    # HTTP/3 DATAGRAM + Capsule Protocol
     rfc9298_masque.zig                       # CONNECT-UDP target path + Context ID 0 payloads
+    draft_webtrans_http3.zig                 # WebTransport over HTTP/3 (draft pin in file header)
 ```
 
 The entry point lives at `tests/conformance.zig` (one level up) so the
@@ -176,6 +184,7 @@ unit tests remain the developer-facing regression net.
 | 6455 | The WebSocket Protocol                           | `rfc6455_websocket.zig`                    |
 | 9297 | HTTP Datagrams + Capsule Protocol                | `rfc9297_datagrams.zig`                    |
 | 9298 | Proxying UDP in HTTP (CONNECT-UDP / MASQUE)      | `rfc9298_masque.zig`                       |
+| draft-ietf-webtrans-http3 | WebTransport over HTTP/3 (draft-tracked; pin in file header) | `draft_webtrans_http3.zig`  |
 
 RFC 7541 (HPACK Huffman) is exercised inside `rfc9204_qpack_static.zig`
 because RFC 9204 §4.1.2 incorporates it by reference for QPACK string

@@ -4,7 +4,10 @@
 
 The `wt-interop` GitHub Actions workflow runs http3-zig's external-WT client
 against unmodified third-party WebTransport servers: `webtransport-go` (Go,
-quic-go core) and `pywebtransport` (Python over a Rust core).
+quic-go core) and `pywebtransport` (Python over a Rust core). It runs on
+every push (advisory — `continue-on-error` on the matrix step) with a weekly
+scheduled backstop; the per-push hard gate remains the in-tree
+`wt-interop-self-test` workflow.
 
 **The full WebTransport flow now completes against the in-repo third-party
 peers** — SETTINGS exchange, Extended CONNECT (200), a datagram round-trip, a
