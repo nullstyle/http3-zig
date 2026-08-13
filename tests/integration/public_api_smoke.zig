@@ -250,6 +250,9 @@ test "public API smoke: stable embedding surface compiles" {
         _ = H.earlydata.applicationContext;
         _ = H.earlydata.applicationContextAlloc;
         _ = H.earlydata.TicketBinder;
+        _ = H.EarlyDataEvent;
+        _ = H.Session.rememberPeerSettings;
+        _ = H.Session.earlyDataStatus;
         _ = H.TransportEndpoint.advance;
         _ = H.TransportEndpoint.tick;
         _ = H.TransportEndpoint.relayTo;

@@ -94,6 +94,9 @@ pub const BatchStats = struct {
 pub const ClientObservation = union(enum) {
     ignored,
     settings: settings_mod.Settings,
+    /// 0-RTT disposition on a resumed connection (at most once; see
+    /// `session.EarlyDataEvent`).
+    early_data: session_mod.EarlyDataEvent,
     /// 1xx informational response (RFC 9110 §15.2). Surfaced before
     /// the final `response_updated` / `response_complete`. The
     /// fields slice borrows from the source event — copy if you
@@ -287,6 +290,7 @@ pub const ClientRunner = struct {
                 self.peer_settings = settings;
                 return .{ .settings = settings };
             },
+            .early_data => |early| return .{ .early_data = early },
             .datagram => |datagram| return .{ .datagram = datagram },
             .datagram_acked => |acked| return .{ .datagram_acked = acked },
             .datagram_lost => |lost| return .{ .datagram_lost = lost },
@@ -444,6 +448,7 @@ fn noteClientObservation(
     switch (observation) {
         .ignored => stats.ignored += 1,
         .settings => stats.settings += 1,
+        .early_data => stats.ignored += 1,
         .interim_headers => stats.interim_headers += 1,
         .response_updated => stats.state_updates += 1,
         .response_complete => |response| {

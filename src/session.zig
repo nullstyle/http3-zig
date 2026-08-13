@@ -21,6 +21,7 @@ const qpack = @import("qpack/root.zig");
 const settings_mod = @import("settings.zig");
 const stream_mod = @import("stream.zig");
 const webtransport_mod = @import("webtransport.zig");
+const earlydata = @import("earlydata.zig");
 
 const varint = quic.wire.varint;
 
@@ -51,6 +52,14 @@ pub const Error = quic.conn.state.Error ||
         /// `max_stream_send_buffered` cap is hit. Caller should drain
         /// acknowledgements (run a pump) and retry.
         WriteStalled,
+        /// `rememberPeerSettings` was called after the peer's real SETTINGS
+        /// already arrived; remembered settings only make sense before the
+        /// resumed connection's SETTINGS land (RFC 9114 §7.2.4.2).
+        RememberedSettingsTooLate,
+        /// The server's SETTINGS on a connection that ACCEPTED 0-RTT are
+        /// incompatible with what the client remembered (RFC 9114
+        /// §7.2.4.2 ¶5-¶6). The session closes with H3_SETTINGS_ERROR.
+        RememberedSettingsViolated,
         /// Internal classification: peer used a stream type that the
         /// session machine doesn't expect at this point in the lifecycle
         /// (e.g. server opening a request stream).
@@ -617,6 +626,21 @@ pub const OpenRequestStreamIterator = struct {
     }
 };
 
+/// 0-RTT disposition on a resumed client connection (RFC 9114 §7.2.4.2).
+/// Emitted at most once, from `drain`, when the transport learns the
+/// outcome. On `rejected` no application action is required to complete
+/// staged requests — the transport retransmits 0-RTT stream data verbatim
+/// at 1-RTT (quic's pinned requeue contract); the event exists so apps
+/// with non-idempotent semantics can cancel/reset affected streams.
+pub const EarlyDataEvent = struct {
+    status: Status,
+    /// BoringSSL's rejection reason ("" when accepted). Static storage —
+    /// not owned by the event; `freeEvent` ignores it.
+    reason: []const u8,
+
+    pub const Status = enum { accepted, rejected };
+};
+
 /// Re-export of `webtransport.StreamKind`. The session-level events
 /// (`WebTransportStreamOpenedEvent`, `WebTransportStreamDataEvent`,
 /// etc.) carry this kind so applications can branch on uni vs bidi
@@ -746,6 +770,12 @@ pub const WebTransportStreamResetEvent = struct {
 /// `ClientEvent` / `ServerEvent` unions) can be derived mechanically
 /// from the tags.
 pub const Event = union(enum) {
+    /// 0-RTT disposition on a resumed client connection — see
+    /// `EarlyDataEvent`. Emitted at most once, before any other event of
+    /// the drain that resolves it.
+    ///
+    /// Role: client
+    early_data: EarlyDataEvent,
     /// Peer's HTTP/3 SETTINGS frame, decoded from the control stream.
     /// Emitted exactly once per session, after the first SETTINGS
     /// frame has been received and validated.
@@ -1245,6 +1275,14 @@ pub const Session = struct {
     config: Config = .{},
     local_settings: settings_mod.Settings = .{},
     peer_settings: ?settings_mod.Settings = null,
+    /// RFC 9114 §7.2.4.2: settings remembered from the ticket-issuing
+    /// connection, installed via `rememberPeerSettings`. Consulted only by
+    /// the datagram gates until the real SETTINGS arrive; validated (when
+    /// 0-RTT was accepted) then discarded at that point.
+    remembered_peer_settings: ?settings_mod.Settings = null,
+    /// Latch: the at-most-once `early_data` event was emitted, or never
+    /// will be (handshake completed without an attempt).
+    early_data_resolved: bool = false,
 
     control_stream_id: ?u64 = null,
     qpack_encoder_stream_id: ?u64 = null,
@@ -1422,6 +1460,62 @@ pub const Session = struct {
             (self.qpack_encoder_stream_id == null or self.qpack_decoder_stream_id == null))
         {
             try self.openQpackStreams();
+        }
+    }
+
+    /// Install the peer SETTINGS remembered from the connection that issued
+    /// the resumption ticket (RFC 9114 §7.2.4.2 ¶5): the client MUST comply
+    /// with them until the resumed connection's real SETTINGS arrive.
+    /// Client role, before any SETTINGS exchange. In v1 the remembered
+    /// settings feed the datagram gates only — the QPACK encoder stays
+    /// static-only pre-SETTINGS and extended CONNECT stays gated on real
+    /// SETTINGS — so every request staged in 0-RTT remains protocol-valid
+    /// under ANY server settings if the attempt is rejected.
+    /// CONTRACT (mutual with quic's requeueRejectedEarlyData pin, quic-zig
+    /// 72719a7): rejected 0-RTT stream bytes are retransmitted VERBATIM at
+    /// 1-RTT on the same stream ids, with no app intervention. The v1
+    /// restrictions above are what keep that replay always-valid; if quic
+    /// ever adds a reset-streams rejection policy, revisit both together.
+    pub fn rememberPeerSettings(self: *Session, remembered: settings_mod.Settings) Error!void {
+        if (self.role != .client) return Error.InvalidRole;
+        if (self.peer_settings != null) return Error.RememberedSettingsTooLate;
+        self.remembered_peer_settings = remembered;
+    }
+
+    /// Snapshot of the transport's 0-RTT disposition
+    /// (`Connection.earlyDataStatus`). Event consumers get the same
+    /// information at most once via `Event.early_data`.
+    pub fn earlyDataStatus(self: *Session) quic.EarlyDataStatus {
+        return self.quic.earlyDataStatus();
+    }
+
+    /// Emit the at-most-once `early_data` event when the transport has
+    /// resolved the attempt. `not_offered` after handshake completion
+    /// latches silently — no attempt will ever surface on this
+    /// connection, so the per-drain poll stops.
+    fn pollEarlyDataStatus(self: *Session, events: *std.ArrayList(Event), budget: *DrainBudget) Error!void {
+        if (self.role != .client or self.early_data_resolved) return;
+        switch (self.quic.earlyDataStatus()) {
+            .accepted => {
+                self.early_data_resolved = true;
+                try self.appendEvent(events, budget, .{ .early_data = .{
+                    .status = .accepted,
+                    .reason = "",
+                } });
+            },
+            .rejected => {
+                self.early_data_resolved = true;
+                // §7.2.4.2 ¶7: rejection discards the remembered state;
+                // the new SETTINGS simply apply when they arrive.
+                self.remembered_peer_settings = null;
+                try self.appendEvent(events, budget, .{ .early_data = .{
+                    .status = .rejected,
+                    .reason = self.quic.earlyDataReason(),
+                } });
+            },
+            else => {
+                if (self.quic.handshakeDone()) self.early_data_resolved = true;
+            },
         }
     }
 
@@ -2521,6 +2615,7 @@ pub const Session = struct {
 
     pub fn drain(self: *Session, events: *std.ArrayList(Event)) Error!void {
         var budget = self.drainBudget();
+        try self.pollEarlyDataStatus(events, &budget);
         try self.drainConnectionEvents(events, &budget);
         try self.drainDatagrams(events, &budget);
 
@@ -3553,6 +3648,22 @@ pub const Session = struct {
                         self.closeForError(err);
                         return err;
                     };
+                    if (self.remembered_peer_settings) |remembered| {
+                        // §7.2.4.2 ¶5-¶7: an ACCEPTED 0-RTT attempt binds
+                        // the server to remembered-compatible settings; a
+                        // rejected (or unresolved) one just discards the
+                        // remembered state and the new SETTINGS apply.
+                        self.remembered_peer_settings = null;
+                        if (self.quic.earlyDataStatus() == .accepted and
+                            earlydata.validateRememberedSettings(remembered, peer) != null)
+                        {
+                            self.close(
+                                protocol.ErrorCode.settings_error,
+                                "SETTINGS incompatible with remembered 0-RTT settings",
+                            );
+                            return Error.RememberedSettingsViolated;
+                        }
+                    }
                     self.peer_settings = peer;
                     self.qpack_encoder_state.max_blocked_streams = peer.qpack_blocked_streams;
                     try self.appendReservedEvent(events, .{ .peer_settings = peer });
@@ -4131,10 +4242,19 @@ pub const Session = struct {
         }
     }
 
+    /// Datagram-gate view of peer settings: the real SETTINGS once they
+    /// arrive, else the remembered ones (RFC 9297 §2.1.1 blesses
+    /// remembered-settings datagrams in early data). Deliberately NOT
+    /// consulted by the QPACK-dynamic or extended-CONNECT gates — see
+    /// `rememberPeerSettings` for the v1 replay-safety rationale.
+    fn effectivePeerSettings(self: *const Session) ?settings_mod.Settings {
+        return self.peer_settings orelse self.remembered_peer_settings;
+    }
+
     fn validateDatagramSend(self: *Session, stream_id: u64, payload_len: usize) Error!void {
         try datagram_mod.validateStreamId(stream_id);
 
-        const peer = self.peer_settings orelse return Error.MissingSettings;
+        const peer = self.effectivePeerSettings() orelse return Error.MissingSettings;
         if (!peer.h3_datagram) return Error.DatagramNotEnabled;
 
         const encoded_len = try datagram_mod.encodedLen(stream_id, payload_len);
@@ -4149,7 +4269,7 @@ pub const Session = struct {
     /// `SETTINGS_H3_DATAGRAM = 1` from the peer. Capsule path doesn't go
     /// through QUIC datagram framing so it skips the transport-param checks.
     fn validatePeerDatagramEnabled(self: *const Session) Error!void {
-        const peer = self.peer_settings orelse return Error.MissingSettings;
+        const peer = self.effectivePeerSettings() orelse return Error.MissingSettings;
         if (!peer.h3_datagram) return Error.DatagramNotEnabled;
     }
 
@@ -5222,6 +5342,9 @@ pub const Session = struct {
 
     fn traceEmittedEvent(self: *Session, event: Event) void {
         switch (event) {
+            // Connection-level 0-RTT disposition; no per-frame trace
+            // mapping (observability counters may follow separately).
+            .early_data => {},
             .peer_settings => self.trace(.{
                 .name = .settings_received,
                 .role = self.role,
@@ -6114,5 +6237,60 @@ test "session clears blocked QPACK state when a stream resets" {
             try std.testing.expectEqual(protocol.ErrorCode.request_cancelled, event.error_code);
         },
         else => return error.TestExpectedEqual,
+    }
+}
+
+test "remembered peer settings feed the datagram gates until real SETTINGS arrive" {
+    const allocator = std.testing.allocator;
+    var conn: quic.Connection = undefined;
+
+    // Role gate: remembered settings are a client concept.
+    {
+        var session = Session.init(allocator, .server, &conn, .{});
+        defer session.deinit();
+        try std.testing.expectError(Error.InvalidRole, session.rememberPeerSettings(.{}));
+    }
+
+    // Remembered settings are the effective peer settings pre-SETTINGS;
+    // the real frame shadows them on arrival, and late installs refuse.
+    {
+        var session = Session.init(allocator, .client, &conn, .{});
+        defer session.deinit();
+        try session.rememberPeerSettings(.{ .h3_datagram = true });
+        try std.testing.expect(session.effectivePeerSettings().?.h3_datagram);
+        session.peer_settings = .{ .h3_datagram = false };
+        try std.testing.expect(!session.effectivePeerSettings().?.h3_datagram);
+        try std.testing.expectError(
+            Error.RememberedSettingsTooLate,
+            session.rememberPeerSettings(.{}),
+        );
+    }
+
+    // A remembered h3_datagram=0 refuses the capsule path exactly like
+    // the real-settings gate (RFC 9297 §2.1.1).
+    {
+        var session = Session.init(allocator, .client, &conn, .{});
+        defer session.deinit();
+        try session.rememberPeerSettings(.{ .h3_datagram = false });
+        _ = try session.ensureMessageState(0, .response, .request);
+        try std.testing.expectError(Error.DatagramNotEnabled, session.sendRequestDatagramCapsule(0, "x"));
+    }
+
+    // v1 replay safety: extended CONNECT stays gated on REAL SETTINGS —
+    // remembered enable_connect_protocol does not unlock it, so a request
+    // staged in 0-RTT can never carry a CONNECT the post-rejection server
+    // might not accept (quic replays verbatim; see rememberPeerSettings).
+    {
+        var session = Session.init(allocator, .client, &conn, .{});
+        defer session.deinit();
+        try session.rememberPeerSettings(.{ .enable_connect_protocol = true });
+        const fields = [_]qpack.FieldLine{
+            .{ .name = ":method", .value = "CONNECT" },
+            .{ .name = ":protocol", .value = "connect-udp" },
+        };
+        try std.testing.expectError(
+            Error.MissingSettings,
+            session.ensureExtendedConnectAllowed(&fields),
+        );
     }
 }

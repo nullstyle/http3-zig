@@ -99,6 +99,7 @@ pub const StreamReset = struct {
 
 pub const UnknownFrame = session_mod.UnknownFrameEvent;
 pub const ConnectionClosed = session_mod.ConnectionClosedEvent;
+pub const EarlyData = session_mod.EarlyDataEvent;
 pub const DatagramSend = session_mod.DatagramSendEvent;
 pub const FlowBlocked = session_mod.FlowBlockedEvent;
 pub const ConnectionIdsNeeded = session_mod.ConnectionIdsNeededEvent;
@@ -702,10 +703,12 @@ pub const ResponseEvent = union(enum) {
     goaway: u64,
     connection_closed: ConnectionClosed,
     ignored_unknown_frame: UnknownFrame,
+    early_data: session_mod.EarlyDataEvent,
 
     pub fn from(event: session_mod.Event) ?ResponseEvent {
         return switch (event) {
             .peer_settings => |settings| .{ .settings = settings },
+            .early_data => |early| .{ .early_data = early },
             .headers => |headers| if (headers.kind == .response) .{
                 .headers = .{ .stream_id = headers.stream_id, .fields = headers.fields },
             } else if (headers.kind == .push) .{
@@ -956,6 +959,8 @@ pub const ResponseTracker = struct {
         event: ResponseEvent,
     ) ResponseTrackerError!?*ResponseState {
         switch (event) {
+            // Connection-level 0-RTT disposition; not response-stream state.
+            .early_data => return null,
             .headers => |headers| {
                 const response = try self.ensure(headers.stream_id);
                 try response.setHeaders(self.allocator, headers.fields);

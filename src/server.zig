@@ -733,6 +733,8 @@ pub const RequestEvent = union(enum) {
     pub fn from(event: session_mod.Event) ?RequestEvent {
         return switch (event) {
             .peer_settings => |settings| .{ .settings = settings },
+            // 0-RTT disposition is a client-role event by definition.
+            .early_data => null,
             .headers => |headers| if (headers.kind == .request) .{
                 .headers = .{ .stream_id = headers.stream_id, .fields = headers.fields },
             } else null,
