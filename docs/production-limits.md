@@ -27,6 +27,46 @@ or `Server.Config.production.toSessionConfig()`.
 | Per-stream pre-confirmation WT buffering | `wt_max_buffered_bytes_per_stream` | 64 KiB (`SessionConfig.production`) / 16 KiB (`Client` / `Server` facade presets) |
 | Aggregate pre-confirmation WT buffering | `wt_max_total_buffered_bytes` | 4 MiB |
 
+## Dynamic QPACK Posture
+
+Dynamic QPACK is **opt-in**. `qpack_indexing` defaults to
+`QpackIndexingPolicy.static_only` with `qpack_encoder_table_capacity = 0`, and
+`SessionConfig.production(.{})` keeps that posture: out of the box every
+outgoing field section uses only the static table and literals, so header
+encoding can never block a stream on encoder-stream delivery, never pins
+peer-visible table state, and stays byte-deterministic (this applies to
+HEADERS, trailers, and PUSH_PROMISE alike — they share one encode path).
+That trade — slightly larger headers for zero cross-stream coupling and no
+dynamic-table state to manage or attack — is the right default for a
+production server that has not measured a compression win.
+
+To opt in, set three knobs (all three are required for the encoder side to
+engage; the decoder side follows `settings.qpack_max_table_capacity` alone):
+
+```zig
+var config: http3_zig.session.Config = .{
+    .settings = .{
+        // Decoder side: advertise a dynamic table and a blocked-stream
+        // budget to the peer.
+        .qpack_max_table_capacity = 4096,
+        .qpack_blocked_streams = 16,
+    },
+    // Encoder side: how much table this endpoint will use (also capped by
+    // the peer's advertised capacity) …
+    .qpack_encoder_table_capacity = 4096,
+    // … and which references/inserts the encoder may emit.
+    .qpack_indexing = http3_zig.QpackIndexingPolicy.aggressive,
+};
+```
+
+`QpackIndexingPolicy` also offers the intermediate `nonblocking` /
+`tracked_dynamic` postures. Whatever the posture, the encoder enforces the
+RFC 9204 safety rails: it never exceeds the peer's
+`SETTINGS_QPACK_BLOCKED_STREAMS` budget (saturated budget degrades that field
+section to literals rather than failing the request), never evicts an entry
+still referenced by an unacknowledged section (§2.1.2), and re-inserts aging
+hot entries via Duplicate instead of pinning them near eviction (§2.1.1.1).
+
 ## Backpressure Signals
 
 - `StreamSendState` reports written, acknowledged, buffered, and pending send
@@ -61,7 +101,7 @@ or `Server.Config.production.toSessionConfig()`.
   `ResponseTracker` budgets when using the facade runners, or entirely by the
   caller when consuming raw events.
 - QPACK dynamic encoder table use is opt-in through the indexing policy and
-  capacity knobs.
+  capacity knobs (see *Dynamic QPACK Posture* above).
 - Third-party interop workflows are advisory signal, not production health
   gates.
 
@@ -69,6 +109,11 @@ or `Server.Config.production.toSessionConfig()`.
 
 - `tests/integration/production_preset.zig` locks the documented preset values
   and drives a basic GET through the facade presets.
+- `tests/integration/qpack_dynamic_posture.zig` covers the opt-in dynamic
+  QPACK matrix: PUSH_PROMISE byte stability under the default static posture,
+  dynamic PUSH_PROMISE routing, aggressive end-to-end header round-trips,
+  literal fallback under a zero blocked-streams budget, and Duplicate
+  emission for aging hot headers.
 - `tests/integration/webtransport.zig` covers per-stream and aggregate
   pre-confirmation WebTransport buffering caps plus replay under tight drain
   budgets.

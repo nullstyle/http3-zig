@@ -1501,6 +1501,16 @@ pub const Session = struct {
         return self.quic.streamArrivedInEarlyData(stream_id);
     }
 
+    /// By-value transport statistics snapshot (`Connection.stats`): wire
+    /// bytes/packets, loss, the active path's cwnd/RTT/PMTU, open
+    /// streams, and close state. Complements `observability.Metrics`
+    /// (HTTP/3 semantics) with transport reality; passed through
+    /// verbatim, so the struct is upstream-Unstable — fields may be
+    /// added with quic minors. Safe to hold across drains and teardown.
+    pub fn transportStats(self: *const Session) quic.ConnectionStats {
+        return self.quic.stats();
+    }
+
     /// Emit the at-most-once `early_data` event when the transport has
     /// resolved the attempt. `not_offered` after handshake completion
     /// latches silently — no attempt will ever surface on this
@@ -4778,6 +4788,14 @@ pub const Session = struct {
             return Error.UnexpectedStream;
         }
         try headers_mod.validateRequest(fields);
+
+        // PUSH_PROMISE field sections ride the same dynamic-capable path
+        // as HEADERS (see writeDynamicFieldSectionWithEncoder). Under the
+        // default static_only posture the dynamic path declines and the
+        // static fallback below produces byte-identical output to the
+        // pre-dynamic implementation.
+        if (try self.writeDynamicPushPromise(request_stream_id, push_id, fields)) return;
+
         const field_section_len = qpack.fieldSectionEncodedLen(fields);
         if (self.config.max_field_section_size) |max| {
             if (field_section_len > max) return Error.HeaderSectionTooLarge;
@@ -4786,7 +4804,59 @@ pub const Session = struct {
         defer self.allocator.free(field_section);
         const field_section_n = try qpack.encodeFieldSection(field_section, fields);
         std.debug.assert(field_section_n == field_section.len);
+        try self.writePushPromiseFrame(request_stream_id, push_id, field_section);
+    }
 
+    /// Dynamic-QPACK PUSH_PROMISE path. Mirrors
+    /// `writeDynamicFieldSectionWithEncoder`: emits any encoder-stream
+    /// instructions first, then encodes the field section against the
+    /// dynamic table, tracking it against the request stream — the
+    /// decoder acknowledges PUSH_PROMISE sections under the stream that
+    /// carried the frame (RFC 9204 §4.4.1), which is the request stream.
+    /// Returns false (no bytes written) when dynamic QPACK is not in
+    /// play or the peer's SETTINGS_QPACK_BLOCKED_STREAMS budget is
+    /// saturated, so the caller falls back to the static/literal path.
+    fn writeDynamicPushPromise(
+        self: *Session,
+        request_stream_id: u64,
+        push_id: u64,
+        fields: []const qpack.FieldLine,
+    ) Error!bool {
+        if (!(try self.prepareDynamicQpackEncoder(fields))) return false;
+
+        const options = self.dynamicQpackEncodeOptions(request_stream_id);
+        const field_section_len = qpack.dynamicFieldSectionEncodedLenWithOptions(
+            &self.qpack_encoder_table,
+            fields,
+            options,
+        ) catch |err| switch (err) {
+            error.BlockedStreamLimitExceeded => return false,
+            else => return err,
+        };
+        if (self.config.max_field_section_size) |max| {
+            if (field_section_len > max) return Error.HeaderSectionTooLarge;
+        }
+        const field_section = try self.allocator.alloc(u8, field_section_len);
+        defer self.allocator.free(field_section);
+        const field_section_n = qpack.encodeDynamicFieldSectionWithOptions(
+            field_section,
+            &self.qpack_encoder_table,
+            fields,
+            options,
+        ) catch |err| switch (err) {
+            error.BlockedStreamLimitExceeded => return false,
+            else => return err,
+        };
+        try self.writePushPromiseFrame(request_stream_id, push_id, field_section[0..field_section_n]);
+        return true;
+    }
+
+    fn writePushPromiseFrame(
+        self: *Session,
+        request_stream_id: u64,
+        push_id: u64,
+        field_section: []const u8,
+    ) Error!void {
         const frame: frame_mod.Frame = .{ .push_promise = .{
             .push_id = push_id,
             .field_section = field_section,
@@ -5033,7 +5103,11 @@ pub const Session = struct {
         if (!self.canUseDynamicQpackEncoder()) return false;
         if (!(try self.syncQpackEncoderCapacity())) return false;
 
-        const max_instruction_len = qpackEncoderInstructionsMaxLen(fields, self.config.enable_qpack_huffman);
+        const max_instruction_len = qpackEncoderInstructionsMaxLen(
+            fields,
+            self.config.enable_qpack_huffman,
+            self.qpack_encoder_table.len(),
+        );
         if (max_instruction_len == 0) return true;
 
         const instruction_buf = try self.allocator.alloc(u8, max_instruction_len);
@@ -5720,12 +5794,20 @@ fn compactRx(state: *StreamState, consumed: usize) Error!void {
     state.rx.shrinkRetainingCapacity(remaining);
 }
 
-fn qpackEncoderInstructionsMaxLen(fields: []const qpack.FieldLine, huffman: bool) usize {
+fn qpackEncoderInstructionsMaxLen(
+    fields: []const qpack.FieldLine,
+    huffman: bool,
+    table_entry_count: usize,
+) usize {
     var n: usize = 0;
     const string_options: qpack.StringOptions = .{ .huffman = huffman };
+    // A Duplicate instruction is a 5-bit-prefix integer holding an
+    // encoder-relative index, which is always < the current entry count.
+    const duplicate_max_len = qpack.integer.encodedLen(5, table_entry_count);
     for (fields) |field| {
-        n += qpack.stringLiteralEncodedLen(5, field.name, string_options);
-        n += qpack.stringLiteralEncodedLen(7, field.value, string_options);
+        const literal_len = qpack.stringLiteralEncodedLen(5, field.name, string_options) +
+            qpack.stringLiteralEncodedLen(7, field.value, string_options);
+        n += @max(literal_len, duplicate_max_len);
     }
     return n;
 }

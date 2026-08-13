@@ -281,6 +281,7 @@ pub const KeylogCallback = observability.KeylogCallback;
 pub const QuicQlogCallback = observability.QuicQlogCallback;
 pub const QuicQlogEvent = observability.QuicQlogEvent;
 pub const QuicQlogEventName = observability.QuicQlogEventName;
+pub const QuicConnectionStats = observability.QuicConnectionStats;
 pub const ObservabilityHooks = observability.Hooks;
 pub const TraceEvent = observability.TraceEvent;
 pub const TraceEventName = observability.TraceEventName;

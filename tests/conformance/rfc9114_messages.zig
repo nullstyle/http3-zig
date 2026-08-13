@@ -18,6 +18,8 @@
 //!   RFC9114 §4.2   ¶?   MUST NOT   include connection-specific fields (Connection, Keep-Alive, …)
 //!   RFC9114 §4.2   ¶?   MUST NOT   include Transfer-Encoding (always connection-specific in HTTP/3)
 //!   RFC9114 §4.2   ¶?   MUST NOT   include Proxy-Connection / Upgrade
+//!   RFC9114 §4.2   ¶4   MAY        te appear in a request header with the value "trailers"
+//!   RFC9114 §4.2   ¶4   MUST NOT   te carry any value other than "trailers"
 //!   RFC9114 §4.2.1 ¶?   MUST NOT   reject pseudo-header before regular header (ordering)
 //!   RFC9114 §4.2.2 ¶?   MUST       :status appears in responses
 //!   RFC9114 §4.2.2 ¶?   MUST NOT   pseudo-header used outside of its defined role appears
@@ -65,6 +67,7 @@
 //!   RFC9114 §4.1.2 ¶?   MUST       reject non-decimal / negative content-length
 //!   RFC9114 §4.1.2 ¶?   MUST       reject duplicate / conflicting content-length
 //!   RFC9114 §4.3.1 ¶?   MUST       reject empty :authority (when explicitly present)
+//!   RFC9114 §4.3.1 ¶?   MUST       :authority and Host contain the same value when both are present
 //!   RFC9114 §4.4   ¶3   MUST       classic CONNECT omits :scheme and :path
 //!   RFC9114 §4.4   ¶3   MUST       classic CONNECT requires non-empty :authority
 //!   RFC9114 §4.4   ¶3   MUST       classic CONNECT may not carry :protocol
@@ -75,6 +78,8 @@
 //!   RFC9114 §4.5   ¶?   MUST NOT   close request stream before a HEADERS section is observed
 //!   RFC9114 §4.5   ¶?   MUST NOT   send a duplicate request HEADERS section
 //!   RFC9114 §4.1   ¶3   MUST NOT   send a duplicate response HEADERS section (additional response after final)
+//!   RFC9110 §15.2  ¶?   NORMATIVE  one or more 1xx interim responses may precede the final response
+//!   RFC9114 §4.1   ¶3   MUST NOT   send an interim response after the final response
 //!   RFC9114 §4.6   ¶?   MUST       reject malformed messages — encoder side refuses bad outbound
 //!   RFC9114 §4.6   ¶?   MUST       reject malformed messages — decoder side refuses bad inbound
 //!   RFC9114 §4.6   ¶?   MUST       reject a response stream that closes without HEADERS
@@ -89,11 +94,6 @@
 //!   RFC9220         WebSocket-specific :protocol value validation       → rfc9220_websocket_h3.zig
 //!
 //! Out of scope here (no public surface in http3_zig.headers / http3_zig.message):
-//!   RFC9114 §4.2  ¶4   MUST NOT  TE header field with value other than "trailers"
-//!                                — validator does not inspect TE; classification of TE
-//!                                as connection-specific-with-exception is unimplemented
-//!   RFC9114 §4.3.1 ¶? MUST      :authority and Host header MUST contain the same value
-//!                                — validator does not cross-check pseudo against regular field
 //!   RFC9114 §4.4   ¶8 MUST      after CONNECT completes, only DATA frames permitted
 //!                                — frame-context concern → rfc9114_streams.zig
 //!   RFC9114 §4.1   ¶13 MUST     client closes stream-for-sending after request
@@ -258,6 +258,55 @@ test "MUST NOT accept an Upgrade field on a request [RFC9114 §4.2 ¶?]" {
         .{ .name = "upgrade", .value = "websocket" },
     };
     try std.testing.expectError(headers.Error.ConnectionSpecificField, headers.validateRequest(&fields));
+}
+
+test "MAY include te with the value \"trailers\" in a request header [RFC9114 §4.2 ¶4]" {
+    // §4.2 ¶4: "The only exception to this is the TE header field, which
+    // MAY be present in an HTTP/3 request header; when it is, it MUST
+    // NOT contain any value other than 'trailers'." The allowed form
+    // passes; the token is case-insensitive per RFC 9110 transfer-coding
+    // naming, so "Trailers" passes too.
+    const fields = [_]FieldLine{
+        .{ .name = ":method", .value = "GET" },
+        .{ .name = ":scheme", .value = "https" },
+        .{ .name = ":path", .value = "/" },
+        .{ .name = ":authority", .value = "example.com" },
+        .{ .name = "te", .value = "trailers" },
+    };
+    try headers.validateRequest(&fields);
+
+    const mixed_case = [_]FieldLine{
+        .{ .name = ":method", .value = "GET" },
+        .{ .name = ":scheme", .value = "https" },
+        .{ .name = ":path", .value = "/" },
+        .{ .name = ":authority", .value = "example.com" },
+        .{ .name = "te", .value = "Trailers" },
+    };
+    try headers.validateRequest(&mixed_case);
+}
+
+test "MUST NOT accept a te field with any value other than \"trailers\" [RFC9114 §4.2 ¶4]" {
+    // A transfer-coding value (`te: gzip`) reverts te to its
+    // connection-specific classification and the message is malformed.
+    // So does a list that merely CONTAINS "trailers" — the value must
+    // be exactly "trailers", not "trailers, deflate".
+    const te_gzip = [_]FieldLine{
+        .{ .name = ":method", .value = "GET" },
+        .{ .name = ":scheme", .value = "https" },
+        .{ .name = ":path", .value = "/" },
+        .{ .name = ":authority", .value = "example.com" },
+        .{ .name = "te", .value = "gzip" },
+    };
+    try std.testing.expectError(headers.Error.ConnectionSpecificField, headers.validateRequest(&te_gzip));
+
+    const te_list = [_]FieldLine{
+        .{ .name = ":method", .value = "GET" },
+        .{ .name = ":scheme", .value = "https" },
+        .{ .name = ":path", .value = "/" },
+        .{ .name = ":authority", .value = "example.com" },
+        .{ .name = "te", .value = "trailers, deflate" },
+    };
+    try std.testing.expectError(headers.Error.ConnectionSpecificField, headers.validateRequest(&te_list));
 }
 
 test "MUST NOT accept a connection-specific field on a response [RFC9114 §4.2 ¶?]" {
@@ -675,6 +724,44 @@ test "MUST NOT send a duplicate response HEADERS section [RFC9114 §4.1 ¶3]" {
     var enc = MessageEncoder.init(.response, .{});
     _ = try enc.encodeHeaders(buf[0..], &minimal_response);
     try std.testing.expectError(message.Error.DuplicateHeaders, enc.encodeHeaders(buf[0..], &minimal_response));
+}
+
+test "NORMATIVE one or more 1xx interim responses may precede the final response [RFC9110 §15.2]" {
+    // RFC 9110 §15.2: "One or more 1xx (Informational) responses ...
+    // precede a final response" — the encoder deliberately doesn't
+    // latch its sent-headers state on a 1xx section, so repeated
+    // interim HEADERS (e.g. 103 Early Hints, then 100) followed by the
+    // single final response all land on the same stream.
+    const early_hints = [_]FieldLine{
+        .{ .name = ":status", .value = "103" },
+        .{ .name = "link", .value = "</style.css>; rel=preload; as=style" },
+    };
+
+    var buf: [512]u8 = undefined;
+    var enc = MessageEncoder.init(.response, .{});
+    var pos: usize = 0;
+    pos += try enc.encodeHeaders(buf[pos..], &early_hints);
+    try std.testing.expect(!enc.sent_headers);
+    pos += try enc.encodeHeaders(buf[pos..], &early_hints);
+    pos += try enc.encodeHeaders(buf[pos..], &minimal_response);
+    try std.testing.expect(enc.sent_headers);
+    pos += try enc.encodeData(buf[pos..], "ok");
+    try std.testing.expect(pos > 0);
+}
+
+test "MUST NOT send an interim response after the final response [RFC9114 §4.1 ¶3]" {
+    // The §4.1 ¶3 additional-response prohibition covers interim
+    // sections too: once the final (non-1xx) HEADERS is out, a
+    // trailing 1xx is an additional response, not a late hint.
+    const early_hints = [_]FieldLine{
+        .{ .name = ":status", .value = "103" },
+        .{ .name = "link", .value = "</style.css>; rel=preload; as=style" },
+    };
+
+    var buf: [256]u8 = undefined;
+    var enc = MessageEncoder.init(.response, .{});
+    _ = try enc.encodeHeaders(buf[0..], &minimal_response);
+    try std.testing.expectError(message.Error.DuplicateHeaders, enc.encodeHeaders(buf[0..], &early_hints));
 }
 
 test "MUST NOT send DATA after a response trailer field section [RFC9114 §4.1 ¶7]" {
@@ -1188,6 +1275,74 @@ test "MUST accept a request with non-empty :authority [RFC9114 §4.3.1 ¶?]" {
         .{ .name = ":authority", .value = "example.com" },
     };
     try headers.validateRequest(&fields);
+}
+
+// ---------------------------------------------------------------- §4.3.1 :authority / Host cross-check
+
+test "MUST accept a request whose :authority and host agree [RFC9114 §4.3.1 ¶?]" {
+    // §4.3.1: "If both fields are present, they MUST contain the same
+    // value." Agreement is judged on the URI authority component, whose
+    // host sub-component is case-insensitive (RFC 3986 §3.2.2) — so a
+    // case-differing pair is still "the same value".
+    const both = [_]FieldLine{
+        .{ .name = ":method", .value = "GET" },
+        .{ .name = ":scheme", .value = "https" },
+        .{ .name = ":path", .value = "/" },
+        .{ .name = ":authority", .value = "example.com:8443" },
+        .{ .name = "host", .value = "example.com:8443" },
+    };
+    try headers.validateRequest(&both);
+
+    const case_differs = [_]FieldLine{
+        .{ .name = ":method", .value = "GET" },
+        .{ .name = ":scheme", .value = "https" },
+        .{ .name = ":path", .value = "/" },
+        .{ .name = ":authority", .value = "example.com" },
+        .{ .name = "host", .value = "Example.COM" },
+    };
+    try headers.validateRequest(&case_differs);
+}
+
+test "MUST accept a host field when :authority is absent [RFC9114 §4.3.1 ¶?]" {
+    // The cross-check only applies when the request carries both fields;
+    // "the request MUST contain either an :authority pseudo-header field
+    // or a Host header field", so host-only is a conforming shape.
+    const host_only = [_]FieldLine{
+        .{ .name = ":method", .value = "GET" },
+        .{ .name = ":scheme", .value = "https" },
+        .{ .name = ":path", .value = "/" },
+        .{ .name = "host", .value = "example.com" },
+    };
+    try headers.validateRequest(&host_only);
+}
+
+test "MUST NOT accept a request whose :authority and host differ [RFC9114 §4.3.1 ¶?]" {
+    // §4.3.1: "If both fields are present, they MUST contain the same
+    // value." A differing pair is ambiguous routing and malformed —
+    // including a same-host pair that disagrees about the port.
+    const different_host = [_]FieldLine{
+        .{ .name = ":method", .value = "GET" },
+        .{ .name = ":scheme", .value = "https" },
+        .{ .name = ":path", .value = "/" },
+        .{ .name = ":authority", .value = "a.example" },
+        .{ .name = "host", .value = "b.example" },
+    };
+    try std.testing.expectError(
+        headers.Error.AuthorityHostMismatch,
+        headers.validateRequest(&different_host),
+    );
+
+    const different_port = [_]FieldLine{
+        .{ .name = ":method", .value = "GET" },
+        .{ .name = ":scheme", .value = "https" },
+        .{ .name = ":path", .value = "/" },
+        .{ .name = ":authority", .value = "example.com" },
+        .{ .name = "host", .value = "example.com:8443" },
+    };
+    try std.testing.expectError(
+        headers.Error.AuthorityHostMismatch,
+        headers.validateRequest(&different_port),
+    );
 }
 
 // ---------------------------------------------------------------- §4.4 classic CONNECT

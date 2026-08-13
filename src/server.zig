@@ -192,6 +192,12 @@ pub const PushPromisePolicyError = error{
     ExtendedConnectPush,
 };
 
+/// Error set for `Server.sendInformational`: the facade refuses to
+/// stamp a non-1xx `:status` onto an interim HEADERS section — a
+/// non-1xx status would be the final response and latch the stream's
+/// sent-headers state, silently eating the caller's real response.
+pub const InformationalError = error{StatusNotInformational};
+
 pub const PushPromiseRequestOptions = struct {
     method: []const u8 = "GET",
     scheme: ?[]const u8 = null,
@@ -1141,6 +1147,62 @@ pub const Server = struct {
         if (options.end_stream) try writer.finish();
 
         return .{ .stream_id = stream_id };
+    }
+
+    /// Sends a `103 Early Hints` interim response (RFC 8297) on
+    /// `stream_id`: an extra HEADERS section carrying `:status` "103"
+    /// plus the caller's fields — typically `link` headers with
+    /// `rel=preload` / `rel=preconnect` so the client can warm caches
+    /// and connections while the server prepares the real response.
+    ///
+    /// Repeatable: a server MAY emit several 103 sections as hints
+    /// become available, and MUST still follow up with exactly one
+    /// final response (`respond` / `startResponse`) — this call does
+    /// not replace it. Interim HEADERS deliberately don't latch the
+    /// response encoder's sent-headers state (RFC 9110 §15.2 /
+    /// RFC 9114 §4.1), so the final response lands on the same stream;
+    /// hints sent after the final response are rejected as
+    /// `DuplicateHeaders`.
+    ///
+    /// `allocator` only backs the transient `:status` + fields slice
+    /// for the duration of the call.
+    pub fn send103EarlyHints(
+        self: *Server,
+        allocator: std.mem.Allocator,
+        stream_id: u64,
+        fields: []const qpack.FieldLine,
+    ) session_mod.Error!void {
+        const combined = try buildResponseFields(allocator, .{
+            .status = "103",
+            .headers = fields,
+        });
+        defer allocator.free(combined);
+        try self.sendHeaders(stream_id, combined);
+    }
+
+    /// Sends an arbitrary 1xx interim response (RFC 9110 §15.2) on
+    /// `stream_id`: `:status` set to `status` plus the caller's
+    /// fields. The general form of `send103EarlyHints` — use it for
+    /// `100 Continue` or extension interim codes. Repeatable, and
+    /// always followed by exactly one final (non-1xx) response.
+    ///
+    /// `status` must be a three-digit code in the 1xx range;
+    /// anything else returns `StatusNotInformational` before touching
+    /// the wire (see `InformationalError`).
+    pub fn sendInformational(
+        self: *Server,
+        allocator: std.mem.Allocator,
+        stream_id: u64,
+        status: []const u8,
+        fields: []const qpack.FieldLine,
+    ) (session_mod.Error || InformationalError)!void {
+        if (status.len != 3 or status[0] != '1') return InformationalError.StatusNotInformational;
+        const combined = try buildResponseFields(allocator, .{
+            .status = status,
+            .headers = fields,
+        });
+        defer allocator.free(combined);
+        try self.sendHeaders(stream_id, combined);
     }
 
     pub fn push(

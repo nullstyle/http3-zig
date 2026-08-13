@@ -14,6 +14,16 @@
 //! ## Coverage
 //!
 //! Covered:
+//!   RFC9204 §2.1.1.1 ¶2 NORMATIVE encoder duplicates a draining full match
+//!                                (Duplicate on the encoder stream) instead of
+//!                                emitting another reference that would pin it.
+//!   RFC9204 §2.1.1.1 ¶2 NORMATIVE a fresh (non-draining) full match is
+//!                                referenced directly; no Duplicate is emitted.
+//!   RFC9204 §2.1.1.1 ¶2 NORMATIVE encoder-emitted Duplicate round-trips
+//!                                through the decoder-side instruction apply
+//!                                and the dynamic field-section decode, and
+//!                                the section acknowledgment releases the
+//!                                copy's reference.
 //!   RFC9204 §2.2.2 ¶1   MUST     dynamic-table-aware tracking refuses a new
 //!                                blocked stream past SETTINGS_QPACK_BLOCKED_STREAMS.
 //!   RFC9204 §2.2.2 ¶2   MUST     decoder rejects a beginFieldSection past the
@@ -1054,6 +1064,188 @@ test "NORMATIVE acknowledged dynamic_references mode upgrades to indexed after a
     const acked_n = try qpack.encodeDynamicFieldSectionWithOptions(&buf, &table, &fields, options);
     const acked_prefix = try state_mod.decodeFieldSectionPrefix(buf[0..acked_n], table.max_capacity, table.insert_count);
     try std.testing.expectEqual(@as(u64, 1), acked_prefix.prefix.required_insert_count);
+}
+
+// ---------------------------------------------------------------- §2.1.1.1 draining region / Duplicate emission
+
+/// Build the shared draining-region fixture: capacity 256 (draining
+/// headroom 64), a hot pair (38 bytes) inserted first, then four 44-byte
+/// fillers, for 214 bytes total. 214 + 64 > 256 puts exactly the oldest
+/// entry — the hot pair — in the draining region, while 214 + 38 <= 256
+/// leaves room to duplicate it without evicting anything.
+fn insertDrainingFixtureEntries(table: *qpack.DynamicTable) !void {
+    try table.setCapacity(256);
+    _ = try table.insert("x-hot", "v", false);
+    _ = try table.insert("x-fill-0", "0123", false);
+    _ = try table.insert("x-fill-1", "0123", false);
+    _ = try table.insert("x-fill-2", "0123", false);
+    _ = try table.insert("x-fill-3", "0123", false);
+}
+
+test "NORMATIVE encoder emits Duplicate for a draining full match instead of another reference [RFC9204 §2.1.1.1 ¶2]" {
+    // RFC 9204 §2.1.1.1: "the encoder can emit a Duplicate instruction
+    // for entries it would like to continue referencing that are about
+    // to be evicted" — referencing the aging entry directly would pin it
+    // (§2.1.2 forbids evicting referenced entries) and starve inserts.
+    var table = qpack.DynamicTable.init(std.testing.allocator, 256);
+    defer table.deinit();
+    try insertDrainingFixtureEntries(&table);
+
+    var encoder_state = state_mod.EncoderState.init(std.testing.allocator, 4);
+    defer encoder_state.deinit();
+    encoder_state.recordInsertCount(table.insert_count);
+    try encoder_state.receiveDecoderInstruction(.{ .insert_count_increment = 5 });
+
+    const options = qpack.DynamicFieldSectionEncodeOptions{
+        .tracker = .{ .encoder_state = &encoder_state, .stream_id = 4 },
+        .indexing = qpack.IndexingPolicy.aggressive,
+    };
+    const fields = [_]qpack.FieldLine{.{ .name = "x-hot", .value = "v" }};
+    var instruction_bytes: [64]u8 = undefined;
+    const instruction_n = try qpack.encodeFieldSectionEncoderInstructions(
+        &instruction_bytes,
+        &table,
+        &fields,
+        options,
+    );
+    // Duplicate wire form (§4.3.4): 000xxxxx with the encoder-relative
+    // index of the source. The hot pair is the oldest of five entries →
+    // relative index 4 → single byte 0x04.
+    try std.testing.expectEqualSlices(u8, "\x04", instruction_bytes[0..instruction_n]);
+    try std.testing.expectEqual(@as(u64, 6), table.insert_count);
+    try std.testing.expectEqualStrings("x-hot", table.getAbsolute(5).?.name);
+    try std.testing.expectEqualStrings("v", table.getAbsolute(5).?.value);
+    // Nothing needed evicting: original and copy coexist.
+    try std.testing.expectEqualStrings("x-hot", table.getAbsolute(0).?.name);
+
+    // The field section references the fresh copy (absolute index 5),
+    // not the draining original: RIC covers the copy and the tracker's
+    // reference lands on it.
+    var section: [64]u8 = undefined;
+    const section_n = try qpack.encodeDynamicFieldSectionWithOptions(&section, &table, &fields, options);
+    const prefix = try state_mod.decodeFieldSectionPrefix(
+        section[0..section_n],
+        table.max_capacity,
+        table.insert_count,
+    );
+    try std.testing.expectEqual(@as(u64, 6), prefix.prefix.required_insert_count);
+    try std.testing.expectEqual(@as(u64, 1), encoder_state.referenceCount(5));
+    try std.testing.expectEqual(@as(u64, 0), encoder_state.referenceCount(0));
+}
+
+test "NORMATIVE a fresh full match is referenced directly without a Duplicate [RFC9204 §2.1.1.1 ¶2]" {
+    // A matched entry outside the draining region must NOT trigger a
+    // Duplicate — otherwise every repeated header would churn the table.
+    // (This is also the property that keeps the committed dynamic-QPACK
+    // interop fixtures stable: Duplicate only fires for aging entries.)
+    var table = qpack.DynamicTable.init(std.testing.allocator, 256);
+    defer table.deinit();
+    try table.setCapacity(256);
+    _ = try table.insert("x-hot", "v", false);
+
+    var encoder_state = state_mod.EncoderState.init(std.testing.allocator, 4);
+    defer encoder_state.deinit();
+    encoder_state.recordInsertCount(table.insert_count);
+
+    const options = qpack.DynamicFieldSectionEncodeOptions{
+        .tracker = .{ .encoder_state = &encoder_state, .stream_id = 4 },
+        .indexing = qpack.IndexingPolicy.aggressive,
+    };
+    const fields = [_]qpack.FieldLine{.{ .name = "x-hot", .value = "v" }};
+    var instruction_bytes: [64]u8 = undefined;
+    try std.testing.expectEqual(
+        @as(usize, 0),
+        try qpack.encodeFieldSectionEncoderInstructions(&instruction_bytes, &table, &fields, options),
+    );
+    try std.testing.expectEqual(@as(u64, 1), table.insert_count);
+
+    var section: [64]u8 = undefined;
+    const section_n = try qpack.encodeDynamicFieldSectionWithOptions(&section, &table, &fields, options);
+    const prefix = try state_mod.decodeFieldSectionPrefix(
+        section[0..section_n],
+        table.max_capacity,
+        table.insert_count,
+    );
+    try std.testing.expectEqual(@as(u64, 1), prefix.prefix.required_insert_count);
+    try std.testing.expectEqual(@as(u64, 1), encoder_state.referenceCount(0));
+}
+
+test "NORMATIVE encoder-emitted Duplicate round-trips through decoder apply and section decode [RFC9204 §2.1.1.1 ¶2]" {
+    // Encoder side: same draining fixture; capture the emitted encoder
+    // stream and field section.
+    var encoder_table = qpack.DynamicTable.init(std.testing.allocator, 256);
+    defer encoder_table.deinit();
+    try insertDrainingFixtureEntries(&encoder_table);
+
+    var encoder_state = state_mod.EncoderState.init(std.testing.allocator, 4);
+    defer encoder_state.deinit();
+    encoder_state.recordInsertCount(encoder_table.insert_count);
+    try encoder_state.receiveDecoderInstruction(.{ .insert_count_increment = 5 });
+
+    const options = qpack.DynamicFieldSectionEncodeOptions{
+        .tracker = .{ .encoder_state = &encoder_state, .stream_id = 8 },
+        .indexing = qpack.IndexingPolicy.aggressive,
+    };
+    const fields = [_]qpack.FieldLine{.{ .name = "x-hot", .value = "v" }};
+    var instruction_bytes: [64]u8 = undefined;
+    const instruction_n = try qpack.encodeFieldSectionEncoderInstructions(
+        &instruction_bytes,
+        &encoder_table,
+        &fields,
+        options,
+    );
+    try std.testing.expect(instruction_n > 0);
+    var section: [64]u8 = undefined;
+    const section_n = try qpack.encodeDynamicFieldSectionWithOptions(&section, &encoder_table, &fields, options);
+
+    // Decoder side: mirror the pre-existing table state the way a real
+    // peer built it (encoder-stream inserts), then apply the captured
+    // Duplicate bytes through the decoder-state instruction path.
+    var decoder_table = qpack.DynamicTable.init(std.testing.allocator, 256);
+    defer decoder_table.deinit();
+    var decoder_state = state_mod.DecoderState.init(std.testing.allocator, 4);
+    defer decoder_state.deinit();
+    _ = try decoder_state.applyEncoderInstruction(&decoder_table, .{ .set_capacity = 256 });
+    _ = try decoder_state.applyEncoderInstruction(&decoder_table, .{ .insert_literal = .{ .name = "x-hot", .value = "v" } });
+    inline for (.{ "x-fill-0", "x-fill-1", "x-fill-2", "x-fill-3" }) |name| {
+        _ = try decoder_state.applyEncoderInstruction(&decoder_table, .{ .insert_literal = .{ .name = name, .value = "0123" } });
+    }
+
+    var pos: usize = 0;
+    while (pos < instruction_n) {
+        const decoded = try instructions_mod.decodeEncoderInstruction(
+            std.testing.allocator,
+            instruction_bytes[pos..instruction_n],
+        );
+        defer instructions_mod.freeDecodedEncoderInstruction(std.testing.allocator, decoded);
+        try std.testing.expect(decoded.instruction == .duplicate);
+        _ = try decoder_state.applyEncoderInstruction(&decoder_table, decoded.instruction);
+        pos += decoded.bytes_read;
+    }
+    try std.testing.expectEqual(encoder_table.insert_count, decoder_table.insert_count);
+    try std.testing.expectEqualStrings("x-hot", decoder_table.getAbsolute(5).?.name);
+
+    // The field section decodes against the mirrored table and yields
+    // the original field line.
+    const decoded_fields = try qpack.decodeDynamicFieldSection(
+        std.testing.allocator,
+        &decoder_table,
+        decoder_table.max_capacity,
+        section[0..section_n],
+    );
+    defer qpack.freeFieldSection(std.testing.allocator, decoded_fields);
+    try std.testing.expectEqual(@as(usize, 1), decoded_fields.len);
+    try std.testing.expectEqualStrings("x-hot", decoded_fields[0].name);
+    try std.testing.expectEqualStrings("v", decoded_fields[0].value);
+
+    // Completing the section produces the §4.4.1 acknowledgment; feeding
+    // it back releases the reference on the duplicate so it can drain in
+    // turn.
+    const ack = (try decoder_state.completeFieldSection(8, 6)).?;
+    try std.testing.expectEqual(@as(u64, 8), ack.section_ack);
+    try encoder_state.receiveDecoderInstruction(ack);
+    try std.testing.expectEqual(@as(u64, 0), encoder_state.referenceCount(5));
+    try std.testing.expect(encoder_state.isEvictable(5));
 }
 
 // ---------------------------------------------------------------- §6 error codes

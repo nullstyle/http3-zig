@@ -15,6 +15,16 @@ pub const QuicQlogCallback = quic.QlogCallback;
 pub const QuicQlogEvent = quic.QlogEvent;
 pub const QuicQlogEventName = quic.QlogEventName;
 
+/// By-value transport statistics snapshot (`quic.ConnectionStats`),
+/// surfaced via `Session.transportStats` / `TransportEndpoint.
+/// transportStats`. Complementary to `Metrics`: `Metrics` counts HTTP/3
+/// semantics (frames, requests, QPACK activity); `ConnectionStats`
+/// reports transport reality (wire bytes/packets, loss, active-path
+/// cwnd/RTT, PMTU, open streams, close state). Re-exported verbatim from
+/// quic-zig, where it is **Unstable** tier — fields may be added or move
+/// with quic releases, independent of http3-zig's own versioning.
+pub const QuicConnectionStats = quic.ConnectionStats;
+
 pub const TraceEventName = enum {
     control_stream_opened,
     qpack_streams_opened,

@@ -78,6 +78,9 @@ test "public API smoke: stable embedding surface compiles" {
         _ = H.Server;
         _ = H.Server.init;
         _ = H.Server.respond;
+        _ = H.Server.send103EarlyHints;
+        _ = H.Server.sendInformational;
+        _ = H.server.InformationalError;
         _ = H.Server.push;
         _ = H.Server.pushFromRequest;
         _ = H.Server.classify;
@@ -239,6 +242,7 @@ test "public API smoke: stable embedding surface compiles" {
         _ = H.TransportEndpoint.flush;
         _ = H.TransportEndpoint.handle;
         _ = H.TransportEndpoint.nextTimerDeadline;
+        _ = H.TransportEndpoint.transportStats;
 
         _ = H.earlydata;
         _ = H.earlydata.encode;
@@ -254,6 +258,7 @@ test "public API smoke: stable embedding surface compiles" {
         _ = H.Session.rememberPeerSettings;
         _ = H.Session.earlyDataStatus;
         _ = H.Session.requestArrivedInEarlyData;
+        _ = H.Session.transportStats;
         _ = H.server.earlyDataApplicationContext;
         _ = H.server.installEarlyDataContext;
         _ = H.TransportEndpoint.advance;
@@ -396,6 +401,7 @@ test "public API smoke: stable embedding surface compiles" {
         _ = H.TraceCallback;
         _ = H.TraceEvent;
         _ = H.Metrics;
+        _ = H.QuicConnectionStats;
         _ = H.Settings;
         _ = H.Frame;
         _ = H.FieldLine;

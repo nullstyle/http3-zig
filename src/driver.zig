@@ -83,6 +83,13 @@ pub const Endpoint = struct {
         return self.quic.nextTimerDeadline(now_us);
     }
 
+    /// By-value transport statistics snapshot (`Connection.stats`); see
+    /// `Session.transportStats` for the field contract. Upstream-Unstable
+    /// struct, passed through verbatim.
+    pub fn transportStats(self: *const Endpoint) quic.ConnectionStats {
+        return self.quic.stats();
+    }
+
     /// Run the QUIC handshake state machine (`Connection.advance`): feed
     /// buffered CRYPTO to TLS and queue any resulting flight for the next
     /// `poll`/`flush`. Real-network clients MUST call this once after
@@ -188,6 +195,22 @@ test "StepStats accumulates transport loop counters" {
     try std.testing.expectEqual(@as(usize, 55), total.client_events);
     try std.testing.expectEqual(@as(usize, 66), total.server_events);
     try std.testing.expectEqual(@as(usize, 77), total.session_events);
+}
+
+test "transportStats passthroughs mirror quic.Connection.stats" {
+    // Type-level only: `Connection.stats` reads live counters, so calling
+    // it on an `undefined` connection (the in-file test fixture) would be
+    // UB. Pin the signatures and the re-export identity instead.
+    const observability = @import("observability.zig");
+    try std.testing.expect(observability.QuicConnectionStats == quic.ConnectionStats);
+
+    const endpoint_fn = @typeInfo(@TypeOf(Endpoint.transportStats)).@"fn";
+    try std.testing.expect(endpoint_fn.return_type.? == quic.ConnectionStats);
+    try std.testing.expect(endpoint_fn.param_types[0].? == *const Endpoint);
+
+    const session_fn = @typeInfo(@TypeOf(session_mod.Session.transportStats)).@"fn";
+    try std.testing.expect(session_fn.return_type.? == quic.ConnectionStats);
+    try std.testing.expect(session_fn.param_types[0].? == *const session_mod.Session);
 }
 
 test "Endpoint clears attached session events" {

@@ -79,9 +79,31 @@ but changes will be deliberate, called out in `CHANGELOG.md`, and kept minimal.
   are typed `u64` to match the wire (`max_field_section_size`). New `Config`
   fields follow the same convention and are added with production-safe
   defaults.
+- **Transport statistics passthrough.** `QuicConnectionStats`
+  (`observability.QuicConnectionStats`), surfaced by
+  `Session.transportStats` and `TransportEndpoint.transportStats`, is
+  quic-zig's `ConnectionStats` re-exported verbatim — an
+  upstream-**Unstable** struct, so it is carved out of the Stable
+  `Quic*`-passthrough guarantee above. The accessor *signatures* follow
+  the normal deprecation policy, but the struct's fields may be added to
+  or moved by a quic minor bump without an http3-zig major signal; treat
+  field access as positional-fragile (`.{}`-init and exhaustive
+  destructuring will churn).
 - **Newly added surfaces** — e.g. the DoS hardening knobs
   (`max_incoming_frame_length`, `wt_max_total_buffered_bytes`) — may see minor
   signature or naming refinement as they are exercised for the first time.
+- **Dynamic QPACK posture.** The *default* is contract: `qpack_indexing`
+  stays `static_only` with `qpack_encoder_table_capacity = 0` — in default
+  and `production()` configs, outgoing field sections (HEADERS, trailers,
+  PUSH_PROMISE) use only the static table and literals, and flipping that
+  default would be treated as a breaking change. The opt-in dynamic surface
+  itself (`QpackIndexingPolicy` and its preset postures, the capacity knobs)
+  is Unstable: policy fields and preset names may be refined as the dynamic
+  encoder is exercised. The *behavior* an opt-in buys — never exceeding the
+  peer's blocked-streams budget (literal fallback, not request failure) and
+  RFC 9204 eviction safety — is contract regardless of posture. See
+  [production-limits.md](production-limits.md) *Dynamic QPACK Posture* for
+  rationale and the opt-in recipe.
 
 ### Internal — do not depend on
 

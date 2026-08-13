@@ -17,6 +17,7 @@ pub const Error = error{
     InvalidContentLength,
     ContentLengthMismatch,
     MalformedAuthority,
+    AuthorityHostMismatch,
     ForbiddenTrailerField,
 };
 
@@ -93,10 +94,24 @@ pub fn validateRequestWithOptions(fields: []const FieldLine, options: RequestVal
         if (!pseudo) {
             seen_regular = true;
             if (isConnectionSpecific(field.name)) return Error.ConnectionSpecificField;
-            // RFC 9114 §4.2 ¶3: `te` is connection-specific in HTTP/3
+            // RFC 9114 §4.2 ¶4: `te` is connection-specific in HTTP/3
             // EXCEPT when its value is exactly "trailers". Reject any
             // other value (e.g. `te: gzip`, `te: trailers, deflate`).
             if (isForbiddenTeValue(field.name, field.value)) return Error.ConnectionSpecificField;
+            // RFC 9114 §4.3.1: "If both fields are present, they MUST
+            // contain the same value." Pseudo-headers precede regular
+            // fields (enforced above), so `:authority` is final by the
+            // time any `host` field is walked. Agreement is judged
+            // ASCII-case-insensitively: the authority component's host
+            // is case-insensitive (RFC 3986 §3.2.2), matching the
+            // authority comparison in the push-promise policy checks.
+            if (std.ascii.eqlIgnoreCase(field.name, "host")) {
+                if (authority_value) |authority| {
+                    if (!std.ascii.eqlIgnoreCase(field.value, authority)) {
+                        return Error.AuthorityHostMismatch;
+                    }
+                }
+            }
             continue;
         }
 
@@ -278,7 +293,7 @@ fn isConnectionSpecific(name: []const u8) bool {
         std.ascii.eqlIgnoreCase(name, "upgrade");
 }
 
-/// RFC 9114 §4.2 ¶3: the `te` header field is connection-specific UNLESS
+/// RFC 9114 §4.2 ¶4: the `te` header field is connection-specific UNLESS
 /// its value is exactly "trailers" (case-insensitive). HTTP/3 endpoints
 /// MAY include `te: trailers` in requests; any other value is forbidden.
 /// Returns true when the field should be rejected; false when it's

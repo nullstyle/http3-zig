@@ -301,7 +301,9 @@ pub fn encodeFieldSectionEncoderInstructions(
         // required eviction would drop a dynamic-table entry still referenced
         // by an unacknowledged field section (or not yet acknowledged by the
         // decoder). The inserted entry is always (field.name, field.value)
-        // regardless of name-ref encoding, so size it directly. Reference
+        // regardless of instruction shape — name-ref, literal, and
+        // duplicate all insert the field's exact pair — so size it
+        // directly. Reference
         // state lives in the tracker's EncoderState; with no tracker we have
         // no reference information, so an insert is allowed only when it
         // evicts nothing. A skipped insert falls back to a literal in the
@@ -625,6 +627,36 @@ fn collectDynamicReferences(
     }
 }
 
+/// Fraction of the dynamic-table capacity treated as the RFC 9204
+/// §2.1.1.1 draining region: the oldest entries that would be evicted by
+/// inserting `capacity / draining_headroom_divisor` bytes of new
+/// entries. Referencing an entry in that region would pin it (RFC 9204
+/// §2.1.2 forbids evicting a referenced entry), starving future inserts;
+/// the encoder emits a Duplicate and references the fresh copy instead.
+/// A quarter of the capacity mirrors the draining fraction used by
+/// deployed QPACK encoders.
+const draining_headroom_divisor: usize = 4;
+
+/// RFC 9204 §2.1.1.1 draining index: the smallest absolute index the
+/// encoder is still willing to create new references to. Entries with an
+/// absolute index below this sit in the draining region — they are the
+/// oldest entries that eviction would reclaim first once roughly a
+/// quarter of the capacity's worth of new entries arrives. When the
+/// table has at least that much free headroom, nothing is draining.
+fn drainingIndex(table: *const DynamicTable) u64 {
+    const headroom = table.capacity / draining_headroom_divisor;
+    if (headroom == 0 or table.size + headroom <= table.capacity) return table.dropped_count;
+    // Bytes that inserting `headroom` new bytes would evict, oldest
+    // first — mirrors `evictToCapacity`.
+    const evict_bytes = table.size + headroom - table.capacity;
+    var older_bytes: usize = 0;
+    for (table.entries.items) |*entry| {
+        if (older_bytes >= evict_bytes) return entry.absolute_index;
+        older_bytes += entry.size();
+    }
+    return table.insert_count;
+}
+
 fn chooseInsertInstruction(
     table: *const DynamicTable,
     field: FieldLine,
@@ -632,7 +664,23 @@ fn chooseInsertInstruction(
 ) ?instructions.EncoderInstruction {
     if (!options.indexing.allowsDynamicInsert(table, field.sensitive, field.name, field.value)) return null;
     if (static_table.find(field.name, field.value) != null) return null;
-    if (table.find(field.name, field.value) != null) return null;
+    if (table.find(field.name, field.value)) |absolute_index| {
+        // RFC 9204 §2.1.1.1 / §4.3.4: the newest full match is close to
+        // eviction (inside the draining region), so referencing it from
+        // yet another field section would keep pinning it at the back of
+        // the eviction queue. Emit a Duplicate instead; the field
+        // section then references the fresh copy (`table.find` returns
+        // the newest match), letting the original drain and get evicted.
+        // The caller's §2.1.2 eviction-safety gate still applies to the
+        // duplicate insert itself — the duplicated entry is exactly
+        // (field.name, field.value), so `entrySizeFor` sizes it right.
+        if (absolute_index < drainingIndex(table)) {
+            if (table.absoluteToEncoderRelative(absolute_index)) |relative_index| {
+                return .{ .duplicate = relative_index };
+            }
+        }
+        return null;
+    }
 
     if (static_table.findName(field.name)) |index| {
         return .{ .insert_name_ref = .{
@@ -1141,6 +1189,104 @@ test "encoder skips an insert that would evict a still-referenced entry, then al
     try std.testing.expectEqual(@as(u64, 2), table.insert_count);
     try std.testing.expect(table.getAbsolute(0) == null);
     try std.testing.expectEqualStrings("bb", table.getAbsolute(1).?.name);
+}
+
+test "encoder duplicates a draining full match and references the copy (RFC 9204 §2.1.1.1)" {
+    const allocator = std.testing.allocator;
+    // Capacity 256 → draining headroom 64. Entries: the hot pair (38
+    // bytes) plus four 44-byte fillers = 214 bytes, so 214 + 64 > 256
+    // puts exactly the oldest entry (the hot pair) in the draining
+    // region, while 214 + 38 <= 256 leaves room to duplicate it without
+    // evicting anything.
+    var table = DynamicTable.init(allocator, 256);
+    defer table.deinit();
+    try table.setCapacity(256);
+    _ = try table.insert("x-hot", "v", false);
+    _ = try table.insert("x-fill-0", "0123", false);
+    _ = try table.insert("x-fill-1", "0123", false);
+    _ = try table.insert("x-fill-2", "0123", false);
+    _ = try table.insert("x-fill-3", "0123", false);
+    try std.testing.expectEqual(@as(usize, 214), table.size);
+    try std.testing.expectEqual(@as(u64, 1), drainingIndex(&table));
+
+    var encoder_state = state.EncoderState.init(allocator, 4);
+    defer encoder_state.deinit();
+    encoder_state.recordInsertCount(table.insert_count);
+    try encoder_state.receiveDecoderInstruction(.{ .insert_count_increment = 5 });
+
+    const options = DynamicFieldSectionEncodeOptions{
+        .tracker = .{ .encoder_state = &encoder_state, .stream_id = 4 },
+        .indexing = .aggressive,
+    };
+    const fields = [_]FieldLine{.{ .name = "x-hot", .value = "v" }};
+    var enc: [64]u8 = undefined;
+    const n = try encodeFieldSectionEncoderInstructions(&enc, &table, &fields, options);
+    // Duplicate of encoder-relative index 4 (absolute 0): 000xxxxx → 0x04.
+    try std.testing.expectEqualSlices(u8, "\x04", enc[0..n]);
+    try std.testing.expectEqual(@as(u64, 6), table.insert_count);
+    try std.testing.expectEqualStrings("x-hot", table.getAbsolute(5).?.name);
+    try std.testing.expectEqualStrings("v", table.getAbsolute(5).?.value);
+    // No eviction was needed: the original still exists alongside the copy.
+    try std.testing.expectEqualStrings("x-hot", table.getAbsolute(0).?.name);
+
+    // The field section references the fresh copy, not the draining
+    // original: Required Insert Count covers absolute index 5.
+    var fs: [64]u8 = undefined;
+    const fs_n = try encodeDynamicFieldSectionWithOptions(&fs, &table, &fields, options);
+    const prefix = try state.decodeFieldSectionPrefix(fs[0..fs_n], table.max_capacity, table.insert_count);
+    try std.testing.expectEqual(@as(u64, 6), prefix.prefix.required_insert_count);
+    try std.testing.expectEqual(@as(u64, 1), encoder_state.referenceCount(5));
+    try std.testing.expectEqual(@as(u64, 0), encoder_state.referenceCount(0));
+
+    // A fresh (non-draining) match stays a plain reference: re-running
+    // the instruction phase emits nothing further.
+    try std.testing.expectEqual(
+        @as(usize, 0),
+        try encodeFieldSectionEncoderInstructions(&enc, &table, &fields, options),
+    );
+}
+
+test "duplicate of a draining entry defers to eviction safety until the entry is acknowledged (RFC 9204 §2.1.1.1 + §2.1.2)" {
+    const allocator = std.testing.allocator;
+    // Capacity 128 → draining headroom 32. Entries: hot (38) + two
+    // 44-byte fillers = 126 bytes; 126 + 32 > 128 puts the oldest (hot)
+    // in the draining region, and duplicating it (38 bytes) requires
+    // evicting it — allowed only once it is acknowledged and
+    // unreferenced.
+    var table = DynamicTable.init(allocator, 128);
+    defer table.deinit();
+    try table.setCapacity(128);
+    _ = try table.insert("x-hot", "v", false);
+    _ = try table.insert("x-fill-0", "0123", false);
+    _ = try table.insert("x-fill-1", "0123", false);
+    try std.testing.expectEqual(@as(u64, 1), drainingIndex(&table));
+
+    var encoder_state = state.EncoderState.init(allocator, 4);
+    defer encoder_state.deinit();
+    encoder_state.recordInsertCount(table.insert_count);
+    // A still-unacknowledged section references the hot entry.
+    _ = try encoder_state.trackFieldSection(0, &.{0});
+
+    const options = DynamicFieldSectionEncodeOptions{
+        .tracker = .{ .encoder_state = &encoder_state, .stream_id = 4 },
+        .indexing = .aggressive,
+    };
+    const fields = [_]FieldLine{.{ .name = "x-hot", .value = "v" }};
+    var enc: [64]u8 = undefined;
+    // Duplicate would evict the still-referenced original → skipped.
+    try std.testing.expectEqual(
+        @as(usize, 0),
+        try encodeFieldSectionEncoderInstructions(&enc, &table, &fields, options),
+    );
+    try std.testing.expectEqual(@as(u64, 3), table.insert_count);
+
+    // Acknowledge the referencing section; the duplicate now proceeds
+    // and evicts the original.
+    try encoder_state.receiveDecoderInstruction(.{ .section_ack = 0 });
+    try std.testing.expect(try encodeFieldSectionEncoderInstructions(&enc, &table, &fields, options) > 0);
+    try std.testing.expectEqual(@as(u64, 4), table.insert_count);
+    try std.testing.expect(table.getAbsolute(0) == null);
+    try std.testing.expectEqualStrings("x-hot", table.getAbsolute(3).?.name);
 }
 
 test "indexing policy can require acknowledged dynamic references" {

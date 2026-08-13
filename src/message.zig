@@ -84,9 +84,12 @@ pub const Encoder = struct {
         // interim responses before the final response. Detect that
         // case via `:status` and don't flip `sent_headers` so a
         // subsequent HEADERS call can land. Request and push streams
-        // get the strict no-duplicate behavior.
+        // get the strict no-duplicate behavior. Once the final
+        // response HEADERS is out, nothing header-shaped may follow —
+        // interim included — because an additional response after the
+        // final response is malformed (RFC 9114 §4.1 ¶3).
         const interim = self.kind == .response and isInterim(fields);
-        if (self.sent_headers and !interim) return Error.DuplicateHeaders;
+        if (self.sent_headers) return Error.DuplicateHeaders;
         try validateFields(self.kind, fields, .{
             .max_field_section_size = self.options.max_field_section_size,
             .enable_connect_protocol = self.options.enable_connect_protocol,
@@ -102,8 +105,9 @@ pub const Encoder = struct {
         fields: []const qpack.FieldLine,
         field_section: []const u8,
     ) Error!usize {
+        // Same interim / final-ordering rules as `encodeHeaders` above.
         const interim = self.kind == .response and isInterim(fields);
-        if (self.sent_headers and !interim) return Error.DuplicateHeaders;
+        if (self.sent_headers) return Error.DuplicateHeaders;
         try validateFields(self.kind, fields, .{
             .max_field_section_size = self.options.max_field_section_size,
             .enable_connect_protocol = self.options.enable_connect_protocol,
