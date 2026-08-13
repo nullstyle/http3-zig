@@ -249,7 +249,14 @@ pub fn main(init: std.process.Init) !void {
 
         pub fn send(self: *@This(), bytes: []const u8) !void {
             if (trace_packets) std.debug.print("tx {d} bytes\n", .{bytes.len});
-            try self.socket.send(self.io, &self.peer, bytes);
+            // Peer-provoked send faults (ICMP-fed ConnectionRefused/reset,
+            // oversize) drop the datagram: loss recovery retransmits, and a
+            // dead peer is reaped by the idle timeout. Local faults propagate.
+            self.socket.send(self.io, &self.peer, bytes) catch |err|
+                switch (quic.transport.udp_server.classifySendError(err)) {
+                    .tolerate => {},
+                    .fatal => return err,
+                };
         }
     };
 
@@ -259,9 +266,9 @@ pub fn main(init: std.process.Init) !void {
                 .raw = std.Io.Duration.fromMilliseconds(5),
                 .clock = .awake,
             },
-        }) catch |err| switch (err) {
-            error.Timeout => null,
-            else => return err,
+        }) catch |err| switch (quic.transport.udp_server.classifyReceiveError(err)) {
+            .tolerate => null,
+            .fatal => return err,
         };
 
         if (maybe_msg) |msg| {
