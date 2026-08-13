@@ -14,6 +14,14 @@
 //! exercised at the wire layer here, while their semantic effect lives
 //! in higher-layer suites.
 //!
+//! The §7.2.4.2 block at the bottom exercises the pure 0-RTT
+//! remembered-settings surfaces (`http3_zig.earlydata`): the per-axis
+//! compatibility matrix (`validateRememberedSettings`), the ¶6 omission
+//! rule, the server-side accept context (`applicationContext`), and the
+//! `H3RS` resumption envelope codec. The *session-level* remembered-
+//! settings handling (install window, silent discard when 0-RTT was not
+//! accepted) is wired end-to-end in rfc9114_session.zig.
+//!
 //! ## Coverage
 //!
 //! Covered:
@@ -34,6 +42,20 @@
 //!   RFC9114 §7.2.8   ¶1   MAY      encode appends a reserved GREASE setting when Settings.grease is set
 //!   RFC9114 §7.2.8   ¶2   MUST     reserved setting ids are ignored on receipt (round-trip drops grease)
 //!   RFC9114 §7.2.8   ¶1   NORMATIVE greased sessions complete the SETTINGS exchange end-to-end
+//!   RFC9114 §7.2.4.2 ¶5   MUST     reduced QPACK_MAX_TABLE_CAPACITY after accepted 0-RTT is incompatible
+//!   RFC9114 §7.2.4.2 ¶5   MUST     reduced QPACK_BLOCKED_STREAMS after accepted 0-RTT is incompatible
+//!   RFC9114 §7.2.4.2 ¶5   MUST     reduced MAX_FIELD_SECTION_SIZE (incl. remembered-unlimited→limited) is incompatible
+//!   RFC9114 §7.2.4.2 ¶5   MUST     disabled ENABLE_CONNECT_PROTOCOL after accepted 0-RTT is incompatible
+//!   RFC9114 §7.2.4.2 ¶5   MUST     disabled H3_DATAGRAM after accepted 0-RTT is incompatible (+ RFC9297 §2.1.1)
+//!   RFC9114 §7.2.4.2 ¶5   MUST     disabled WT_ENABLED after accepted 0-RTT is incompatible
+//!   RFC9114 §7.2.4.2 ¶5   MUST     reduced or omission-revoked WT_INITIAL_MAX_DATA is incompatible
+//!   RFC9114 §7.2.4.2 ¶5   MUST     reduced or omission-revoked WT_INITIAL_MAX_STREAMS_UNI is incompatible
+//!   RFC9114 §7.2.4.2 ¶5   MUST     reduced or omission-revoked WT_INITIAL_MAX_STREAMS_BIDI is incompatible
+//!   RFC9114 §7.2.4.2 ¶6   MUST     omission of a previously non-default setting is incompatible
+//!   RFC9114 §7.2.4.2 ¶5   MAY      equal or increased settings are compatible
+//!   RFC9114 §7.2.4.2 ¶3   NORMATIVE server 0-RTT accept context tracks the advertised settings bytes
+//!   RFC9114 §7.2.4.2 ¶5   NORMATIVE remembered settings round-trip the H3RS resumption envelope
+//!   RFC9114 §7.2.4.2 ¶5   NORMATIVE H3RS envelope rejects magic/version/flags/truncation/trailing corruption
 //!
 //! Visible debt:
 //!   (none)
@@ -51,6 +73,9 @@
 //!                            setting ID; the `Settings` struct only exposes the
 //!                            defined IDs, so there is no runtime path that
 //!                            could violate this MUST NOT.
+//!   RFC9114 §7.2.4.2 ¶5/¶7 session-level remembered-settings handling
+//!                          (install window, silent discard when 0-RTT was
+//!                          not accepted)                    → rfc9114_session.zig
 
 const std = @import("std");
 const http3_zig = @import("http3_zig");
@@ -59,6 +84,7 @@ const fixture = @import("_h3_fixture.zig");
 
 const settings_mod = http3_zig.settings;
 const protocol = http3_zig.protocol;
+const earlydata = http3_zig.earlydata;
 const varint = quic.wire.varint;
 
 // ---------------------------------------------------------------- §7.2.4 default values
@@ -710,4 +736,283 @@ test "NORMATIVE greased sessions complete the SETTINGS exchange end-to-end [RFC9
 
     try std.testing.expect(pair.client_h3.peer_settings.?.grease == null);
     try std.testing.expect(pair.server_h3.peer_settings.?.grease == null);
+}
+
+// ---------------------------------------------------------------- §7.2.4.2 — 0-RTT remembered settings (pure surface)
+
+/// A remembered-settings baseline with every axis at a non-default value,
+/// so each per-axis test below can reduce exactly one field and attribute
+/// the violation unambiguously.
+fn rememberedBaseline() settings_mod.Settings {
+    return .{
+        .qpack_max_table_capacity = 4096,
+        .qpack_blocked_streams = 16,
+        .max_field_section_size = 1 << 20,
+        .enable_connect_protocol = true,
+        .h3_datagram = true,
+        .wt_enabled = true,
+        .wt_initial_max_data = 65536,
+        .wt_initial_max_streams_uni = 8,
+        .wt_initial_max_streams_bidi = 4,
+    };
+}
+
+test "MUST treat a reduced SETTINGS_QPACK_MAX_TABLE_CAPACITY after accepted 0-RTT as incompatible [RFC9114 §7.2.4.2 ¶5]" {
+    // §7.2.4.2: a client attempting 0-RTT MUST comply with the settings
+    // it remembers; a server that accepted 0-RTT MUST NOT then reduce
+    // any limits the client might already have relied on. A smaller
+    // QPACK dynamic-table capacity is such a reduction — the client may
+    // have emitted encoder instructions the smaller table cannot hold.
+    const remembered = rememberedBaseline();
+    var actual = rememberedBaseline();
+    actual.qpack_max_table_capacity = 1024;
+    try std.testing.expectEqual(
+        earlydata.SettingsViolation.qpack_max_table_capacity_reduced,
+        earlydata.validateRememberedSettings(remembered, actual).?,
+    );
+}
+
+test "MUST treat a reduced SETTINGS_QPACK_BLOCKED_STREAMS after accepted 0-RTT as incompatible [RFC9114 §7.2.4.2 ¶5]" {
+    // Fewer permitted blocked streams than the client remembered is a
+    // reduction: 0-RTT header blocks may already reference dynamic
+    // entries on more streams than the new limit allows.
+    const remembered = rememberedBaseline();
+    var actual = rememberedBaseline();
+    actual.qpack_blocked_streams = 1;
+    try std.testing.expectEqual(
+        earlydata.SettingsViolation.qpack_blocked_streams_reduced,
+        earlydata.validateRememberedSettings(remembered, actual).?,
+    );
+}
+
+test "MUST treat a reduced SETTINGS_MAX_FIELD_SECTION_SIZE after accepted 0-RTT as incompatible [RFC9114 §7.2.4.2 ¶5]" {
+    // Both spellings of a field-section-size reduction: a numerically
+    // smaller limit, and a remembered *unlimited* (absent on the wire,
+    // §7.2.4.1 ¶3) shrinking to any finite limit at all.
+    const remembered = rememberedBaseline();
+    var actual = rememberedBaseline();
+    actual.max_field_section_size = 100;
+    try std.testing.expectEqual(
+        earlydata.SettingsViolation.max_field_section_size_reduced,
+        earlydata.validateRememberedSettings(remembered, actual).?,
+    );
+
+    var remembered_unlimited = rememberedBaseline();
+    remembered_unlimited.max_field_section_size = null; // unlimited
+    var actual_limited = rememberedBaseline();
+    actual_limited.max_field_section_size = 1 << 30; // any finite limit
+    try std.testing.expectEqual(
+        earlydata.SettingsViolation.max_field_section_size_reduced,
+        earlydata.validateRememberedSettings(remembered_unlimited, actual_limited).?,
+    );
+}
+
+test "MUST treat a disabled SETTINGS_ENABLE_CONNECT_PROTOCOL after accepted 0-RTT as incompatible [RFC9114 §7.2.4.2 ¶5]" {
+    // A client that remembered Extended CONNECT support may have staged
+    // an Extended CONNECT request in 0-RTT; withdrawing the setting
+    // alters a value the client might already have violated.
+    const remembered = rememberedBaseline();
+    var actual = rememberedBaseline();
+    actual.enable_connect_protocol = false;
+    try std.testing.expectEqual(
+        earlydata.SettingsViolation.enable_connect_protocol_disabled,
+        earlydata.validateRememberedSettings(remembered, actual).?,
+    );
+}
+
+test "MUST treat a disabled SETTINGS_H3_DATAGRAM after accepted 0-RTT as incompatible [RFC9114 §7.2.4.2 ¶5 + RFC9297 §2.1.1]" {
+    // RFC 9297 §2.1.1 lets a resuming client send datagrams under the
+    // remembered H3_DATAGRAM=1 before the new SETTINGS arrive, so a
+    // server that accepted 0-RTT and then advertises 0 has altered a
+    // value the client may already have acted on.
+    const remembered = rememberedBaseline();
+    var actual = rememberedBaseline();
+    actual.h3_datagram = false;
+    try std.testing.expectEqual(
+        earlydata.SettingsViolation.h3_datagram_disabled,
+        earlydata.validateRememberedSettings(remembered, actual).?,
+    );
+}
+
+test "MUST treat a disabled SETTINGS_WT_ENABLED after accepted 0-RTT as incompatible [RFC9114 §7.2.4.2 ¶5]" {
+    // draft-ietf-webtrans-http3 §9.2's SETTINGS_WT_ENABLED shares the
+    // §7.2.4.2 rules with every other setting: withdrawing WebTransport
+    // support after accepting 0-RTT is an alteration of a remembered
+    // value.
+    const remembered = rememberedBaseline();
+    var actual = rememberedBaseline();
+    actual.wt_enabled = false;
+    try std.testing.expectEqual(
+        earlydata.SettingsViolation.wt_enabled_disabled,
+        earlydata.validateRememberedSettings(remembered, actual).?,
+    );
+}
+
+test "MUST treat a reduced or omission-revoked SETTINGS_WT_INITIAL_MAX_DATA after accepted 0-RTT as incompatible [RFC9114 §7.2.4.2 ¶5]" {
+    // WT initial credits are optional (null = no credit advertised), so
+    // a remembered credit can shrink two ways: a smaller value, or the
+    // credit disappearing from the wire entirely.
+    const remembered = rememberedBaseline();
+
+    var actual = rememberedBaseline();
+    actual.wt_initial_max_data = 1024;
+    try std.testing.expectEqual(
+        earlydata.SettingsViolation.wt_initial_max_data_reduced,
+        earlydata.validateRememberedSettings(remembered, actual).?,
+    );
+
+    actual = rememberedBaseline();
+    actual.wt_initial_max_data = null; // credit revoked by omission
+    try std.testing.expectEqual(
+        earlydata.SettingsViolation.wt_initial_max_data_reduced,
+        earlydata.validateRememberedSettings(remembered, actual).?,
+    );
+}
+
+test "MUST treat a reduced or omission-revoked SETTINGS_WT_INITIAL_MAX_STREAMS_UNI after accepted 0-RTT as incompatible [RFC9114 §7.2.4.2 ¶5]" {
+    const remembered = rememberedBaseline();
+
+    var actual = rememberedBaseline();
+    actual.wt_initial_max_streams_uni = 1;
+    try std.testing.expectEqual(
+        earlydata.SettingsViolation.wt_initial_max_streams_uni_reduced,
+        earlydata.validateRememberedSettings(remembered, actual).?,
+    );
+
+    actual = rememberedBaseline();
+    actual.wt_initial_max_streams_uni = null; // credit revoked by omission
+    try std.testing.expectEqual(
+        earlydata.SettingsViolation.wt_initial_max_streams_uni_reduced,
+        earlydata.validateRememberedSettings(remembered, actual).?,
+    );
+}
+
+test "MUST treat a reduced or omission-revoked SETTINGS_WT_INITIAL_MAX_STREAMS_BIDI after accepted 0-RTT as incompatible [RFC9114 §7.2.4.2 ¶5]" {
+    const remembered = rememberedBaseline();
+
+    var actual = rememberedBaseline();
+    actual.wt_initial_max_streams_bidi = 1;
+    try std.testing.expectEqual(
+        earlydata.SettingsViolation.wt_initial_max_streams_bidi_reduced,
+        earlydata.validateRememberedSettings(remembered, actual).?,
+    );
+
+    actual = rememberedBaseline();
+    actual.wt_initial_max_streams_bidi = null; // credit revoked by omission
+    try std.testing.expectEqual(
+        earlydata.SettingsViolation.wt_initial_max_streams_bidi_reduced,
+        earlydata.validateRememberedSettings(remembered, actual).?,
+    );
+}
+
+test "MUST treat omission of a previously non-default setting as incompatible [RFC9114 §7.2.4.2 ¶6]" {
+    // §7.2.4.2 ¶6: a server that accepted 0-RTT MUST include all
+    // settings that differ from their defaults; omitting one the client
+    // remembers as non-default is an error. The wire artifact of "omits
+    // everything" is an empty SETTINGS payload — decode materializes
+    // every default, and the default trips the same compatibility
+    // check as an explicit reduction.
+    const remembered = rememberedBaseline();
+    const actual = try settings_mod.Settings.decode("");
+    try std.testing.expectEqual(
+        earlydata.SettingsViolation.qpack_max_table_capacity_reduced,
+        earlydata.validateRememberedSettings(remembered, actual).?,
+    );
+}
+
+test "MAY accept equal or increased settings as compatible after accepted 0-RTT [RFC9114 §7.2.4.2 ¶5]" {
+    // §7.2.4.2: "Remembered settings are compatible if a client
+    // complying with those settings would not violate the server's
+    // current settings" — identical settings trivially qualify, and so
+    // does raising every limit (including a finite field-section limit
+    // growing to unlimited).
+    const remembered = rememberedBaseline();
+    try std.testing.expectEqual(
+        @as(?earlydata.SettingsViolation, null),
+        earlydata.validateRememberedSettings(remembered, remembered),
+    );
+
+    var increased = rememberedBaseline();
+    increased.qpack_max_table_capacity = 8192;
+    increased.qpack_blocked_streams = 32;
+    increased.max_field_section_size = null; // limit -> unlimited
+    increased.wt_initial_max_data = 1 << 20;
+    increased.wt_initial_max_streams_uni = 16;
+    increased.wt_initial_max_streams_bidi = 8;
+    try std.testing.expectEqual(
+        @as(?earlydata.SettingsViolation, null),
+        earlydata.validateRememberedSettings(remembered, increased),
+    );
+}
+
+test "NORMATIVE server 0-RTT accept context changes when any advertised setting changes [RFC9114 §7.2.4.2 ¶3]" {
+    // §7.2.4.2 ¶3: the server uses its HTTP/3 settings in determining
+    // whether to accept 0-RTT data. http3_zig realizes that by feeding
+    // `applicationContext` — a stable prefix plus the canonical
+    // settings bytes — into quic's early-data context digest, so a
+    // ticket minted under different settings can never be accepted.
+    // Equal settings must produce identical context bytes; any changed
+    // setting must change them.
+    var a_buf: [256]u8 = undefined;
+    var b_buf: [256]u8 = undefined;
+    var c_buf: [256]u8 = undefined;
+
+    const a = try earlydata.applicationContext(&a_buf, rememberedBaseline());
+    try std.testing.expect(std.mem.startsWith(u8, a, earlydata.application_context_prefix));
+
+    const same = try earlydata.applicationContext(&b_buf, rememberedBaseline());
+    try std.testing.expectEqualSlices(u8, a, same);
+
+    var changed = rememberedBaseline();
+    changed.qpack_max_table_capacity += 1;
+    const different = try earlydata.applicationContext(&c_buf, changed);
+    try std.testing.expect(!std.mem.eql(u8, a, different));
+}
+
+test "NORMATIVE remembered settings round-trip the H3RS resumption envelope beside the quic ticket [RFC9114 §7.2.4.2 ¶5]" {
+    // ¶5's client obligation ("MUST comply with the remembered
+    // settings") presupposes the settings survive alongside the
+    // resumption ticket. http3_zig's vehicle is the `H3RS` envelope,
+    // which pairs the canonical settings bytes with the opaque quic
+    // `QZRS` envelope; a lossless round-trip is the conformance floor.
+    const quic_envelope = "QZRS-opaque-ticket-stand-in";
+    const buf = try earlydata.encodeAlloc(std.testing.allocator, rememberedBaseline(), quic_envelope);
+    defer std.testing.allocator.free(buf);
+
+    const decoded = try earlydata.decode(buf);
+    try std.testing.expect(std.meta.eql(rememberedBaseline(), decoded.settings));
+    try std.testing.expectEqualStrings(quic_envelope, decoded.quic_resumption_state);
+}
+
+test "NORMATIVE H3RS envelope rejects corrupted magic, version, flags, truncation, and trailing bytes [RFC9114 §7.2.4.2 ¶5]" {
+    // A client that silently accepted a corrupted remembered-settings
+    // envelope could attempt 0-RTT while complying with settings the
+    // server never advertised — every framing violation must surface
+    // as a decode error, never as garbage settings.
+    const buf = try earlydata.encodeAlloc(std.testing.allocator, rememberedBaseline(), "ticket");
+    defer std.testing.allocator.free(buf);
+
+    var bad_magic = try std.testing.allocator.dupe(u8, buf);
+    defer std.testing.allocator.free(bad_magic);
+    bad_magic[0] = 'X';
+    try std.testing.expectError(earlydata.Error.InvalidFormat, earlydata.decode(bad_magic));
+
+    var bad_version = try std.testing.allocator.dupe(u8, buf);
+    defer std.testing.allocator.free(bad_version);
+    bad_version[4] = earlydata.version + 1;
+    try std.testing.expectError(earlydata.Error.UnsupportedVersion, earlydata.decode(bad_version));
+
+    var bad_flags = try std.testing.allocator.dupe(u8, buf);
+    defer std.testing.allocator.free(bad_flags);
+    bad_flags[5] = 1;
+    try std.testing.expectError(earlydata.Error.InvalidFlags, earlydata.decode(bad_flags));
+
+    // Truncated: mid-payload and mid-header.
+    try std.testing.expectError(earlydata.Error.InvalidFormat, earlydata.decode(buf[0 .. buf.len - 1]));
+    try std.testing.expectError(earlydata.Error.InvalidFormat, earlydata.decode(buf[0 .. earlydata.header_len - 1]));
+
+    // Trailing bytes beyond the declared lengths.
+    const padded = try std.mem.concat(std.testing.allocator, u8, &.{ buf, "x" });
+    defer std.testing.allocator.free(padded);
+    try std.testing.expectError(earlydata.Error.TrailingBytes, earlydata.decode(padded));
 }

@@ -37,6 +37,8 @@
 //!   RFC9297 §2.1   ¶1     MUST NOT accept a SETTINGS_H3_DATAGRAM value > 1
 //!   RFC9297 §2.1.1 ¶1     MUST     both peers send H3_DATAGRAM=1 before sending an HTTP/3 DATAGRAM
 //!   RFC9297 §2.1.1 ¶1     MUST NOT send an HTTP/3 DATAGRAM when peer did not advertise H3_DATAGRAM=1
+//!   RFC9297 §2.1.1 ¶?     MAY      send datagrams under remembered H3_DATAGRAM before SETTINGS arrives
+//!                                  (asserted via the error-path twin: a remembered 0 refuses the send)
 //!   RFC9297 §2.1.1 ¶?     MUST     close received DATAGRAM with H3_SETTINGS_ERROR when local setting is 0
 //!   RFC9297 §2.2   ¶1     MUST     payload is Quarter-Stream-ID varint + opaque body
 //!   RFC9297 §2.2   ¶1     MUST     Quarter-Stream-ID = stream_id / 4
@@ -87,6 +89,11 @@
 //!                   Context ID payload codec lives here.
 //!   RFC9220 §3     WebSocket-over-HTTP/3 capsule placement is out of
 //!                   scope for this suite.
+//!   RFC9114 §7.2.4.2 session-level remembered-settings handling (install
+//!                   window, silent discard when 0-RTT is not accepted)
+//!                   → rfc9114_session.zig; the per-axis compatibility
+//!                   matrix (incl. the H3_DATAGRAM disable axis)
+//!                   → rfc9114_settings.zig.
 
 const std = @import("std");
 const http3_zig = @import("http3_zig");
@@ -223,6 +230,49 @@ test "MUST close with H3_SETTINGS_ERROR on a received HTTP/3 DATAGRAM when the l
 
     try fixture.expectPairH3Error(allocator, &pair, error.DatagramNotEnabled);
     try fixture.expectLastCloseCode(&pair.server_h3, ErrorCode.settings_error);
+}
+
+test "MAY send datagrams under remembered H3_DATAGRAM before the resumed connection's SETTINGS arrive [RFC9297 §2.1.1]" {
+    // RFC 9297 §2.1.1 (0-RTT): a resuming client MAY act on the
+    // SETTINGS_H3_DATAGRAM value it remembers from the ticket-issuing
+    // connection before the resumed connection's real SETTINGS arrive.
+    // http3_zig implements the optional feature by feeding
+    // `Session.rememberPeerSettings` into the datagram gates. The
+    // success path writes to the transport, so the gate is asserted
+    // through its error-path twin, which proves the remembered value is
+    // exactly what the gate consults pre-SETTINGS: a remembered
+    // H3_DATAGRAM=0 refuses with DatagramNotEnabled, whereas no
+    // remembered value at all refuses with MissingSettings. Neither
+    // error path touches the quic connection, so an undefined
+    // Connection is safe (same pattern as the src/session.zig unit
+    // test).
+    const allocator = std.testing.allocator;
+    var conn: quic.Connection = undefined;
+
+    // No remembered value: the gate has no peer advertisement of any
+    // kind to consult.
+    {
+        var session = http3_zig.Session.init(allocator, .client, &conn, .{});
+        defer session.deinit();
+        try std.testing.expectError(
+            http3_zig.session.Error.MissingSettings,
+            session.sendRequestDatagramCapsule(0, "x"),
+        );
+    }
+
+    // Remembered H3_DATAGRAM=0: the same entry point now refuses with
+    // the negotiation error — the remembered snapshot is live in the
+    // gate, which is what makes the MAY-send under a remembered 1
+    // well-founded.
+    {
+        var session = http3_zig.Session.init(allocator, .client, &conn, .{});
+        defer session.deinit();
+        try session.rememberPeerSettings(.{ .h3_datagram = false });
+        try std.testing.expectError(
+            http3_zig.session.Error.DatagramNotEnabled,
+            session.sendRequestDatagramCapsule(0, "x"),
+        );
+    }
 }
 
 // ---------------------------------------------------------------- §2.2 — Quarter-Stream-ID payload format

@@ -44,11 +44,22 @@
 //!   RFC9114 §7.2.6 ¶?  MUST     receiver accepts a repeated peer GOAWAY id
 //!   RFC9114 §7.2.6 ¶?  MUST     out-of-role peer GOAWAY (server-initiated bidi id from server) closes with H3_ID_ERROR
 //!   RFC9114 §10.5   ¶?  NORMATIVE Session classifies inbound CONNECTION_CLOSE error space and code
+//!   RFC9114 §7.2.4.2 ¶7  NORMATIVE remembered settings are discarded silently when 0-RTT was not accepted
+//!   RFC9114 §7.2.4.2 ¶5  MUST     comply with remembered settings before the peer's SETTINGS arrive (datagram gate consults the remembered snapshot)
+//!   RFC9114 §7.2.4.2 ¶5  MUST NOT install remembered settings after the peer's SETTINGS arrived
 //!
 //! Visible debt:
 //!   (none)
 //!
 //! Out of scope here (covered elsewhere or by design):
+//!   RFC9114 §7.2.4.2 ¶4  accepted-0-RTT SETTINGS validation (a reduction
+//!     after an ACCEPTED attempt → RememberedSettingsViolated and an
+//!     H3_SETTINGS_ERROR close). The in-process crypto-shim fixture cannot
+//!     produce real 0-RTT — Session.earlyDataStatus() stays .not_offered —
+//!     so this suite wires only the NOT-accepted paths; the accepted /
+//!     violated path is exercised end-to-end against real TLS resumption
+//!     outside the conformance build. The per-axis compatibility matrix
+//!     behind that check is pure-surface-tested in rfc9114_settings.zig.
 //!   RFC9114 §6.2.1 ¶6  MUST close with H3_MISSING_SETTINGS on a peer's
 //!     non-SETTINGS first control-stream frame, end-to-end. The Session
 //!     control-stream open path is private (Session.start owns it), so the
@@ -338,6 +349,105 @@ test "SETTINGS frame with zero settings is accepted [RFC9114 §7.2.4 ¶3]" {
     }
     try std.testing.expectEqual(http3_zig.session.ShutdownState.draining, pair.server_h3.shutdownState());
     try std.testing.expectEqual(@as(?u64, 0), pair.server_h3.peer_goaway_id);
+}
+
+// ---------------------------------------------------------------- §7.2.4.2 0-RTT remembered settings (NOT-accepted paths)
+
+test "NORMATIVE remembered settings are discarded silently when 0-RTT was not accepted [RFC9114 §7.2.4.2 ¶7]" {
+    // §7.2.4.2 ¶7: when the 0-RTT attempt is not accepted, the
+    // remembered settings simply stop mattering — the server's real
+    // SETTINGS apply, with no error even if they would have been
+    // incompatible under an accepted attempt. The in-process fixture
+    // performs a plain 1-RTT handshake (earlyDataStatus() stays
+    // .not_offered), which is exactly the NOT-accepted premise.
+    const allocator = std.testing.allocator;
+
+    var pair: fixture.H3Pair = undefined;
+    try pair.initStarted(allocator, .{}, .{}); // server advertises all defaults
+    defer pair.deinit();
+
+    // Remembered settings that CONFLICT with the server's real (default)
+    // SETTINGS: a remembered non-zero QPACK capacity and H3_DATAGRAM=1
+    // would both trip validateRememberedSettings had 0-RTT been accepted.
+    try pair.client_h3.rememberPeerSettings(.{
+        .qpack_max_table_capacity = 4096,
+        .h3_datagram = true,
+    });
+    try std.testing.expectEqual(quic.EarlyDataStatus.not_offered, pair.client_h3.earlyDataStatus());
+
+    // The normal SETTINGS exchange completes without any error or close.
+    try fixture.exchangePairSettings(allocator, &pair);
+    try std.testing.expectEqual(http3_zig.session.ShutdownState.active, pair.client_h3.shutdownState());
+    try std.testing.expectEqual(@as(?http3_zig.errors.ConnectionError, null), pair.client_h3.lastCloseError());
+
+    // peer_settings is the server's REAL (all-default) advertisement, not
+    // the conflicting remembered snapshot.
+    const peer = pair.client_h3.peer_settings.?;
+    try std.testing.expectEqual(@as(u64, 0), peer.qpack_max_table_capacity);
+    try std.testing.expect(!peer.h3_datagram);
+
+    // The remembered state is gone: a re-install now refuses because the
+    // real SETTINGS already arrived.
+    try std.testing.expectError(
+        http3_zig.session.Error.RememberedSettingsTooLate,
+        pair.client_h3.rememberPeerSettings(.{}),
+    );
+}
+
+test "MUST comply with remembered server settings before the resumed connection's SETTINGS arrive [RFC9114 §7.2.4.2 ¶5]" {
+    // §7.2.4.2 ¶5: a client attempting 0-RTT MUST comply with the
+    // settings it stored from the ticket-issuing connection until the
+    // server's current SETTINGS arrive. The success path of a
+    // pre-SETTINGS send writes to the transport, so the gate is
+    // asserted through its error-path twin (the same pattern as the
+    // src/session.zig unit test): neither error below touches the quic
+    // connection, so an undefined Connection is safe.
+    const allocator = std.testing.allocator;
+    var conn: quic.Connection = undefined;
+
+    // Nothing remembered and no real SETTINGS: there are no settings to
+    // comply with, so the capsule-path datagram send refuses outright.
+    {
+        var session = http3_zig.Session.init(allocator, .client, &conn, .{});
+        defer session.deinit();
+        try std.testing.expectError(
+            http3_zig.session.Error.MissingSettings,
+            session.sendRequestDatagramCapsule(0, "x"),
+        );
+    }
+
+    // Remembered h3_datagram=0 installed: the identical entry point now
+    // fails with DatagramNotEnabled instead — proof that pre-SETTINGS
+    // the client complies with exactly the remembered snapshot, not
+    // defaults and not the (absent) real settings.
+    {
+        var session = http3_zig.Session.init(allocator, .client, &conn, .{});
+        defer session.deinit();
+        try session.rememberPeerSettings(.{ .h3_datagram = false });
+        try std.testing.expectError(
+            http3_zig.session.Error.DatagramNotEnabled,
+            session.sendRequestDatagramCapsule(0, "x"),
+        );
+    }
+}
+
+test "MUST NOT permit installing remembered settings after the peer's SETTINGS arrived [RFC9114 §7.2.4.2 ¶5]" {
+    // ¶5's compliance window closes when the server's current SETTINGS
+    // arrive ("Once a server has provided new settings, clients MUST
+    // comply with those values"). Installing a remembered snapshot after
+    // that point would resurrect stale settings over the authoritative
+    // ones, so the session rejects the install.
+    const allocator = std.testing.allocator;
+
+    var pair: fixture.H3Pair = undefined;
+    try pair.initStarted(allocator, .{}, .{});
+    defer pair.deinit();
+    try fixture.exchangePairSettings(allocator, &pair);
+
+    try std.testing.expectError(
+        http3_zig.session.Error.RememberedSettingsTooLate,
+        pair.client_h3.rememberPeerSettings(.{ .h3_datagram = true }),
+    );
 }
 
 // ---------------------------------------------------------------- §6.2.1 ¶7 control-stream uniqueness (session-level)
