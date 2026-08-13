@@ -69,6 +69,12 @@
 //!   RFC9218 §7   ¶4      NORMATIVE PRIORITY_UPDATE received before the stream opens is buffered
 //!   RFC9218 §7   ¶3      NORMATIVE empty PRIORITY_UPDATE Priority Field Value applies parameter defaults
 //!
+//! Visible debt:
+//!   request-time `priority` header scheduling — `fromFieldLines` parses it
+//!   and the read-only accessors expose it, but nothing feeds it to the
+//!   transport scheduler yet (only the PRIORITY_UPDATE frame path does).
+//!   Wiring plus tests are queued in the current sprint.
+//!
 //! Out of scope here (covered elsewhere or by design):
 //!   RFC9218 §7.2 wire layout (frame-type ID, Prioritized Element ID
 //!                varint, Priority Field Value byte run) → handled by the

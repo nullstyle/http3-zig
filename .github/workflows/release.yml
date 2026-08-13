@@ -4,7 +4,7 @@ on:
   push:
     tags: ['v*.*.*']
 
-# http3-zig pins Zig 0.16.0 via mise (mise.toml), matching the test
+# http3-zig tracks Zig master via mise (mise.toml), matching the test
 # workflow. The release job validates that the tag matches .version
 # in build.zig.zon, runs the full test suite, and cuts a GitHub
 # release with auto-generated notes plus the project CHANGELOG.md.

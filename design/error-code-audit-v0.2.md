@@ -2,8 +2,10 @@
 
 Date: 2026-05-09
 Reference: draft-ietf-webtrans-http3-15
-Status: DRIFT (6 items — all "missing identifier" gaps; zero
-codepoint mismatches on the values we *do* define)
+Status: RESOLVED (2026-08) — all six missing identifiers have since landed
+(webtransport.zig error-code constants; typed wt_initial_* Settings fields).
+Kept as a historical audit record; zero codepoint mismatches were found on
+the values defined at audit time.
 
 ## Methodology
 

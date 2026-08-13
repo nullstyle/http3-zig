@@ -47,6 +47,10 @@
 //!   RFC9220 §4.4 ¶?   MUST       acceptWebSocket refuses a non-2xx :status (failure path)
 //!   RFC9220 §4.4 ¶?   MUST       acceptWebSocket refuses a non-WebSocket request
 //!
+//! Visible debt:
+//!   none — the §3 SETTINGS gate and §4.1 bootstrap-classification
+//!   requirements against the public surface are exercised below.
+//!
 //! Out of scope here (covered elsewhere):
 //!   RFC9114 §7.2.4         SETTINGS frame *codec* (any setting-id including 0x08)  → rfc9114_settings.zig
 //!   RFC9114 §4.3.1, §4.3.2 generic :method / :scheme / :path / :authority / :protocol pseudo-header rules

@@ -321,8 +321,9 @@ if 0-RTT must survive rotation).
 
 ## 0-RTT
 
-quic-zig 0.9.0 supports 0-RTT end-to-end at the transport layer: server-side
-context install (`Server.Config.enable_0rtt` + anti-replay tracker) and
+quic 0.12.0 supports 0-RTT end-to-end at the transport layer: server-side
+enablement via `Server.Config.early_data` (`.disabled` / `.with_anti_replay`
+/ `.without_replay_protection`, plus `early_data_application_context`) and
 client-side resumption with rejection recovery
 (`Client.Config.resumption_state` / `new_session_callback`). http3-zig has **no blessed
 0-RTT request path yet**: early data at the HTTP/3 layer is not supported or

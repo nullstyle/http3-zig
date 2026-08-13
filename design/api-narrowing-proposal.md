@@ -1,6 +1,9 @@
 # API narrowing proposal — v0.2
 
-Status: proposal, read-only audit. Not implemented.
+Status: largely landed. All v0.2 items and v0.3 items 1-2 shipped in prior
+releases; v0.3+ items 3-5 (underlyingWriter rename, bidiAbort, typed
+WebTransportStream handle) are in flight in the current sprint (2026-08).
+The audit text below is kept unchanged as the historical record.
 
 Scope: WebTransport-adjacent public API across `client.zig`, `server.zig`,
 `session.zig`, `webtransport.zig`, and the `root.zig` re-exports. The

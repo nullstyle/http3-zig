@@ -12,8 +12,8 @@ client-initiated uni stream, and `CLOSE_WEBTRANSPORT_SESSION`. The current
 `main` CI posture treats the WT matrix as advisory signal and the in-tree WT
 self-test as the hard gate.
 
-http3-zig pins **quic-zig v0.7.5**, which carries the
-`initial_source_connection_id` fix, so the handshake completes. The
+http3-zig pins **quic v0.12.0** (the `initial_source_connection_id` fix that
+unblocked this handshake landed back in v0.7.5). The
 third-party matrix stays `continue-on-error: true` — building and running
 external peers in CI is still treated as flake-prone, so the in-tree self-test
 (`wt-interop-self-test.yml`) remains the hard gate while the foreign-peer

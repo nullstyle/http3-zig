@@ -41,6 +41,10 @@
 //!   draft-ietf-webtrans-http3 §5.6.3 ¶? MUST    WT_STREAMS_BLOCKED_UNI capsule type is 0x190b4d44, value is a single varint
 //!   draft-ietf-webtrans-http3 §5.6   ¶? MUST    flow-control capsule values MUST contain exactly one QUIC varint
 //!
+//! Visible debt:
+//!   none — every draft-15 claim testable against the codec/session surface
+//!   here has a test; lifecycle claims are integration-tested (see below).
+//!
 //! Out of scope (covered elsewhere):
 //!   draft-ietf-webtrans-http3 §3       handshake/bootstrapping interplay,
 //!                                      session-level inbound stream dispatch,
