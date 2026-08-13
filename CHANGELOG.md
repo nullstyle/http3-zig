@@ -150,6 +150,28 @@ breaking changes; see notes per release.
 
 ### Changed
 
+- **quic dependency bumped v0.12.0 → v0.13.0** (all additive; wire
+  behavior and defaults unchanged). Adoptions: the at-most-once
+  `Event.early_data` is now driven by quic's one-shot
+  `ConnectionEvent.early_data` instead of a per-drain status poll —
+  fixing a real hazard where a 0-RTT REJECTION could be missed (after
+  rejecting, the transport restarts the TLS handshake and the polled
+  status reads `.not_offered` again; the event is keyed off the requeue
+  latch and always arrives after the verbatim 1-RTT replay). The
+  interop loops use the new flat `transport.classifyReceiveError` /
+  `classifySendError` re-exports. New Unstable-tier send-window
+  passthrough: `Session.streamSendWindow` /
+  `TransportEndpoint.streamSendWindow` and
+  `WebTransportStream.writable()` — QUIC-side send headroom for
+  backpressure-aware writers (upstream-Unstable struct; the
+  `connection` component is a shared pool, do not sum). Memory: quic
+  0.13.0's sent-packet tracker right-sizing cuts the fixed
+  two-connection warm-up footprint from ≈ 6.2 MB to ≈ 1.87 MB
+  (measured; per-iteration slope byte-identical at 251.2 B/iter) —
+  docs/memory-profile.md carries the new table. Note for other
+  consumers: pin the release TARBALL URL (`archive/refs/tags/v0.13.0`),
+  not the `git+…#v0.13.0` form — the annotated tag resolves to a
+  different fingerprint via git on current Zig master.
 - **WebTransport wire pin bumped draft-ietf-webtrans-http3-15 → -16** (zero
   codepoint changes — a behavioral revision; the API_STABILITY dual-codepath
   sunset window is waived and the waiver recorded in the conformance

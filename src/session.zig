@@ -705,6 +705,18 @@ pub const WebTransportStream = struct {
     pub fn canBuffer(self: WebTransportStream, additional_bytes: usize) Error!bool {
         return self.session.canBufferStreamBytes(self.stream_id, additional_bytes);
     }
+
+    /// Transport send-window headroom for this substream
+    /// (`Session.streamSendWindow`): bytes a `write` could hand to the
+    /// transport as NEW data right now, or null when the stream is
+    /// unknown to the transport. Complements `canBuffer` (H3-side
+    /// buffering cap) with the QUIC-side flow-control view; the WT
+    /// session-level budget is `flowState()`. Unstable tier — rides on
+    /// an upstream-Unstable accessor.
+    pub fn writable(self: WebTransportStream) ?usize {
+        const window = self.session.streamSendWindow(self.stream_id) orelse return null;
+        return window.writable;
+    }
 };
 
 pub const WebTransportStreamOpenedEvent = struct {
@@ -1656,13 +1668,35 @@ pub const Session = struct {
         return self.quic.stats();
     }
 
-    /// Emit the at-most-once `early_data` event when the transport has
-    /// resolved the attempt. `not_offered` after handshake completion
-    /// latches silently — no attempt will ever surface on this
-    /// connection, so the per-drain poll stops.
-    fn pollEarlyDataStatus(self: *Session, events: *std.ArrayList(Event), budget: *DrainBudget) Error!void {
+    /// By-value send-window snapshot for one stream
+    /// (`Connection.streamSendWindow`, quic v0.13.0): `{connection,
+    /// stream, queued, writable}` where `writable = min(connection,
+    /// stream) -| queued` — new-data bytes only, retransmissions
+    /// invisible, congestion deliberately excluded. Null for unknown
+    /// streams and peer-initiated unis. Upstream-UNSTABLE struct passed
+    /// through verbatim (same caveat as `transportStats`); note the
+    /// `connection` component is one shared pool across streams — do
+    /// not sum per-stream snapshots.
+    pub fn streamSendWindow(self: *const Session, stream_id: u64) ?quic.SendWindow {
+        return self.quic.streamSendWindow(stream_id);
+    }
+
+    /// quic v0.13.0's one-shot `ConnectionEvent.early_data` replaces the
+    /// old per-drain `earlyDataStatus()` poll, which could MISS a
+    /// rejection: after rejecting 0-RTT the transport restarts the TLS
+    /// handshake, from which point the polled status reads
+    /// `.not_offered` again — only a drain landing inside that window
+    /// ever observed `.rejected`. The event has no window: rejection is
+    /// keyed off quic's internal requeue latch and guaranteed to arrive
+    /// AFTER the verbatim 1-RTT requeue ran.
+    fn observeEarlyDataOutcome(
+        self: *Session,
+        status: quic.EarlyDataStatus,
+        events: *std.ArrayList(Event),
+        budget: *DrainBudget,
+    ) Error!void {
         if (self.role != .client or self.early_data_resolved) return;
-        switch (self.quic.earlyDataStatus()) {
+        switch (status) {
             .accepted => {
                 self.early_data_resolved = true;
                 try self.appendEvent(events, budget, .{ .early_data = .{
@@ -1680,9 +1714,7 @@ pub const Session = struct {
                     .reason = self.quic.earlyDataReason(),
                 } });
             },
-            else => {
-                if (self.quic.handshakeDone()) self.early_data_resolved = true;
-            },
+            else => {},
         }
     }
 
@@ -3272,7 +3304,6 @@ pub const Session = struct {
 
     pub fn drain(self: *Session, events: *std.ArrayList(Event)) Error!void {
         var budget = self.drainBudget();
-        try self.pollEarlyDataStatus(events, &budget);
         try self.drainConnectionEvents(events, &budget);
         try self.drainDatagrams(events, &budget);
 
@@ -3553,6 +3584,7 @@ pub const Session = struct {
                 .datagram_lost => |lost| try self.appendEvent(events, budget, .{ .datagram_lost = lost }),
                 .flow_blocked => |blocked| try self.appendEvent(events, budget, .{ .flow_blocked = blocked }),
                 .connection_ids_needed => |needed| try self.appendEvent(events, budget, .{ .connection_ids_needed = needed }),
+                .early_data => |status| try self.observeEarlyDataOutcome(status, events, budget),
                 // Transport-level ConnectionEvents the H3 layer does not
                 // surface to its embedder — e.g. `alternative_server_address`,
                 // a QUIC server-migration hint (draft-munizaga-quic-

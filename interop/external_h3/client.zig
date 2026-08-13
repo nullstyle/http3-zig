@@ -110,7 +110,7 @@ pub fn main(init: std.process.Init) !void {
             // oversize) drop the datagram: loss recovery retransmits, and a
             // dead peer is reaped by the idle timeout. Local faults propagate.
             self.socket.send(self.io, &self.peer, bytes) catch |err|
-                switch (quic.transport.udp_server.classifySendError(err)) {
+                switch (quic.transport.classifySendError(err)) {
                     .tolerate => {},
                     .fatal => return err,
                 };
@@ -142,7 +142,7 @@ pub fn main(init: std.process.Init) !void {
                 .raw = std.Io.Duration.fromMilliseconds(5),
                 .clock = .awake,
             },
-        }) catch |err| switch (quic.transport.udp_server.classifyReceiveError(err)) {
+        }) catch |err| switch (quic.transport.classifyReceiveError(err)) {
             .tolerate => null,
             .fatal => return err,
         };

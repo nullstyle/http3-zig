@@ -39,25 +39,28 @@ working-set claim.
 ## The numbers
 
 2 000-iteration trace on the current tree (http3-zig against quic
-0.12.0):
+0.13.0):
 
 | Stage | iters | bytes-in-use | max-bytes-ever | Δ vs warm-up |
 | --- | ---: | ---: | ---: | ---: |
-| warm-up | 0 | 6 199 916 | 6 199 966 | +0 |
-| 500 iters | 500 | 6 326 124 | 6 328 717 | +126 208 |
-| 1k iters | 1 000 | 6 451 532 | 6 454 125 | +251 616 |
-| 2k iters | 2 000 | 6 702 348 | 6 704 941 | +502 432 |
+| warm-up | 0 | 1 866 263 | 1 866 641 | +0 |
+| 500 iters | 500 | 1 992 471 | 1 995 064 | +126 208 |
+| 1k iters | 1 000 | 2 117 879 | 2 120 472 | +251 616 |
+| 2k iters | 2 000 | 2 368 695 | 2 371 288 | +502 432 |
 
 **Δ bytes-in-use warm-up → 2k iters: +502 432 bytes over 2 000 iters
 (≈ 251 bytes/iter).** `gpa.deinit()` reports **ok** — every allocation
 made during the loop is reachable from the `Session` deinit chain.
 
-The fixed warm-up footprint roughly doubled moving quic 0.10 → 0.12
-(≈ 2.5 MB → ≈ 6.2 MB for the two-connection pair): the transport's
-modern congestion-control spine — CUBIC/HyStart++ state, the pacing
-outlet, per-packet delivery-rate stamps, and the BBR-capable
-controller — is per-connection overhead, not per-iteration cost. The
-slope the gate watches is unchanged.
+The fixed warm-up footprint's history: it roughly doubled moving quic
+0.10 → 0.12 (≈ 2.5 MB → ≈ 6.2 MB for the two-connection pair) when the
+transport grew its modern congestion-control spine, then quic 0.13.0's
+sent-packet tracker right-sizing (Initial/Handshake trackers 4096 → 256
+slots, capacity now an init-time choice) took it down to **≈ 1.87 MB /
+pair** — below even the 0.10 figure. Per-connection overhead either
+way, not per-iteration cost: the slope the gate watches is unchanged
+across all three eras (the Δ column above is byte-identical to the
+0.12.0 run).
 
 ## Verdict
 

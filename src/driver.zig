@@ -90,6 +90,14 @@ pub const Endpoint = struct {
         return self.quic.stats();
     }
 
+    /// Per-stream send-window snapshot (`Connection.streamSendWindow`,
+    /// quic v0.13.0); see `Session.streamSendWindow` for the field
+    /// contract and the shared-connection-pool caveat. Upstream-Unstable
+    /// struct, passed through verbatim.
+    pub fn streamSendWindow(self: *const Endpoint, stream_id: u64) ?quic.SendWindow {
+        return self.quic.streamSendWindow(stream_id);
+    }
+
     /// Run the QUIC handshake state machine (`Connection.advance`): feed
     /// buffered CRYPTO to TLS and queue any resulting flight for the next
     /// `poll`/`flush`. Real-network clients MUST call this once after

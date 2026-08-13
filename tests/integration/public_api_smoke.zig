@@ -245,6 +245,7 @@ test "public API smoke: stable embedding surface compiles" {
         _ = H.TransportEndpoint.handle;
         _ = H.TransportEndpoint.nextTimerDeadline;
         _ = H.TransportEndpoint.transportStats;
+        _ = H.TransportEndpoint.streamSendWindow;
 
         _ = H.earlydata;
         _ = H.earlydata.encode;
@@ -261,6 +262,7 @@ test "public API smoke: stable embedding surface compiles" {
         _ = H.Session.earlyDataStatus;
         _ = H.Session.requestArrivedInEarlyData;
         _ = H.Session.transportStats;
+        _ = H.Session.streamSendWindow;
         _ = H.server.earlyDataApplicationContext;
         _ = H.server.installEarlyDataContext;
         _ = H.TransportEndpoint.advance;
@@ -388,6 +390,7 @@ test "public API smoke: stable embedding surface compiles" {
         _ = H.WebTransportStream.resetWithCode;
         _ = H.WebTransportStream.sendState;
         _ = H.WebTransportStream.canBuffer;
+        _ = H.WebTransportStream.writable;
         _ = H.WebTransportStreamOpenedEvent;
         _ = H.WebTransportStreamDataEvent;
         _ = H.WebTransportFlowViolationEvent;

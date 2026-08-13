@@ -89,6 +89,13 @@ but changes will be deliberate, called out in `CHANGELOG.md`, and kept minimal.
   or moved by a quic minor bump without an http3-zig major signal; treat
   field access as positional-fragile (`.{}`-init and exhaustive
   destructuring will churn).
+- **Per-stream send-window passthrough.** `Session.streamSendWindow` /
+  `TransportEndpoint.streamSendWindow` (returning quic-zig's
+  `SendWindow` verbatim) and the `WebTransportStream.writable()`
+  convenience. Doubly Unstable: the accessor is Unstable-tier upstream
+  until it soaks, and the struct carries the same upstream-Unstable
+  caveat as `QuicConnectionStats`. The `connection` component is one
+  shared pool across streams — do not sum per-stream snapshots.
 - **Newly added surfaces** — e.g. the DoS hardening knobs
   (`max_incoming_frame_length`, `wt_max_total_buffered_bytes`) — may see minor
   signature or naming refinement as they are exercised for the first time.

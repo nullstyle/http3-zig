@@ -27,9 +27,14 @@
         // build.zig to the new release (tools/check-boringssl-pin.sh lints
         // this on tag pins) and mirror any boringssl_zig pin change below
         // byte-for-byte.
+        // Tarball URL form (not `git+…#tag`): v0.13.0 is an annotated
+        // tag, and the git form resolves it to a different (unnamed
+        // N-V) fingerprint than the release tarball the upstream
+        // announcement hashes. The tarball is the canonical pin form
+        // upstream publishes — same convention as boringssl_zig below.
         .quic = .{
-            .url = "git+https://github.com/nullstyle/quic-zig.git#v0.12.0",
-            .hash = "quic-0.12.0-DnSYvceUKwDfkGRGLtid8dcB27U2i04DZ4W_bUu7EpeN",
+            .url = "https://github.com/nullstyle/quic-zig/archive/refs/tags/v0.13.0.tar.gz",
+            .hash = "quic-0.13.0-DnSYvcT4KwBwFoCH9dujgPfwvOinjILm9rl_AyeLpSpk",
         },
         // MUST match quic's boringssl_zig entry byte-for-byte so the
         // package manager dedupes to a single boringssl module instance;
