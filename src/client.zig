@@ -241,6 +241,15 @@ pub const RequestWriter = struct {
         try self.reset(protocol.ErrorCode.request_cancelled);
     }
 
+    /// Abort both directions of the request stream: `reset(code)` on the
+    /// send half plus `cancel()` (STOP_SENDING) on the receive half. A
+    /// real-world abort usually needs both — reset alone leaves the peer
+    /// free to keep streaming a response.
+    pub fn bidiAbort(self: *RequestWriter, error_code: u64) session_mod.Error!void {
+        try self.reset(error_code);
+        try self.cancel();
+    }
+
     pub fn cancel(self: *RequestWriter) session_mod.Error!void {
         try self.client.cancel(self.stream_id);
     }
@@ -296,7 +305,7 @@ pub const ConnectUdpClientStream = struct {
         try self.writer.abort();
     }
 
-    pub fn requestWriter(self: *ConnectUdpClientStream) *RequestWriter {
+    pub fn underlyingWriter(self: *ConnectUdpClientStream) *RequestWriter {
         return &self.writer;
     }
 };
@@ -397,7 +406,7 @@ pub const WebSocketClientStream = struct {
         try self.writer.abort();
     }
 
-    pub fn requestWriter(self: *WebSocketClientStream) *RequestWriter {
+    pub fn underlyingWriter(self: *WebSocketClientStream) *RequestWriter {
         return &self.writer;
     }
 };
@@ -465,6 +474,14 @@ pub const WebTransportClientStream = struct {
             .stream_id = stream_id,
             .kind = kind,
         };
+    }
+
+    /// Abort both directions of the CONNECT stream — `reset(code)` +
+    /// `cancel()` through the underlying writer. Session-scope and abrupt:
+    /// this tears the WebTransport session down (draft §5.4); prefer the
+    /// close-capsule path for graceful shutdown.
+    pub fn bidiAbort(self: *WebTransportClientStream, error_code: u64) session_mod.Error!void {
+        try self.writer.bidiAbort(error_code);
     }
 
     /// Sends a `DRAIN_WEBTRANSPORT_SESSION` capsule on the CONNECT stream;
@@ -578,7 +595,7 @@ pub const WebTransportClientStream = struct {
     /// stream's body, not WT's per-session datagram channel) and only
     /// make sense in non-WT contexts. See README's `## Datagram sends`
     /// section for the full comparison.
-    pub fn requestWriter(self: *WebTransportClientStream) *RequestWriter {
+    pub fn underlyingWriter(self: *WebTransportClientStream) *RequestWriter {
         return &self.writer;
     }
 };

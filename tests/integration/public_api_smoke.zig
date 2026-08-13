@@ -130,6 +130,7 @@ test "public API smoke: stable embedding surface compiles" {
         _ = H.RequestWriter.reset;
         _ = H.RequestWriter.abort;
         _ = H.RequestWriter.cancel;
+        _ = H.RequestWriter.bidiAbort;
         _ = H.ResponseWriter;
         _ = H.ResponseWriter.write;
         _ = H.ResponseWriter.sendState;
@@ -264,7 +265,7 @@ test "public API smoke: stable embedding surface compiles" {
         _ = H.WebSocketClientStream.finish;
         _ = H.WebSocketClientStream.reset;
         _ = H.WebSocketClientStream.abort;
-        _ = H.WebSocketClientStream.requestWriter;
+        _ = H.WebSocketClientStream.underlyingWriter;
         _ = H.WebSocketServerStream;
         _ = H.WebSocketServerStream.streamId;
         _ = H.WebSocketServerStream.write;
@@ -277,7 +278,7 @@ test "public API smoke: stable embedding surface compiles" {
         _ = H.WebSocketServerStream.finish;
         _ = H.WebSocketServerStream.reset;
         _ = H.WebSocketServerStream.abort;
-        _ = H.WebSocketServerStream.responseWriter;
+        _ = H.WebSocketServerStream.underlyingWriter;
         _ = H.WebTransportConnectOptions;
         _ = H.WebTransportAcceptOptions;
         _ = H.WebTransportClientStream;
@@ -300,7 +301,8 @@ test "public API smoke: stable embedding surface compiles" {
         _ = H.WebTransportClientStream.finish;
         _ = H.WebTransportClientStream.reset;
         _ = H.WebTransportClientStream.abort;
-        _ = H.WebTransportClientStream.requestWriter;
+        _ = H.WebTransportClientStream.underlyingWriter;
+        _ = H.WebTransportClientStream.bidiAbort;
         _ = H.WebTransportServerStream;
         _ = H.WebTransportServerStream.streamId;
         _ = H.WebTransportServerStream.sessionId;
@@ -321,7 +323,7 @@ test "public API smoke: stable embedding surface compiles" {
         _ = H.WebTransportServerStream.finish;
         _ = H.WebTransportServerStream.reset;
         _ = H.WebTransportServerStream.abort;
-        _ = H.WebTransportServerStream.responseWriter;
+        _ = H.WebTransportServerStream.underlyingWriter;
         _ = H.ConnectUdpOptions;
         _ = H.ConnectUdpAcceptOptions;
         _ = H.ConnectUdpClientStream;
@@ -335,7 +337,7 @@ test "public API smoke: stable embedding surface compiles" {
         _ = H.ConnectUdpClientStream.fail;
         _ = H.ConnectUdpClientStream.failForError;
         _ = H.ConnectUdpClientStream.abort;
-        _ = H.ConnectUdpClientStream.requestWriter;
+        _ = H.ConnectUdpClientStream.underlyingWriter;
         _ = H.ConnectUdpServerStream;
         _ = H.ConnectUdpServerStream.streamId;
         _ = H.ConnectUdpServerStream.sendUdp;
@@ -347,7 +349,7 @@ test "public API smoke: stable embedding surface compiles" {
         _ = H.ConnectUdpServerStream.fail;
         _ = H.ConnectUdpServerStream.failForError;
         _ = H.ConnectUdpServerStream.abort;
-        _ = H.ConnectUdpServerStream.responseWriter;
+        _ = H.ConnectUdpServerStream.underlyingWriter;
 
         // Events, errors, observability, and key codec re-exports.
         _ = H.session.Event;

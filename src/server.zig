@@ -348,7 +348,7 @@ pub const ConnectUdpServerStream = struct {
         try self.writer.abort();
     }
 
-    pub fn responseWriter(self: *ConnectUdpServerStream) *ResponseWriter {
+    pub fn underlyingWriter(self: *ConnectUdpServerStream) *ResponseWriter {
         return &self.writer;
     }
 };
@@ -435,7 +435,7 @@ pub const WebSocketServerStream = struct {
         try self.writer.abort();
     }
 
-    pub fn responseWriter(self: *WebSocketServerStream) *ResponseWriter {
+    pub fn underlyingWriter(self: *WebSocketServerStream) *ResponseWriter {
         return &self.writer;
     }
 };
@@ -602,7 +602,7 @@ pub const WebTransportServerStream = struct {
     /// stream's body, not WT's per-session datagram channel) and only
     /// make sense in non-WT contexts. See README's `## Datagram sends`
     /// section for the full comparison.
-    pub fn responseWriter(self: *WebTransportServerStream) *ResponseWriter {
+    pub fn underlyingWriter(self: *WebTransportServerStream) *ResponseWriter {
         return &self.writer;
     }
 };
