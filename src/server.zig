@@ -110,6 +110,7 @@ pub const DatagramSend = session_mod.DatagramSendEvent;
 pub const FlowBlocked = session_mod.FlowBlockedEvent;
 pub const ConnectionIdsNeeded = session_mod.ConnectionIdsNeededEvent;
 pub const StreamSendState = session_mod.StreamSendState;
+pub const WebTransportStream = session_mod.WebTransportStream;
 
 pub const ResponseOptions = struct {
     status: []const u8 = "200",
@@ -483,6 +484,22 @@ pub const WebTransportServerStream = struct {
     /// (frame type `0x41` + Session ID) is written automatically.
     pub fn openBidiStream(self: *WebTransportServerStream) session_mod.Error!u64 {
         return try self.writer.server.session.openWebTransportBidiStream(self.sessionId());
+    }
+
+    /// Typed handle for a substream of this session — from event data
+    /// (`opened.stream_id`, `opened.kind`) or a stored raw id. Unchecked:
+    /// the caller vouches the id belongs to this WebTransport session.
+    pub fn streamHandle(
+        self: *const WebTransportServerStream,
+        stream_id: u64,
+        kind: session_mod.WebTransportStreamKind,
+    ) session_mod.WebTransportStream {
+        return .{
+            .session = self.writer.server.session,
+            .session_id = self.sessionId(),
+            .stream_id = stream_id,
+            .kind = kind,
+        };
     }
 
     pub fn writeStream(

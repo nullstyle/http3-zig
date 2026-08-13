@@ -625,6 +625,59 @@ pub const OpenRequestStreamIterator = struct {
 /// for ergonomic access from event handlers.
 pub const WebTransportStreamKind = webtransport_mod.StreamKind;
 
+/// Typed handle to one WebTransport substream. Returned by the client/
+/// server facades' `openUniStream`/`openBidiStream` and constructible from
+/// event data via their `streamHandle`; every verb delegates to the
+/// `Session.*WebTransportStream` primitives, which stay public as the
+/// raw-u64 escape hatch. The type distinction is the point: a session
+/// facade's `finish()`/`reset()` (CONNECT-stream scope, ends the session)
+/// and a substream's `finish()`/`reset()` are now different types, where a
+/// bare substream id passed to a session-level method used to FIN or reset
+/// the CONNECT stream and implicitly close the whole session (draft
+/// §4.6/§5.4). Deliberately carries no capsule or datagram surface —
+/// substream code cannot reach the WT-out-of-spec capsule-datagram path.
+/// A plain value: copyable, storable in application maps, no deinit.
+pub const WebTransportStream = struct {
+    session: *Session,
+    /// CONNECT stream id of the owning WebTransport session.
+    session_id: u64,
+    /// QUIC stream id of this substream — public so applications can
+    /// correlate with `WebTransportStream*Event.stream_id`.
+    stream_id: u64,
+    kind: WebTransportStreamKind,
+
+    /// Send bytes on the substream (`Session.writeWebTransportStream`).
+    pub fn write(self: WebTransportStream, bytes: []const u8) Error!void {
+        try self.session.writeWebTransportStream(self.stream_id, bytes);
+    }
+
+    /// FIN this substream's send side (`Session.finishWebTransportStream`).
+    pub fn finish(self: WebTransportStream) Error!void {
+        try self.session.finishWebTransportStream(self.stream_id);
+    }
+
+    /// Reset with an application error code, translated through the
+    /// WebTransport-to-HTTP/3 mapping (draft §4.6).
+    pub fn reset(self: WebTransportStream, app_error_code: u32) Error!void {
+        try self.session.resetWebTransportStream(self.stream_id, app_error_code);
+    }
+
+    /// Reset with a reserved wire code, bypassing the §4.6 mapping.
+    pub fn resetWithCode(self: WebTransportStream, wire_code: u64) Error!void {
+        try self.session.resetWebTransportStreamWithCode(self.stream_id, wire_code);
+    }
+
+    /// Send-side progress snapshot (`Session.streamSendState`).
+    pub fn sendState(self: WebTransportStream) Error!StreamSendState {
+        return self.session.streamSendState(self.stream_id);
+    }
+
+    /// Backpressure probe (`Session.canBufferStreamBytes`).
+    pub fn canBuffer(self: WebTransportStream, additional_bytes: usize) Error!bool {
+        return self.session.canBufferStreamBytes(self.stream_id, additional_bytes);
+    }
+};
+
 pub const WebTransportStreamOpenedEvent = struct {
     stream_id: u64,
     session_id: u64,

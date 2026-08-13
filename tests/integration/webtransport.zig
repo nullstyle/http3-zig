@@ -3468,3 +3468,216 @@ test "WebTransport: peer FINs CONNECT control stream without CLOSE_WEBTRANSPORT_
     try std.testing.expectEqual(@as(?http3_zig.errors.ConnectionError, null), pair.client_h3.lastCloseError());
     try std.testing.expectEqual(@as(?http3_zig.errors.ConnectionError, null), pair.server_h3.lastCloseError());
 }
+
+test "WebTransportStream handle drives a substream and leaves the session alive" {
+    // Typed-handle coverage: adopt the id from openUniStream via
+    // streamHandle, drive write/finish through the handle, and pin the
+    // safety property the type exists for — handle verbs act on the
+    // substream, never the CONNECT stream, so the session survives.
+    const allocator = std.testing.allocator;
+    const h3_settings: http3_zig.Settings = .{
+        .enable_connect_protocol = true,
+        .h3_datagram = true,
+        .wt_enabled = true,
+    };
+
+    var pair: H3Pair = undefined;
+    try pair.initStarted(allocator, .{ .settings = h3_settings }, .{ .settings = h3_settings });
+    defer pair.deinit();
+    try exchangePairSettings(allocator, &pair);
+
+    var h3_client = http3_zig.Client.init(&pair.client_h3);
+    var h3_server = http3_zig.Server.init(&pair.server_h3);
+
+    var client_wt = try h3_client.startWebTransport(allocator, .{
+        .authority = "localhost",
+        .path = "/wt",
+    });
+    const session_id = client_wt.sessionId();
+
+    var client_runner = http3_zig.ClientRunner.init(allocator);
+    defer client_runner.deinit();
+    var server_runner = http3_zig.ServerRunner.init(allocator);
+    defer server_runner.deinit();
+
+    var client_events: std.ArrayList(http3_zig.session.Event) = .empty;
+    defer {
+        clearSessionEvents(allocator, &client_events);
+        client_events.deinit(allocator);
+    }
+    var server_events: std.ArrayList(http3_zig.session.Event) = .empty;
+    defer {
+        clearSessionEvents(allocator, &server_events);
+        server_events.deinit(allocator);
+    }
+
+    const payload = "typed-handle-payload";
+    var server_wt: ?http3_zig.WebTransportServerStream = null;
+    var sent_via_handle = false;
+    var server_saw_data: std.ArrayList(u8) = .empty;
+    defer server_saw_data.deinit(allocator);
+    var server_saw_finish = false;
+
+    var now_us: u64 = 1_000_000;
+    var iters: u32 = 0;
+    while (!server_saw_finish) : (iters += 1) {
+        try std.testing.expect(iters < 20_000);
+        try pumpH3(
+            &pair.client,
+            &pair.server,
+            &pair.client_h3,
+            &pair.server_h3,
+            &client_events,
+            &server_events,
+            &now_us,
+        );
+
+        for (server_events.items) |event| {
+            switch (try server_runner.observe(event)) {
+                .request_updated, .request_complete => |request_state| {
+                    const request = request_state.reader();
+                    if (server_wt == null and request.headers().len > 0 and request.isWebTransport()) {
+                        server_wt = try h3_server.acceptWebTransport(allocator, request, .{});
+                    }
+                },
+                .webtransport_stream_data => |data| {
+                    try std.testing.expectEqual(session_id, data.session_id);
+                    try server_saw_data.appendSlice(allocator, data.data);
+                },
+                .webtransport_stream_finished => |finished| {
+                    try std.testing.expectEqual(session_id, finished.session_id);
+                    server_saw_finish = true;
+                },
+                else => {},
+            }
+        }
+        clearSessionEvents(allocator, &server_events);
+
+        for (client_events.items) |event| {
+            switch (try client_runner.observe(event)) {
+                .response_updated, .response_complete => |response_state| {
+                    const response = response_state.reader();
+                    if (!sent_via_handle and response.headers().len > 0 and response.webTransportAccepted()) {
+                        const uni_id = try client_wt.openUniStream();
+                        const uni = client_wt.streamHandle(uni_id, .uni);
+                        try std.testing.expectEqual(session_id, uni.session_id);
+                        try std.testing.expectEqual(uni_id, uni.stream_id);
+                        try std.testing.expectEqual(http3_zig.WebTransportStreamKind.uni, uni.kind);
+                        try std.testing.expect(try uni.canBuffer(payload.len));
+                        try uni.write(payload);
+                        const st = try uni.sendState();
+                        try std.testing.expect(st.written_bytes >= payload.len);
+                        try uni.finish();
+                        sent_via_handle = true;
+                    }
+                },
+                else => {},
+            }
+        }
+        clearSessionEvents(allocator, &client_events);
+    }
+
+    try std.testing.expectEqualStrings(payload, server_saw_data.items);
+    // The safety property: handle verbs never touched the CONNECT stream.
+    try std.testing.expect(pair.client_h3.webTransportSessionState(session_id) == .established);
+    try std.testing.expect(pair.server_h3.webTransportSessionState(session_id) == .established);
+}
+
+test "primitive-tier misuse pin: finishWebTransportStream(session_id) ends the session" {
+    // The documented footgun the typed handle exists to prevent: the
+    // session-level primitive treats the CONNECT stream id like any other
+    // stream id, so FINning it is an implicit session close (draft §5.4).
+    // The raw-u64 primitives stay public as the escape hatch — this pin
+    // keeps their hazard visible rather than accidental.
+    const allocator = std.testing.allocator;
+    const h3_settings: http3_zig.Settings = .{
+        .enable_connect_protocol = true,
+        .h3_datagram = true,
+        .wt_enabled = true,
+    };
+
+    var pair: H3Pair = undefined;
+    try pair.initStarted(allocator, .{ .settings = h3_settings }, .{ .settings = h3_settings });
+    defer pair.deinit();
+    try exchangePairSettings(allocator, &pair);
+
+    var h3_client = http3_zig.Client.init(&pair.client_h3);
+    var h3_server = http3_zig.Server.init(&pair.server_h3);
+
+    var client_wt = try h3_client.startWebTransport(allocator, .{
+        .authority = "localhost",
+        .path = "/wt",
+    });
+    const session_id = client_wt.sessionId();
+
+    var client_runner = http3_zig.ClientRunner.init(allocator);
+    defer client_runner.deinit();
+    var server_runner = http3_zig.ServerRunner.init(allocator);
+    defer server_runner.deinit();
+
+    var client_events: std.ArrayList(http3_zig.session.Event) = .empty;
+    defer {
+        clearSessionEvents(allocator, &client_events);
+        client_events.deinit(allocator);
+    }
+    var server_events: std.ArrayList(http3_zig.session.Event) = .empty;
+    defer {
+        clearSessionEvents(allocator, &server_events);
+        server_events.deinit(allocator);
+    }
+
+    var server_wt: ?http3_zig.WebTransportServerStream = null;
+    var now_us: u64 = 1_000_000;
+    var iters: u32 = 0;
+    while (!(pair.server_h3.webTransportSessionState(session_id) == .established and
+        pair.client_h3.webTransportSessionState(session_id) == .established)) : (iters += 1)
+    {
+        try std.testing.expect(iters < 20_000);
+        try pumpH3(
+            &pair.client,
+            &pair.server,
+            &pair.client_h3,
+            &pair.server_h3,
+            &client_events,
+            &server_events,
+            &now_us,
+        );
+        for (server_events.items) |event| {
+            switch (try server_runner.observe(event)) {
+                .request_updated, .request_complete => |request_state| {
+                    const request = request_state.reader();
+                    if (server_wt == null and request.headers().len > 0 and request.isWebTransport()) {
+                        server_wt = try h3_server.acceptWebTransport(allocator, request, .{});
+                    }
+                },
+                else => {},
+            }
+        }
+        clearSessionEvents(allocator, &server_events);
+        clearSessionEvents(allocator, &client_events);
+    }
+
+    // Misuse: the substream verbs' session-level sibling, fed the
+    // session id itself. This FINs the CONNECT stream.
+    try pair.client_h3.finishWebTransportStream(session_id);
+
+    // The blast radius lands on the peer: the server observes the CONNECT
+    // stream FIN and terminates the session (draft §5.4 implicit close).
+    var settle: u32 = 0;
+    while (pair.server_h3.webTransportSessionState(session_id) == .established and
+        settle < 20_000) : (settle += 1)
+    {
+        try pumpH3(
+            &pair.client,
+            &pair.server,
+            &pair.client_h3,
+            &pair.server_h3,
+            &client_events,
+            &server_events,
+            &now_us,
+        );
+        clearSessionEvents(allocator, &server_events);
+        clearSessionEvents(allocator, &client_events);
+    }
+    try std.testing.expect(pair.server_h3.webTransportSessionState(session_id) != .established);
+}

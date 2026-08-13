@@ -186,6 +186,7 @@ pub const WebTransportCapsuleEvent = webtransport.CapsuleEvent;
 pub const WebTransportStreamHeader = webtransport.StreamHeader;
 pub const WebTransportStreamHeaderDecoded = webtransport.StreamHeaderDecoded;
 pub const WebTransportStreamKind = webtransport.StreamKind;
+pub const WebTransportStream = session.WebTransportStream;
 pub const WebTransportStreamOpenedEvent = session.WebTransportStreamOpenedEvent;
 pub const WebTransportStreamDataEvent = session.WebTransportStreamDataEvent;
 pub const WebTransportStreamFinishedEvent = session.WebTransportStreamFinishedEvent;

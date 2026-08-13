@@ -103,6 +103,7 @@ pub const DatagramSend = session_mod.DatagramSendEvent;
 pub const FlowBlocked = session_mod.FlowBlockedEvent;
 pub const ConnectionIdsNeeded = session_mod.ConnectionIdsNeededEvent;
 pub const StreamSendState = session_mod.StreamSendState;
+pub const WebTransportStream = session_mod.WebTransportStream;
 
 pub const RequestOptions = struct {
     method: []const u8 = "GET",
@@ -447,6 +448,22 @@ pub const WebTransportClientStream = struct {
     /// writes the WebTransport bidi-frame prefix.
     pub fn openBidiStream(self: *WebTransportClientStream) session_mod.Error!u64 {
         return try self.writer.client.session.openWebTransportBidiStream(self.sessionId());
+    }
+
+    /// Typed handle for a substream of this session — from event data
+    /// (`opened.stream_id`, `opened.kind`) or a stored raw id. Unchecked:
+    /// the caller vouches the id belongs to this WebTransport session.
+    pub fn streamHandle(
+        self: *const WebTransportClientStream,
+        stream_id: u64,
+        kind: session_mod.WebTransportStreamKind,
+    ) session_mod.WebTransportStream {
+        return .{
+            .session = self.writer.client.session,
+            .session_id = self.sessionId(),
+            .stream_id = stream_id,
+            .kind = kind,
+        };
     }
 
     pub fn writeStream(

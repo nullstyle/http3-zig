@@ -287,6 +287,7 @@ test "public API smoke: stable embedding surface compiles" {
         _ = H.WebTransportClientStream.sendDatagramTracked;
         _ = H.WebTransportClientStream.openUniStream;
         _ = H.WebTransportClientStream.openBidiStream;
+        _ = H.WebTransportClientStream.streamHandle;
         _ = H.WebTransportClientStream.writeStream;
         _ = H.WebTransportClientStream.finishStream;
         _ = H.WebTransportClientStream.resetStream;
@@ -311,6 +312,7 @@ test "public API smoke: stable embedding surface compiles" {
         _ = H.WebTransportServerStream.sendDatagramTracked;
         _ = H.WebTransportServerStream.openUniStream;
         _ = H.WebTransportServerStream.openBidiStream;
+        _ = H.WebTransportServerStream.streamHandle;
         _ = H.WebTransportServerStream.writeStream;
         _ = H.WebTransportServerStream.finishStream;
         _ = H.WebTransportServerStream.resetStream;
@@ -363,6 +365,13 @@ test "public API smoke: stable embedding surface compiles" {
         _ = H.FlowBlockedKind;
         _ = H.ConnectionClosedEvent;
         _ = H.ConnectionIdsNeededEvent;
+        _ = H.WebTransportStream;
+        _ = H.WebTransportStream.write;
+        _ = H.WebTransportStream.finish;
+        _ = H.WebTransportStream.reset;
+        _ = H.WebTransportStream.resetWithCode;
+        _ = H.WebTransportStream.sendState;
+        _ = H.WebTransportStream.canBuffer;
         _ = H.WebTransportStreamOpenedEvent;
         _ = H.WebTransportStreamDataEvent;
         _ = H.WebTransportFlowViolationEvent;
