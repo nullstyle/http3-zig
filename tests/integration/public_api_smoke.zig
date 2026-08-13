@@ -318,8 +318,7 @@ test "public API smoke: stable embedding surface compiles" {
         _ = H.WebTransportClientStream.sendMaxStreamsBidi;
         _ = H.WebTransportClientStream.sendMaxStreamsUni;
         _ = H.WebTransportClientStream.sendCapsule;
-        _ = H.WebTransportClientStream.observeCapsule;
-        _ = H.WebTransportClientStream.forwardCapsuleTo;
+        _ = H.WebTransportClientStream.forwardSessionEventTo;
         _ = H.WebTransportClientStream.flowState;
         _ = H.WebTransportClientStream.close;
         _ = H.WebTransportClientStream.finish;
@@ -340,8 +339,7 @@ test "public API smoke: stable embedding surface compiles" {
         _ = H.WebTransportServerStream.sendMaxStreamsBidi;
         _ = H.WebTransportServerStream.sendMaxStreamsUni;
         _ = H.WebTransportServerStream.sendCapsule;
-        _ = H.WebTransportServerStream.observeCapsule;
-        _ = H.WebTransportServerStream.forwardCapsuleTo;
+        _ = H.WebTransportServerStream.forwardSessionEventTo;
         _ = H.WebTransportServerStream.flowState;
         _ = H.WebTransportServerStream.close;
         _ = H.WebTransportServerStream.finish;

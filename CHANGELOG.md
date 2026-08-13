@@ -188,10 +188,18 @@ breaking changes; see notes per release.
   landing mid-capsule are message-scoped H3_MESSAGE_ERROR aborts of the
   CONNECT stream (never a connection error) [§5.4/§5.5]. Local
   finish/reset of a CONNECT and the non-2xx bootstrap rejection also sweep
-  substreams now. Transitional: raw `Event.data` for WT CONNECT bodies is
-  still emitted alongside (removal is a separate breaking change), and the
-  manual `observeCapsule` path remains (idempotent against the native
-  fold thanks to monotonicity).
+  substreams now. The transitional dual-emit of raw `Event.data` and the
+  manual `observeCapsule` path were removed before release — see the
+  Changed (BREAKING) entry below.
+- **WebTransport flow-control violations now terminate the SESSION, not
+  just the offending stream.** Receive-side limit violations (data /
+  bidi-streams / uni-streams overflow), malformed flow-capsule values,
+  and streams limits above 2^60 [draft-ietf-webtrans-http3 §5.6] close
+  the session with `WT_FLOW_CONTROL_ERROR` (0x045d4487): the CONNECT
+  stream is reset with that code, every live substream is swept, and a
+  `webtransport_session_closed` event with `.how == .protocol_violation`
+  is emitted. The connection deliberately survives — the blast radius of
+  a misbehaving peer session is that session, never the H3 connection.
 - **WebTransport pending sessions are now flow-controlled.** The two
   internal session registries were unified into one, and per-session
   flow state now exists from the moment a session is marked pending —
@@ -252,6 +260,25 @@ breaking changes; see notes per release.
   All six extension-facade accessors (ConnectUdp/WebSocket/WebTransport
   × client/server) renamed in one pass; hard rename, no alias. The WT
   capsule-datagram WARNING carries over to the new name.
+- **WT CONNECT stream bodies are session-owned.** `Event.data` is no
+  longer emitted for a WebTransport CONNECT stream's body — the session
+  consumes it as the capsule protocol and the typed `webtransport_*`
+  events are the replacement. With the application out of the capsule
+  datapath, the manual-observe surface is REMOVED:
+  `Session.observeWebTransportCapsule` and the facade
+  `observeCapsule` / `forwardCapsuleTo` are gone. Intermediaries migrate
+  to the new `forwardSessionEventTo(event, other)` on both WT facades —
+  it re-emits a session-scoped event onto the other leg of a proxy,
+  byte-equivalent on the wire (returns false for other sessions'
+  events, non-session-scoped variants, and non-capsule closes;
+  FIN/reset/datagram forwarding stays application policy) — with
+  `underlyingWriter().capsule(...)` as the raw escape hatch. Migration:
+
+  | Old | New |
+  | --- | --- |
+  | iterate capsules out of CONNECT-body `Event.data` | consume the typed `webtransport_*` events |
+  | `wt.observeCapsule(decoded)` | nothing — the session folds capsules automatically |
+  | `wt.forwardCapsuleTo(decoded, other)` | `wt.forwardSessionEventTo(event, other)` |
 
 ### Fixed
 

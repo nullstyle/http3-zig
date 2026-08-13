@@ -156,6 +156,7 @@ test "WebTransport over HTTP/3 establishes session, exchanges datagrams, and clo
     var client_saw_response = false;
     var server_saw_datagram = false;
     var client_saw_datagram = false;
+    var server_saw_drain = false;
     var server_saw_close = false;
     const close_code: u32 = 0xdeadbeef;
     const close_reason = "shutdown";
@@ -178,6 +179,27 @@ test "WebTransport over HTTP/3 establishes session, exchanges datagrams, and clo
         );
 
         for (server_events.items) |event| {
+            // The CONNECT stream's body carries DRAIN +
+            // CLOSE_WEBTRANSPORT_SESSION capsules; the session ingests
+            // them natively and surfaces typed events (no raw
+            // `Event.data` fires for the CONNECT body).
+            switch (event) {
+                .webtransport_session_draining => |draining| {
+                    try std.testing.expectEqual(session_id, draining.session_id);
+                    server_saw_drain = true;
+                },
+                .webtransport_session_closed => |closed| {
+                    try std.testing.expectEqual(session_id, closed.session_id);
+                    try std.testing.expect(closed.how == .close_capsule);
+                    try std.testing.expectEqual(@as(?u32, close_code), closed.code);
+                    try std.testing.expectEqualStrings(close_reason, closed.reason);
+                    // DRAIN went on the wire before CLOSE; the typed
+                    // events preserve that order.
+                    try std.testing.expect(server_saw_drain);
+                    server_saw_close = true;
+                },
+                else => {},
+            }
             switch (try server_runner.observe(event)) {
                 .request_updated, .request_complete => |request_state| {
                     const request = request_state.reader();
@@ -195,38 +217,6 @@ test "WebTransport over HTTP/3 establishes session, exchanges datagrams, and clo
                         var accepted = try h3_server.acceptWebTransport(allocator, request, .{});
                         try accepted.sendDatagram(datagram_to_client);
                         server_wt = accepted;
-                    }
-
-                    // The CONNECT stream's body carries DRAIN +
-                    // CLOSE_WEBTRANSPORT_SESSION capsules.
-                    if (!server_saw_close and request.body().len > 0) {
-                        var seen_drain = false;
-                        var seen_close: ?http3_zig.WebTransportCloseSession = null;
-                        var it = http3_zig.capsule.iter(request.body());
-                        while (try it.next()) |decoded| {
-                            const wt_event = try http3_zig.webtransport.classifyCapsule(decoded.capsule);
-                            switch (wt_event) {
-                                .drain_session => seen_drain = true,
-                                .close_session => |close| seen_close = close,
-                                .other => {},
-                                // Flow-control capsules
-                                // (draft-ietf-webtrans-http3 §5.6) are not
-                                // exercised by this integration test.
-                                .max_data,
-                                .data_blocked,
-                                .max_streams_bidi,
-                                .streams_blocked_bidi,
-                                .max_streams_uni,
-                                .streams_blocked_uni,
-                                => {},
-                            }
-                        }
-                        if (seen_close) |close| {
-                            try std.testing.expect(seen_drain);
-                            try std.testing.expectEqual(close_code, close.code);
-                            try std.testing.expectEqualStrings(close_reason, close.reason);
-                            server_saw_close = true;
-                        }
                     }
                 },
                 .datagram => |datagram| {
@@ -1187,8 +1177,9 @@ test "WebTransport DRAIN observed before confirmation gates pending-session open
     // Pending sessions carry live flow state, so a DRAIN capsule that
     // arrives on the CONNECT request body BEFORE the server accepts the
     // session already forbids new local opens
-    // [draft-ietf-webtrans-http3 §5.5]. (Previously the capsule's value
-    // was silently lost for unconfirmed sessions.)
+    // [draft-ietf-webtrans-http3 §5.5]. Native ingestion folds the DRAIN
+    // during pumping and surfaces `webtransport_session_draining` even
+    // though the session is still pending.
     const allocator = std.testing.allocator;
     const h3_settings: http3_zig.Settings = .{
         .enable_connect_protocol = true,
@@ -1207,9 +1198,6 @@ test "WebTransport DRAIN observed before confirmation gates pending-session open
         .path = "/wt",
     });
     try client_wt.sendDrain();
-
-    var server_runner = http3_zig.ServerRunner.init(allocator);
-    defer server_runner.deinit();
 
     var client_events: std.ArrayList(http3_zig.session.Event) = .empty;
     defer {
@@ -1238,37 +1226,28 @@ test "WebTransport DRAIN observed before confirmation gates pending-session open
         );
 
         for (server_events.items) |event| {
-            switch (try server_runner.observe(event)) {
-                .request_updated, .request_complete => |request_state| {
-                    const request = request_state.reader();
-                    if (drain_observed or request.body().len == 0) continue;
-                    // The session was auto-marked pending on the CONNECT
-                    // headers; the DRAIN capsule sits in the request body
-                    // before any accept.
-                    try std.testing.expect(
-                        pair.server_h3.webTransportSessionState(request.streamId()) == .pending,
-                    );
-                    var it = http3_zig.capsule.iter(request.body());
-                    while (try it.next()) |decoded| {
-                        try pair.server_h3.observeWebTransportCapsule(
-                            request.streamId(),
-                            decoded.capsule,
-                        );
-                    }
-                    // The drain latch is live on the pending session:
-                    // server-local opens are refused before the session
-                    // was ever accepted.
-                    try std.testing.expectError(
-                        error.WebTransportSessionDraining,
-                        pair.server_h3.openWebTransportUniStream(request.streamId()),
-                    );
-                    try std.testing.expect(
-                        pair.server_h3.webTransportSessionState(request.streamId()) == .pending,
-                    );
-                    drain_observed = true;
-                },
-                else => {},
-            }
+            const draining = switch (event) {
+                .webtransport_session_draining => |draining| draining,
+                else => continue,
+            };
+            if (drain_observed) continue;
+            // The session was auto-marked pending on the CONNECT
+            // headers; native ingestion folded the DRAIN out of the
+            // request body before any accept.
+            try std.testing.expect(
+                pair.server_h3.webTransportSessionState(draining.session_id) == .pending,
+            );
+            // The drain latch is live on the pending session:
+            // server-local opens are refused before the session
+            // was ever accepted.
+            try std.testing.expectError(
+                error.WebTransportSessionDraining,
+                pair.server_h3.openWebTransportUniStream(draining.session_id),
+            );
+            try std.testing.expect(
+                pair.server_h3.webTransportSessionState(draining.session_id) == .pending,
+            );
+            drain_observed = true;
         }
     }
 }
@@ -2954,8 +2933,6 @@ test "WebTransport: substream writes are gated by peer's WT_MAX_DATA limit" {
 
     var server_runner = http3_zig.ServerRunner.init(allocator);
     defer server_runner.deinit();
-    var client_runner = http3_zig.ClientRunner.init(allocator);
-    defer client_runner.deinit();
 
     var client_events: std.ArrayList(http3_zig.session.Event) = .empty;
     defer {
@@ -2969,8 +2946,8 @@ test "WebTransport: substream writes are gated by peer's WT_MAX_DATA limit" {
     }
 
     // Pump until the server has accepted and advertised a WT_MAX_DATA
-    // limit of 16 bytes. The client observes the resulting capsule via
-    // `observeCapsule` and updates its peer_max_data.
+    // limit of 16 bytes. Native ingestion folds the capsule into the
+    // client's peer_max_data and announces it as a typed credit event.
     var server_wt: ?http3_zig.WebTransportServerStream = null;
     var saw_max_data_on_client = false;
     const max_data_limit: u64 = 16;
@@ -3006,18 +2983,14 @@ test "WebTransport: substream writes are gated by peer's WT_MAX_DATA limit" {
         clearSessionEvents(allocator, &server_events);
 
         for (client_events.items) |event| {
-            switch (try client_runner.observe(event)) {
-                .response_updated, .response_complete => |response_state| {
-                    const response = response_state.reader();
-                    if (response.body().len > 0) {
-                        var it = http3_zig.capsule.iter(response.body());
-                        while (try it.next()) |decoded| {
-                            try client_wt.observeCapsule(decoded.capsule);
-                        }
-                        if (client_wt.flowState()) |snap| {
-                            if (snap.peer_max_data == max_data_limit) saw_max_data_on_client = true;
-                        }
-                    }
+            switch (event) {
+                .webtransport_credit_granted => |credit| {
+                    try std.testing.expectEqual(client_wt.sessionId(), credit.session_id);
+                    try std.testing.expect(credit.kind == .data);
+                    try std.testing.expectEqual(max_data_limit, credit.limit);
+                    const snap = client_wt.flowState() orelse return error.MissingFlowState;
+                    try std.testing.expectEqual(@as(?u64, max_data_limit), snap.peer_max_data);
+                    saw_max_data_on_client = true;
                 },
                 else => {},
             }
@@ -3063,8 +3036,6 @@ test "WebTransport: openUniStream is gated by peer's WT_MAX_STREAMS_UNI limit" {
     });
     defer client_wt.close(0, "done") catch {};
 
-    var client_runner = http3_zig.ClientRunner.init(allocator);
-    defer client_runner.deinit();
     var server_runner = http3_zig.ServerRunner.init(allocator);
     defer server_runner.deinit();
 
@@ -3079,7 +3050,8 @@ test "WebTransport: openUniStream is gated by peer's WT_MAX_STREAMS_UNI limit" {
         server_events.deinit(allocator);
     }
 
-    // Pump until client has observed WT_MAX_STREAMS_UNI = 2.
+    // Pump until client has observed WT_MAX_STREAMS_UNI = 2 (folded
+    // natively; surfaced as a typed credit event).
     var server_wt: ?http3_zig.WebTransportServerStream = null;
     var saw_streams_limit = false;
     const streams_limit: u64 = 2;
@@ -3113,18 +3085,14 @@ test "WebTransport: openUniStream is gated by peer's WT_MAX_STREAMS_UNI limit" {
         clearSessionEvents(allocator, &server_events);
 
         for (client_events.items) |event| {
-            switch (try client_runner.observe(event)) {
-                .response_updated, .response_complete => |response_state| {
-                    const response = response_state.reader();
-                    if (response.body().len > 0) {
-                        var it = http3_zig.capsule.iter(response.body());
-                        while (try it.next()) |decoded| {
-                            try client_wt.observeCapsule(decoded.capsule);
-                        }
-                        if (client_wt.flowState()) |snap| {
-                            if (snap.peer_max_streams_uni == streams_limit) saw_streams_limit = true;
-                        }
-                    }
+            switch (event) {
+                .webtransport_credit_granted => |credit| {
+                    try std.testing.expectEqual(client_wt.sessionId(), credit.session_id);
+                    try std.testing.expect(credit.kind == .streams_uni);
+                    try std.testing.expectEqual(streams_limit, credit.limit);
+                    const snap = client_wt.flowState() orelse return error.MissingFlowState;
+                    try std.testing.expectEqual(@as(?u64, streams_limit), snap.peer_max_streams_uni);
+                    saw_streams_limit = true;
                 },
                 else => {},
             }
@@ -3168,8 +3136,6 @@ test "WebTransport: bumping WT_MAX_DATA after a block lets the sender resume" {
     });
     defer client_wt.close(0, "done") catch {};
 
-    var client_runner = http3_zig.ClientRunner.init(allocator);
-    defer client_runner.deinit();
     var server_runner = http3_zig.ServerRunner.init(allocator);
     defer server_runner.deinit();
 
@@ -3223,18 +3189,13 @@ test "WebTransport: bumping WT_MAX_DATA after a block lets the sender resume" {
         clearSessionEvents(allocator, &server_events);
 
         for (client_events.items) |event| {
-            switch (try client_runner.observe(event)) {
-                .response_updated, .response_complete => |response_state| {
-                    const response = response_state.reader();
-                    if (response.body().len > 0) {
-                        var it = http3_zig.capsule.iter(response.body());
-                        while (try it.next()) |decoded| {
-                            try client_wt.observeCapsule(decoded.capsule);
-                        }
-                        if (client_wt.flowState()) |snap| {
-                            if (snap.peer_max_data) |m| advertised_max = m;
-                        }
-                    }
+            switch (event) {
+                // Each strictly-raised WT_MAX_DATA surfaces as a typed
+                // credit event once natively folded.
+                .webtransport_credit_granted => |credit| {
+                    try std.testing.expectEqual(client_wt.sessionId(), credit.session_id);
+                    try std.testing.expect(credit.kind == .data);
+                    advertised_max = credit.limit;
                 },
                 else => {},
             }
@@ -3893,8 +3854,8 @@ test "WebTransport: peer FINs uni stream after type byte but before Session ID e
 test "WebTransport: peer DRAIN gates further openUniStream / openBidiStream calls" {
     // draft-ietf-webtrans-http3 §5.5: after receiving DRAIN, an
     // endpoint MUST NOT open new streams. The session marks
-    // `received_drain` on the per-session flow state when
-    // `observeWebTransportCapsule` sees the DRAIN capsule, and
+    // `received_drain` on the per-session flow state when native
+    // ingestion folds the DRAIN capsule, and
     // `gateWebTransportStreamOpen` returns
     // `error.WebTransportSessionDraining` from there on.
     const allocator = std.testing.allocator;
@@ -3917,8 +3878,6 @@ test "WebTransport: peer DRAIN gates further openUniStream / openBidiStream call
         .path = "/wt-drain",
     });
 
-    var client_runner = http3_zig.ClientRunner.init(allocator);
-    defer client_runner.deinit();
     var server_runner = http3_zig.ServerRunner.init(allocator);
     defer server_runner.deinit();
 
@@ -3934,8 +3893,8 @@ test "WebTransport: peer DRAIN gates further openUniStream / openBidiStream call
     }
 
     // Pump until the server has accepted the WT bootstrap, then
-    // have it send DRAIN. Pump until the client observes the DRAIN
-    // capsule.
+    // have it send DRAIN. Pump until the client's typed draining
+    // event fires.
     var server_wt: ?http3_zig.WebTransportServerStream = null;
     var saw_drain_on_client = false;
     var now_us: u64 = 1_000_000;
@@ -3968,18 +3927,12 @@ test "WebTransport: peer DRAIN gates further openUniStream / openBidiStream call
         clearSessionEvents(allocator, &server_events);
 
         for (client_events.items) |event| {
-            switch (try client_runner.observe(event)) {
-                .response_updated, .response_complete => |response_state| {
-                    const response = response_state.reader();
-                    if (response.body().len > 0) {
-                        var it = http3_zig.capsule.iter(response.body());
-                        while (try it.next()) |decoded| {
-                            try client_wt.observeCapsule(decoded.capsule);
-                        }
-                        if (client_wt.flowState()) |snap| {
-                            if (snap.received_drain) saw_drain_on_client = true;
-                        }
-                    }
+            switch (event) {
+                .webtransport_session_draining => |draining| {
+                    try std.testing.expectEqual(client_wt.sessionId(), draining.session_id);
+                    const snap = client_wt.flowState() orelse return error.MissingFlowState;
+                    try std.testing.expect(snap.received_drain);
+                    saw_drain_on_client = true;
                 },
                 else => {},
             }

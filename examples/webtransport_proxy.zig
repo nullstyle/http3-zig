@@ -8,10 +8,11 @@
 //!
 //! The proxy accepts a downstream WebTransport CONNECT, opens its own
 //! upstream WebTransport CONNECT, then forwards the pieces applications own:
-//! control capsules, datagrams, WebTransport substream data, FIN, reset, and
-//! CONNECT lifecycle. The library supplies the endpoint handles and event
-//! stream; stream-id maps, socket policy, retry policy, and close policy stay
-//! in application code.
+//! session-scoped capsule events (via `forwardSessionEventTo`), datagrams,
+//! WebTransport substream data, FIN, reset, and CONNECT lifecycle. The
+//! library supplies the endpoint handles and typed event stream (native
+//! capsule ingestion — no raw body iteration); stream-id maps, socket
+//! policy, retry policy, and close policy stay in application code.
 
 const std = @import("std");
 const boringssl = @import("boringssl");
@@ -116,11 +117,6 @@ const ProxyDemo = struct {
     downstream_now_us: u64,
     upstream_now_us: u64,
 
-    downstream_request_cursor: usize,
-    downstream_response_cursor: usize,
-    upstream_request_cursor: usize,
-    upstream_response_cursor: usize,
-
     upstream_saw_max_data: bool,
     upstream_saw_downstream_datagram: bool,
     upstream_saw_downstream_stream_finish: bool,
@@ -168,10 +164,6 @@ const ProxyDemo = struct {
             .up_to_down_streams = std.AutoHashMap(u64, http3_zig.WebTransportStream).init(allocator),
             .downstream_now_us = 1_000_000,
             .upstream_now_us = 2_000_000,
-            .downstream_request_cursor = 0,
-            .downstream_response_cursor = 0,
-            .upstream_request_cursor = 0,
-            .upstream_response_cursor = 0,
             .upstream_saw_max_data = false,
             .upstream_saw_downstream_datagram = false,
             .upstream_saw_downstream_stream_finish = false,
@@ -423,13 +415,6 @@ const ProxyDemo = struct {
                 .request_updated, .request_complete => |request_state| {
                     const request = request_state.reader();
                     if (request.streamId() != self.proxy_in_wt.sessionId()) continue;
-                    try self.forwardRequestCapsules(
-                        request.body(),
-                        &self.downstream_request_cursor,
-                        &self.proxy_in_wt,
-                        &self.proxy_out_wt,
-                        "proxy: downstream capsule -> upstream",
-                    );
                     if (request.complete() and !self.proxy_finished_upstream_connect) {
                         try self.proxy_out_wt.finish();
                         self.proxy_finished_upstream_connect = true;
@@ -446,6 +431,31 @@ const ProxyDemo = struct {
             }
 
             switch (event) {
+                // Session-scoped capsule traffic (credit grants, BLOCKED
+                // signals, unknown/extension capsules) surfaces as typed
+                // events; one `forwardSessionEventTo` call re-emits each
+                // byte-equivalent on the upstream leg.
+                .webtransport_credit_granted,
+                .webtransport_peer_blocked,
+                .webtransport_session_draining,
+                .webtransport_unknown_capsule,
+                => {
+                    if (try self.proxy_in_wt.forwardSessionEventTo(event, &self.proxy_out_wt)) {
+                        std.debug.print("proxy: downstream capsule event -> upstream\n", .{});
+                    }
+                },
+                .webtransport_session_closed => |closed| {
+                    if (try self.proxy_in_wt.forwardSessionEventTo(event, &self.proxy_out_wt)) {
+                        // `close` on the upstream leg sends the CLOSE
+                        // capsule AND FINs the CONNECT stream, so the
+                        // explicit FIN forward below must not repeat it.
+                        self.proxy_finished_upstream_connect = true;
+                        std.debug.print(
+                            "proxy: downstream CLOSE -> upstream (code=0x{x})\n",
+                            .{closed.code orelse 0},
+                        );
+                    }
+                },
                 .webtransport_stream_opened => |opened| {
                     if (opened.session_id == self.proxy_in_wt.sessionId()) {
                         const outbound = try openMatchingStream(&self.proxy_out_wt, opened.kind);
@@ -486,17 +496,6 @@ const ProxyDemo = struct {
         defer self.clearUpstreamProxyEvents();
         for (self.upstream_proxy_events.items) |event| {
             switch (try self.upstream_proxy_runner.observe(event)) {
-                .response_updated, .response_complete => |response_state| {
-                    const response = response_state.reader();
-                    if (response.streamId() != self.proxy_out_wt.sessionId()) continue;
-                    try self.forwardResponseCapsules(
-                        response.body(),
-                        &self.upstream_response_cursor,
-                        &self.proxy_out_wt,
-                        &self.proxy_in_wt,
-                        "proxy: upstream capsule -> downstream",
-                    );
-                },
                 .datagram => |datagram| {
                     if (datagram.stream_id == self.proxy_out_wt.sessionId()) {
                         try self.proxy_in_wt.sendDatagram(datagram.payload);
@@ -507,6 +506,19 @@ const ProxyDemo = struct {
             }
 
             switch (event) {
+                // Mirror of the downstream direction: typed session
+                // events observed on the upstream leg re-emit downstream.
+                // (The upstream server's DRAIN crosses the hop here.)
+                .webtransport_credit_granted,
+                .webtransport_peer_blocked,
+                .webtransport_session_draining,
+                .webtransport_session_closed,
+                .webtransport_unknown_capsule,
+                => {
+                    if (try self.proxy_out_wt.forwardSessionEventTo(event, &self.proxy_in_wt)) {
+                        std.debug.print("proxy: upstream capsule event -> downstream\n", .{});
+                    }
+                },
                 .webtransport_stream_opened => |opened| {
                     if (opened.session_id == self.proxy_out_wt.sessionId()) {
                         const outbound = try openMatchingStream(&self.proxy_in_wt, opened.kind);
@@ -550,11 +562,6 @@ const ProxyDemo = struct {
                 .request_updated, .request_complete => |request_state| {
                     const request = request_state.reader();
                     if (request.streamId() != self.upstream_server_wt.sessionId()) continue;
-                    try self.observeEndpointRequestCapsules(
-                        request.body(),
-                        &self.upstream_request_cursor,
-                        &self.upstream_server_wt,
-                    );
                     if (request.complete()) {
                         self.upstream_saw_proxy_fin = true;
                     }
@@ -572,6 +579,24 @@ const ProxyDemo = struct {
             }
 
             switch (event) {
+                // The forwarded WT_MAX_DATA and CLOSE arrive as typed
+                // session events — native ingestion already folded them.
+                .webtransport_credit_granted => |credit| {
+                    if (credit.session_id == self.upstream_server_wt.sessionId() and credit.kind == .data) {
+                        if (credit.limit != downstream_max_data) return error.UpstreamMaxDataMismatch;
+                        self.upstream_saw_max_data = true;
+                        std.debug.print("upstream server: observed forwarded WT_MAX_DATA\n", .{});
+                    }
+                },
+                .webtransport_session_closed => |closed| {
+                    if (closed.session_id == self.upstream_server_wt.sessionId() and closed.how == .close_capsule) {
+                        if ((closed.code orelse 0) != close_code or !std.mem.eql(u8, closed.reason, close_reason)) {
+                            return error.UpstreamCloseMismatch;
+                        }
+                        self.upstream_saw_close = true;
+                        std.debug.print("upstream server: observed forwarded CLOSE\n", .{});
+                    }
+                },
                 .webtransport_stream_data => |data| {
                     if (data.session_id == self.upstream_server_wt.sessionId()) {
                         try self.upstream_stream_bytes.appendSlice(self.allocator, data.data);
@@ -592,15 +617,6 @@ const ProxyDemo = struct {
         defer self.clearDownstreamClientEvents();
         for (self.downstream_client_events.items) |event| {
             switch (try self.downstream_client_runner.observe(event)) {
-                .response_updated, .response_complete => |response_state| {
-                    const response = response_state.reader();
-                    if (response.streamId() != self.downstream_client_wt.sessionId()) continue;
-                    try self.observeEndpointResponseCapsules(
-                        response.body(),
-                        &self.downstream_response_cursor,
-                        &self.downstream_client_wt,
-                    );
-                },
                 .datagram => |datagram| {
                     if (datagram.stream_id == self.downstream_client_wt.sessionId()) {
                         if (!std.mem.eql(u8, datagram.payload, upstream_datagram)) {
@@ -614,6 +630,14 @@ const ProxyDemo = struct {
             }
 
             switch (event) {
+                // The upstream server's DRAIN crossed the hop and lands
+                // here as a typed draining event.
+                .webtransport_session_draining => |draining| {
+                    if (draining.session_id == self.downstream_client_wt.sessionId()) {
+                        self.downstream_saw_drain = true;
+                        std.debug.print("downstream client: observed forwarded DRAIN\n", .{});
+                    }
+                },
                 .webtransport_stream_data => |data| {
                     if (data.session_id == self.downstream_client_wt.sessionId()) {
                         try self.downstream_stream_bytes.appendSlice(self.allocator, data.data);
@@ -669,98 +693,6 @@ const ProxyDemo = struct {
         try self.downstream_client_wt.close(close_code, close_reason);
         self.downstream_client_closed = true;
         std.debug.print("downstream client: sent CLOSE_WEBTRANSPORT_SESSION + FIN\n", .{});
-    }
-
-    fn forwardRequestCapsules(
-        self: *ProxyDemo,
-        body: []const u8,
-        cursor: *usize,
-        inbound: anytype,
-        outbound: anytype,
-        label: []const u8,
-    ) !void {
-        while (cursor.* < body.len) {
-            const decoded = try http3_zig.capsule.decode(body[cursor.*..]);
-            cursor.* += decoded.bytes_read;
-            const wt_event = try http3_zig.webtransport.classifyCapsule(decoded.capsule);
-            if (wt_event.isClose()) {
-                std.debug.print("{s}: CLOSE\n", .{label});
-            } else {
-                std.debug.print("{s}: type=0x{x}\n", .{ label, decoded.capsule.capsule_type });
-            }
-            try inbound.forwardCapsuleTo(decoded.capsule, outbound);
-            _ = self;
-        }
-    }
-
-    fn forwardResponseCapsules(
-        self: *ProxyDemo,
-        body: []const u8,
-        cursor: *usize,
-        inbound: anytype,
-        outbound: anytype,
-        label: []const u8,
-    ) !void {
-        while (cursor.* < body.len) {
-            const decoded = try http3_zig.capsule.decode(body[cursor.*..]);
-            cursor.* += decoded.bytes_read;
-            const wt_event = try http3_zig.webtransport.classifyCapsule(decoded.capsule);
-            if (wt_event.isDrain()) {
-                std.debug.print("{s}: DRAIN\n", .{label});
-            } else {
-                std.debug.print("{s}: type=0x{x}\n", .{ label, decoded.capsule.capsule_type });
-            }
-            try inbound.forwardCapsuleTo(decoded.capsule, outbound);
-            _ = self;
-        }
-    }
-
-    fn observeEndpointRequestCapsules(
-        self: *ProxyDemo,
-        body: []const u8,
-        cursor: *usize,
-        wt: *http3_zig.WebTransportServerStream,
-    ) !void {
-        while (cursor.* < body.len) {
-            const decoded = try http3_zig.capsule.decode(body[cursor.*..]);
-            cursor.* += decoded.bytes_read;
-            try wt.observeCapsule(decoded.capsule);
-            switch (try http3_zig.webtransport.classifyCapsule(decoded.capsule)) {
-                .max_data => |value| {
-                    if (value != downstream_max_data) return error.UpstreamMaxDataMismatch;
-                    self.upstream_saw_max_data = true;
-                    std.debug.print("upstream server: observed forwarded WT_MAX_DATA\n", .{});
-                },
-                .close_session => |close| {
-                    if (close.code != close_code or !std.mem.eql(u8, close.reason, close_reason)) {
-                        return error.UpstreamCloseMismatch;
-                    }
-                    self.upstream_saw_close = true;
-                    std.debug.print("upstream server: observed forwarded CLOSE\n", .{});
-                },
-                else => {},
-            }
-        }
-    }
-
-    fn observeEndpointResponseCapsules(
-        self: *ProxyDemo,
-        body: []const u8,
-        cursor: *usize,
-        wt: *http3_zig.WebTransportClientStream,
-    ) !void {
-        while (cursor.* < body.len) {
-            const decoded = try http3_zig.capsule.decode(body[cursor.*..]);
-            cursor.* += decoded.bytes_read;
-            try wt.observeCapsule(decoded.capsule);
-            switch (try http3_zig.webtransport.classifyCapsule(decoded.capsule)) {
-                .drain_session => {
-                    self.downstream_saw_drain = true;
-                    std.debug.print("downstream client: observed forwarded DRAIN\n", .{});
-                },
-                else => {},
-            }
-        }
     }
 
     fn clearDownstreamEvents(self: *ProxyDemo) void {

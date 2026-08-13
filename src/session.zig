@@ -1806,7 +1806,8 @@ pub const Session = struct {
     /// the bytes go straight to the underlying QUIC stream.
     ///
     /// If the stream's WT session has a peer-advertised `WT_MAX_DATA`
-    /// limit set (via `observeWebTransportCapsule`), the write is
+    /// limit set (folded natively from the CONNECT stream's capsule
+    /// protocol), the write is
     /// gated against it: a write that would push `local_data_sent`
     /// past the limit returns
     /// `Error.WebTransportFlowControlExceeded` and the session
@@ -2292,8 +2293,8 @@ pub const Session = struct {
     const WTFoldOutcome = enum { continue_folding, session_ended, stream_failed };
 
     /// The native fold: one complete capsule from the CONNECT stream
-    /// into session state + typed events. Replaces the manual
-    /// `observeWebTransportCapsule` path as the authoritative consumer.
+    /// into session state + typed events. The session is the sole
+    /// consumer of the CONNECT stream's capsule protocol.
     fn foldWebTransportCapsuleNative(
         self: *Session,
         sess: *WTSessionState,
@@ -2640,8 +2641,8 @@ pub const Session = struct {
     /// Updates the locally-advertised `WT_MAX_DATA` limit and emits a
     /// matching capsule on the session's CONNECT stream. The capsule
     /// is sent as a reliable Capsule Protocol record on the response /
-    /// request body — peer's `observeWebTransportCapsule` will pick it
-    /// up and update its `peer_max_data`. Sending a non-increasing
+    /// request body — the peer's native capsule ingestion picks it up
+    /// and updates its `peer_max_data`. Sending a non-increasing
     /// value is allowed (the peer ignores it per draft §5.6.4) but
     /// uncommon.
     pub fn sendWebTransportMaxData(self: *Session, session_id: u64, value: u64) Error!void {
@@ -2671,99 +2672,6 @@ pub const Session = struct {
         switch (direction) {
             .bidi => flow.local_max_streams_bidi = value,
             .uni => flow.local_max_streams_uni = value,
-        }
-    }
-
-    /// Folds an inbound WebTransport flow-control capsule into the
-    /// per-session state. The application calls this when iterating
-    /// capsules out of `.data` events that ride the CONNECT stream's
-    /// body — the same way it already calls `webtransport.classifyCapsule`
-    /// for CLOSE / DRAIN. Capsules outside the WebTransport family are
-    /// ignored.
-    ///
-    /// **Tolerance for just-torn-down sessions:** capsules that arrived
-    /// on the wire BEFORE a close (CLOSE_WEBTRANSPORT_SESSION or implicit
-    /// FIN of CONNECT) often surface to the application AFTER the
-    /// session's local state has been destroyed — a single drain pass
-    /// emits the body bytes and the close event together, and the
-    /// application processes them in event-list order. To keep this
-    /// natural app loop ergonomic, observing a capsule for a session
-    /// that's already in `.none` state is a silent no-op rather than an
-    /// `UnknownWebTransportSession` error. The capsule's value is lost
-    /// (no flow state to fold it into) but the close fires cleanly.
-    pub fn observeWebTransportCapsule(
-        self: *Session,
-        session_id: u64,
-        decoded: capsule_mod.Capsule,
-    ) Error!void {
-        const flow = self.webTransportFlowMut(session_id) orelse {
-            if (self.webTransportSessionState(session_id) == .none) return;
-            return Error.UnknownWebTransportSession;
-        };
-        switch (decoded.capsule_type) {
-            webtransport_mod.CapsuleType.max_data => {
-                const value = webtransport_mod.decodeMaxDataValue(decoded.value) catch return;
-                flow.peer_max_data = value;
-                flow.sent_data_blocked_for = null; // peer raised the limit; we may need to BLOCKED again later
-            },
-            webtransport_mod.CapsuleType.max_streams_bidi => {
-                const value = webtransport_mod.decodeMaxStreamsBidiValue(decoded.value) catch return;
-                flow.peer_max_streams_bidi = value;
-                flow.sent_streams_blocked_bidi_for = null;
-            },
-            webtransport_mod.CapsuleType.max_streams_uni => {
-                const value = webtransport_mod.decodeMaxStreamsUniValue(decoded.value) catch return;
-                flow.peer_max_streams_uni = value;
-                flow.sent_streams_blocked_uni_for = null;
-            },
-            webtransport_mod.CapsuleType.drain_session => {
-                // draft-ietf-webtrans-http3 §5.5: peer is asking us
-                // to stop opening new streams; existing ones may still
-                // run to completion. Mark the session-level state so
-                // `gateWebTransportStreamOpen` rejects further opens.
-                // The capsule value MUST be empty per spec; we accept
-                // either form silently (the peer's framing is its
-                // responsibility, not ours).
-                flow.received_drain = true;
-                self.trace(.{
-                    .name = .webtransport_session_drain_received,
-                    .role = self.role,
-                    .stream_id = session_id,
-                });
-            },
-            webtransport_mod.CapsuleType.data_blocked => {
-                // draft-15 §5.6.5: peer sent WT_DATA_BLOCKED
-                // signaling it wants more credit. Surface as a
-                // trace event so the application can react via
-                // `sendWebTransportMaxData`. We don't change any
-                // local state — the credit decision is application
-                // policy.
-                _ = webtransport_mod.decodeDataBlockedValue(decoded.value) catch return;
-                self.trace(.{
-                    .name = .webtransport_peer_data_blocked,
-                    .role = self.role,
-                    .stream_id = session_id,
-                });
-            },
-            webtransport_mod.CapsuleType.streams_blocked_bidi => {
-                _ = webtransport_mod.decodeStreamsBlockedBidiValue(decoded.value) catch return;
-                self.trace(.{
-                    .name = .webtransport_peer_streams_blocked,
-                    .role = self.role,
-                    .stream_id = session_id,
-                    .frame_type = webtransport_mod.CapsuleType.streams_blocked_bidi,
-                });
-            },
-            webtransport_mod.CapsuleType.streams_blocked_uni => {
-                _ = webtransport_mod.decodeStreamsBlockedUniValue(decoded.value) catch return;
-                self.trace(.{
-                    .name = .webtransport_peer_streams_blocked,
-                    .role = self.role,
-                    .stream_id = session_id,
-                    .frame_type = webtransport_mod.CapsuleType.streams_blocked_uni,
-                });
-            },
-            else => {},
         }
     }
 
@@ -4724,11 +4632,10 @@ pub const Session = struct {
                 defer message_event.deinit(self.allocator);
                 try self.observeWebTransportHeadersIfApplicable(state, decoder.kind, message_event);
                 // Native WT capsule ingestion: a WT CONNECT stream's body
-                // IS the capsule protocol — feed it through the
-                // per-session reassembler and fold complete capsules into
-                // typed events. (Transitional: the raw `Event.data` below
-                // is still emitted alongside until the manual-observe
-                // surface is removed.)
+                // IS the capsule protocol, so the session consumes it —
+                // the bytes feed the per-session reassembler and surface
+                // only as typed `webtransport_*` events, never as raw
+                // `Event.data` (BREAKING vs. the pre-native API).
                 if (message_event == .data and self.isWebTransportConnectBody(state, decoder.kind)) {
                     switch (try self.ingestWebTransportCapsuleBytes(state, message_event.data, events, budget)) {
                         .ok => {},
@@ -4736,8 +4643,9 @@ pub const Session = struct {
                         // stop processing it (no compact — rx is dead).
                         .stream_failed => return,
                     }
+                } else {
+                    try self.appendReservedMessageEvent(events, state.id, decoder.kind, message_event);
                 }
-                try self.appendReservedMessageEvent(events, state.id, decoder.kind, message_event);
             }
 
             try compactRx(state, decoded.bytes_read);

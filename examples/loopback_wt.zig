@@ -128,25 +128,6 @@ pub fn main(init: std.process.Init) !void {
                         std.debug.print("step 5a: server sent datagram \"{s}\"\n", .{datagram_to_client});
                         server_wt = accepted;
                     }
-                    // The CONNECT stream's body carries the
-                    // CLOSE_WEBTRANSPORT_SESSION capsule once the
-                    // client tears the session down.
-                    if (server_wt != null and !server_saw_close and request.body().len > 0) {
-                        var it = http3_zig.capsule.iter(request.body());
-                        while (try it.next()) |decoded| {
-                            const wt_event = try http3_zig.webtransport.classifyCapsule(decoded.capsule);
-                            switch (wt_event) {
-                                .close_session => |close| {
-                                    std.debug.print(
-                                        "step 7: server saw CLOSE_WEBTRANSPORT_SESSION (code=0x{x}, reason=\"{s}\")\n",
-                                        .{ close.code, close.reason },
-                                    );
-                                    server_saw_close = true;
-                                },
-                                else => {},
-                            }
-                        }
-                    }
                 },
                 .datagram => |datagram| {
                     if (datagram.stream_id == session_id and !server_saw_datagram) {
@@ -166,6 +147,21 @@ pub fn main(init: std.process.Init) !void {
                             "step 6a: server saw client open uni WT stream (id={d})\n",
                             .{opened.stream_id},
                         );
+                    }
+                },
+                // The session ingests the CONNECT stream's capsules
+                // natively — the client's CLOSE_WEBTRANSPORT_SESSION
+                // surfaces as a typed close event with the peer's code
+                // and reason already decoded.
+                .webtransport_session_closed => |closed| {
+                    if (closed.session_id == session_id and closed.how == .close_capsule) {
+                        std.debug.print(
+                            "step 7: server saw CLOSE_WEBTRANSPORT_SESSION (code=0x{x}, reason=\"{s}\")\n",
+                            .{ closed.code orelse 0, closed.reason },
+                        );
+                        if ((closed.code orelse 0) != close_code) return error.CloseCodeMismatch;
+                        if (!std.mem.eql(u8, closed.reason, close_reason)) return error.CloseReasonMismatch;
+                        server_saw_close = true;
                     }
                 },
                 .webtransport_stream_data => |data| {

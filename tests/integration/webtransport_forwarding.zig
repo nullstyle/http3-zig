@@ -1,3 +1,11 @@
+//! Two-hop WebTransport intermediary coverage. A proxy terminates a
+//! downstream WT session (server role) and originates an upstream WT
+//! session (client role); session-scoped capsule traffic crosses the
+//! hop via `forwardSessionEventTo` — the proxy watches the typed
+//! `webtransport_*` events on one leg and re-emits them onto the other,
+//! byte-equivalent on the wire. Native ingestion supplies the events;
+//! there is no raw-body capsule iteration anywhere in the datapath.
+
 const std = @import("std");
 const http3_zig = @import("http3_zig");
 const quic = @import("quic");
@@ -32,9 +40,7 @@ const ForwardingHarness = struct {
     proxy_out_wt: http3_zig.WebTransportClientStream,
     upstream_server_wt: http3_zig.WebTransportServerStream,
 
-    downstream_client_runner: http3_zig.ClientRunner,
     downstream_proxy_runner: http3_zig.ServerRunner,
-    upstream_proxy_runner: http3_zig.ClientRunner,
     upstream_server_runner: http3_zig.ServerRunner,
 
     downstream_client_events: std.ArrayList(http3_zig.session.Event),
@@ -44,8 +50,6 @@ const ForwardingHarness = struct {
 
     downstream_now_us: u64,
     upstream_now_us: u64,
-    downstream_response_cursor: usize,
-    upstream_request_cursor: usize,
 
     pub fn init(self: *ForwardingHarness, allocator: std.mem.Allocator) !void {
         self.* = .{
@@ -62,9 +66,7 @@ const ForwardingHarness = struct {
             .proxy_in_wt = undefined,
             .proxy_out_wt = undefined,
             .upstream_server_wt = undefined,
-            .downstream_client_runner = http3_zig.ClientRunner.init(allocator),
             .downstream_proxy_runner = http3_zig.ServerRunner.init(allocator),
-            .upstream_proxy_runner = http3_zig.ClientRunner.init(allocator),
             .upstream_server_runner = http3_zig.ServerRunner.init(allocator),
             .downstream_client_events = .empty,
             .downstream_proxy_events = .empty,
@@ -72,8 +74,6 @@ const ForwardingHarness = struct {
             .upstream_server_events = .empty,
             .downstream_now_us = 1_000_000,
             .upstream_now_us = 2_000_000,
-            .downstream_response_cursor = 0,
-            .upstream_request_cursor = 0,
         };
         errdefer self.deinit();
 
@@ -113,9 +113,7 @@ const ForwardingHarness = struct {
         self.upstream_proxy_events.deinit(self.allocator);
         self.upstream_server_events.deinit(self.allocator);
 
-        self.downstream_client_runner.deinit();
         self.downstream_proxy_runner.deinit();
-        self.upstream_proxy_runner.deinit();
         self.upstream_server_runner.deinit();
 
         if (self.upstream_started) self.upstream.deinit();
@@ -200,153 +198,212 @@ const ForwardingHarness = struct {
         return error.ExpectedUpstreamWebTransport;
     }
 
-    fn nextUpstreamServerCapsule(self: *ForwardingHarness) !http3_zig.Capsule {
-        var iters: u32 = 0;
-        while (iters < 20_000) : (iters += 1) {
-            try self.pumpUpstream();
-            for (self.upstream_server_events.items) |event| {
-                switch (try self.upstream_server_runner.observe(event)) {
-                    .request_updated, .request_complete => |request_state| {
-                        const request = request_state.reader();
-                        if (request.streamId() != self.upstream_server_wt.sessionId()) continue;
-                        const body = request.body();
-                        if (self.upstream_request_cursor >= body.len) continue;
-                        const decoded = try http3_zig.capsule.decode(body[self.upstream_request_cursor..]);
-                        self.upstream_request_cursor += decoded.bytes_read;
-                        try self.upstream_server_wt.observeCapsule(decoded.capsule);
-                        self.clearUpstreamEvents();
-                        return decoded.capsule;
-                    },
-                    else => {},
-                }
-            }
-            self.clearUpstreamEvents();
-        }
-        return error.ExpectedUpstreamCapsule;
-    }
+    const EventTag = std.meta.Tag(http3_zig.session.Event);
 
-    fn nextDownstreamClientCapsule(self: *ForwardingHarness) !http3_zig.Capsule {
+    /// Proxy datapath, downstream → upstream: pumps the downstream pair
+    /// until the proxy's downstream leg surfaces at least one `tag`
+    /// event, forwards every one in that batch onto the upstream leg,
+    /// and returns how many were forwarded. Every forward must be
+    /// accepted (the events belong to the proxy's own session).
+    fn forwardDownstream(self: *ForwardingHarness, comptime tag: EventTag) !usize {
         var iters: u32 = 0;
         while (iters < 20_000) : (iters += 1) {
             try self.pumpDownstream();
-            for (self.downstream_client_events.items) |event| {
-                switch (try self.downstream_client_runner.observe(event)) {
-                    .response_updated, .response_complete => |response_state| {
-                        const response = response_state.reader();
-                        if (response.streamId() != self.downstream_client_wt.sessionId()) continue;
-                        const body = response.body();
-                        if (self.downstream_response_cursor >= body.len) continue;
-                        const decoded = try http3_zig.capsule.decode(body[self.downstream_response_cursor..]);
-                        self.downstream_response_cursor += decoded.bytes_read;
-                        try self.downstream_client_wt.observeCapsule(decoded.capsule);
-                        self.clearDownstreamEvents();
-                        return decoded.capsule;
-                    },
-                    else => {},
-                }
+            var forwarded: usize = 0;
+            for (self.downstream_proxy_events.items) |event| {
+                if (event != tag) continue;
+                try std.testing.expect(try self.proxy_in_wt.forwardSessionEventTo(event, &self.proxy_out_wt));
+                forwarded += 1;
             }
             self.clearDownstreamEvents();
+            if (forwarded > 0) return forwarded;
         }
-        return error.ExpectedDownstreamCapsule;
+        return error.ExpectedDownstreamWtEvent;
+    }
+
+    /// Proxy datapath, upstream → downstream: mirror of
+    /// `forwardDownstream` for events observed on the proxy's upstream
+    /// (client) leg.
+    fn forwardUpstream(self: *ForwardingHarness, comptime tag: EventTag) !usize {
+        var iters: u32 = 0;
+        while (iters < 20_000) : (iters += 1) {
+            try self.pumpUpstream();
+            var forwarded: usize = 0;
+            for (self.upstream_proxy_events.items) |event| {
+                if (event != tag) continue;
+                try std.testing.expect(try self.proxy_out_wt.forwardSessionEventTo(event, &self.proxy_in_wt));
+                forwarded += 1;
+            }
+            self.clearUpstreamEvents();
+            if (forwarded > 0) return forwarded;
+        }
+        return error.ExpectedUpstreamWtEvent;
     }
 };
 
-fn varintCapsule(capsule_type: u64, value: u64, storage: *[8]u8) !http3_zig.Capsule {
+fn varintValue(value: u64, storage: *[8]u8) ![]const u8 {
     const n = try quic.wire.varint.encode(storage[0..], value);
-    return .{ .capsule_type = capsule_type, .value = storage[0..n] };
+    return storage[0..n];
 }
 
-fn expectCapsuleEqual(expected: http3_zig.Capsule, actual: http3_zig.Capsule) !void {
-    try std.testing.expectEqual(expected.capsule_type, actual.capsule_type);
-    try std.testing.expectEqualStrings(expected.value, actual.value);
-}
-
-test "WebTransport forwarding helpers carry WT_MAX_DATA across two H3 pairs" {
+test "WebTransport forwarding carries WT_MAX_DATA credit across two H3 pairs" {
     const allocator = std.testing.allocator;
     const h = try allocator.create(ForwardingHarness);
     defer allocator.destroy(h);
     try h.init(allocator);
     defer h.deinit();
 
-    var downstream_value: [8]u8 = undefined;
+    // Hop 1: downstream client raises the proxy's send budget; the
+    // proxy observes the typed credit event on its downstream leg and
+    // re-grants it upstream.
     const downstream_max: u64 = 64 * 1024;
-    const downstream_capsule = try varintCapsule(
-        http3_zig.webtransport.CapsuleType.max_data,
-        downstream_max,
-        &downstream_value,
-    );
-    try h.proxy_in_wt.forwardCapsuleTo(downstream_capsule, &h.proxy_out_wt);
+    try h.downstream_client_wt.sendMaxData(downstream_max);
+    _ = try h.forwardDownstream(.webtransport_credit_granted);
 
+    // The proxy's own downstream flow state folded the credit natively.
     try std.testing.expectEqual(
         @as(?u64, downstream_max),
         (h.proxy_in_wt.flowState() orelse return error.MissingProxyInFlow).peer_max_data,
     );
-    const upstream_seen = try h.nextUpstreamServerCapsule();
-    try expectCapsuleEqual(downstream_capsule, upstream_seen);
+
+    // The upstream server sees the forwarded credit as its own typed
+    // event and folds it into peer_max_data.
+    {
+        var seen = false;
+        var iters: u32 = 0;
+        while (!seen) : (iters += 1) {
+            try std.testing.expect(iters < 20_000);
+            try h.pumpUpstream();
+            for (h.upstream_server_events.items) |event| {
+                if (event != .webtransport_credit_granted) continue;
+                const credit = event.webtransport_credit_granted;
+                try std.testing.expectEqual(h.upstream_server_wt.sessionId(), credit.session_id);
+                try std.testing.expect(credit.kind == .data);
+                try std.testing.expectEqual(downstream_max, credit.limit);
+                seen = true;
+            }
+            h.clearUpstreamEvents();
+        }
+    }
     try std.testing.expectEqual(
         @as(?u64, downstream_max),
         (h.upstream_server_wt.flowState() orelse return error.MissingUpstreamFlow).peer_max_data,
     );
 
-    var upstream_value: [8]u8 = undefined;
+    // Hop 2 (reverse): the upstream server grants credit; the proxy
+    // relays it downstream to the client.
     const upstream_max: u64 = 128 * 1024;
-    const upstream_capsule = try varintCapsule(
-        http3_zig.webtransport.CapsuleType.max_data,
-        upstream_max,
-        &upstream_value,
-    );
-    try h.proxy_out_wt.forwardCapsuleTo(upstream_capsule, &h.proxy_in_wt);
+    try h.upstream_server_wt.sendMaxData(upstream_max);
+    _ = try h.forwardUpstream(.webtransport_credit_granted);
 
     try std.testing.expectEqual(
         @as(?u64, upstream_max),
         (h.proxy_out_wt.flowState() orelse return error.MissingProxyOutFlow).peer_max_data,
     );
-    const downstream_seen = try h.nextDownstreamClientCapsule();
-    try expectCapsuleEqual(upstream_capsule, downstream_seen);
+
+    {
+        var seen = false;
+        var iters: u32 = 0;
+        while (!seen) : (iters += 1) {
+            try std.testing.expect(iters < 20_000);
+            try h.pumpDownstream();
+            for (h.downstream_client_events.items) |event| {
+                if (event != .webtransport_credit_granted) continue;
+                const credit = event.webtransport_credit_granted;
+                try std.testing.expectEqual(h.downstream_client_wt.sessionId(), credit.session_id);
+                try std.testing.expect(credit.kind == .data);
+                try std.testing.expectEqual(upstream_max, credit.limit);
+                seen = true;
+            }
+            h.clearDownstreamEvents();
+        }
+    }
     try std.testing.expectEqual(
         @as(?u64, upstream_max),
         (h.downstream_client_wt.flowState() orelse return error.MissingDownstreamFlow).peer_max_data,
     );
 }
 
-test "WebTransport forwarding observes BLOCKED capsules without mutating limits" {
+test "WebTransport forwarding relays BLOCKED events without mutating limits" {
     const allocator = std.testing.allocator;
     const h = try allocator.create(ForwardingHarness);
     defer allocator.destroy(h);
     try h.init(allocator);
     defer h.deinit();
 
-    const before = h.proxy_in_wt.flowState() orelse return error.MissingProxyInFlow;
+    const proxy_before = h.proxy_in_wt.flowState() orelse return error.MissingProxyInFlow;
+    const upstream_before = h.upstream_server_wt.flowState() orelse return error.MissingUpstreamFlow;
 
-    var data_blocked_value: [8]u8 = undefined;
-    const data_blocked = try varintCapsule(
+    // The downstream client reports being blocked on all three limit
+    // kinds. BLOCKED capsules normally auto-emit from gated sends; the
+    // raw `writer.capsule` escape injects them directly here.
+    var storage: [3][8]u8 = undefined;
+    try h.downstream_client_wt.underlyingWriter().capsule(
         http3_zig.webtransport.CapsuleType.data_blocked,
-        4096,
-        &data_blocked_value,
+        try varintValue(4096, &storage[0]),
     );
-    try h.proxy_in_wt.forwardCapsuleTo(data_blocked, &h.proxy_out_wt);
-
-    var streams_bidi_value: [8]u8 = undefined;
-    const streams_bidi = try varintCapsule(
+    try h.downstream_client_wt.underlyingWriter().capsule(
         http3_zig.webtransport.CapsuleType.streams_blocked_bidi,
-        2,
-        &streams_bidi_value,
+        try varintValue(2, &storage[1]),
     );
-    try h.proxy_in_wt.forwardCapsuleTo(streams_bidi, &h.proxy_out_wt);
-
-    var streams_uni_value: [8]u8 = undefined;
-    const streams_uni = try varintCapsule(
+    try h.downstream_client_wt.underlyingWriter().capsule(
         http3_zig.webtransport.CapsuleType.streams_blocked_uni,
-        3,
-        &streams_uni_value,
+        try varintValue(3, &storage[2]),
     );
-    try h.proxy_in_wt.forwardCapsuleTo(streams_uni, &h.proxy_out_wt);
 
-    const after = h.proxy_in_wt.flowState() orelse return error.MissingProxyInFlow;
-    try std.testing.expectEqual(before.peer_max_data, after.peer_max_data);
-    try std.testing.expectEqual(before.peer_max_streams_bidi, after.peer_max_streams_bidi);
-    try std.testing.expectEqual(before.peer_max_streams_uni, after.peer_max_streams_uni);
+    // The proxy relays each typed blocked event upstream. The three
+    // capsules coalesce on the wire, so keep forwarding until all
+    // three have crossed the hop.
+    var relayed: usize = 0;
+    while (relayed < 3) {
+        relayed += try h.forwardDownstream(.webtransport_peer_blocked);
+    }
+    try std.testing.expectEqual(@as(usize, 3), relayed);
 
+    // The upstream server observes all three blocked events with the
+    // offered limits intact.
+    {
+        var seen_data = false;
+        var seen_bidi = false;
+        var seen_uni = false;
+        var iters: u32 = 0;
+        while (!(seen_data and seen_bidi and seen_uni)) : (iters += 1) {
+            try std.testing.expect(iters < 20_000);
+            try h.pumpUpstream();
+            for (h.upstream_server_events.items) |event| {
+                if (event != .webtransport_peer_blocked) continue;
+                const blocked = event.webtransport_peer_blocked;
+                try std.testing.expectEqual(h.upstream_server_wt.sessionId(), blocked.session_id);
+                switch (blocked.kind) {
+                    .data => {
+                        try std.testing.expectEqual(@as(u64, 4096), blocked.offered_limit);
+                        seen_data = true;
+                    },
+                    .streams_bidi => {
+                        try std.testing.expectEqual(@as(u64, 2), blocked.offered_limit);
+                        seen_bidi = true;
+                    },
+                    .streams_uni => {
+                        try std.testing.expectEqual(@as(u64, 3), blocked.offered_limit);
+                        seen_uni = true;
+                    },
+                }
+            }
+            h.clearUpstreamEvents();
+        }
+    }
+
+    // BLOCKED is a pure signal: no limit on either leg moved.
+    const proxy_after = h.proxy_in_wt.flowState() orelse return error.MissingProxyInFlow;
+    try std.testing.expectEqual(proxy_before.peer_max_data, proxy_after.peer_max_data);
+    try std.testing.expectEqual(proxy_before.peer_max_streams_bidi, proxy_after.peer_max_streams_bidi);
+    try std.testing.expectEqual(proxy_before.peer_max_streams_uni, proxy_after.peer_max_streams_uni);
+    const upstream_after = h.upstream_server_wt.flowState() orelse return error.MissingUpstreamFlow;
+    try std.testing.expectEqual(upstream_before.peer_max_data, upstream_after.peer_max_data);
+    try std.testing.expectEqual(upstream_before.peer_max_streams_bidi, upstream_after.peer_max_streams_bidi);
+    try std.testing.expectEqual(upstream_before.peer_max_streams_uni, upstream_after.peer_max_streams_uni);
+
+    // The proxy's session traced the peer-blocked signals as metrics.
     const metrics = h.downstream.server_h3.metrics();
     try std.testing.expectEqual(@as(u64, 1), metrics.webtransport_peer_data_blocked);
     try std.testing.expectEqual(@as(u64, 2), metrics.webtransport_peer_streams_blocked);
@@ -359,39 +416,87 @@ test "WebTransport forwarding preserves DRAIN unknown and CLOSE capsule lifecycl
     try h.init(allocator);
     defer h.deinit();
 
-    const drain: http3_zig.Capsule = .{
-        .capsule_type = http3_zig.webtransport.CapsuleType.drain_session,
-        .value = "",
-    };
-    try h.proxy_in_wt.forwardCapsuleTo(drain, &h.proxy_out_wt);
+    // DRAIN: downstream client asks the proxy to wind down; the proxy
+    // relays the draining event upstream.
+    try h.downstream_client_wt.sendDrain();
+    _ = try h.forwardDownstream(.webtransport_session_draining);
     try std.testing.expect((h.proxy_in_wt.flowState() orelse return error.MissingProxyInFlow).received_drain);
     try std.testing.expectError(error.WebTransportSessionDraining, h.proxy_in_wt.openUniStream());
 
-    const upstream_drain = try h.nextUpstreamServerCapsule();
-    try expectCapsuleEqual(drain, upstream_drain);
+    {
+        var seen = false;
+        var iters: u32 = 0;
+        while (!seen) : (iters += 1) {
+            try std.testing.expect(iters < 20_000);
+            try h.pumpUpstream();
+            for (h.upstream_server_events.items) |event| {
+                if (event != .webtransport_session_draining) continue;
+                try std.testing.expectEqual(
+                    h.upstream_server_wt.sessionId(),
+                    event.webtransport_session_draining.session_id,
+                );
+                seen = true;
+            }
+            h.clearUpstreamEvents();
+        }
+    }
     try std.testing.expect((h.upstream_server_wt.flowState() orelse return error.MissingUpstreamFlow).received_drain);
     try std.testing.expectError(error.WebTransportSessionDraining, h.upstream_server_wt.openUniStream());
 
+    // Unknown capsule: forwards byte-exact (RFC 9297 §3.2) and leaves
+    // flow state untouched on both legs.
     const before_unknown = h.upstream_server_wt.flowState() orelse return error.MissingUpstreamFlow;
-    const unknown: http3_zig.Capsule = .{ .capsule_type = 0x41, .value = "opaque-forward" };
-    try h.proxy_in_wt.forwardCapsuleTo(unknown, &h.proxy_out_wt);
-    const upstream_unknown = try h.nextUpstreamServerCapsule();
-    try expectCapsuleEqual(unknown, upstream_unknown);
+    const unknown_type: u64 = 0x41;
+    const unknown_value = "opaque-forward";
+    try h.downstream_client_wt.underlyingWriter().capsule(unknown_type, unknown_value);
+    _ = try h.forwardDownstream(.webtransport_unknown_capsule);
+    {
+        var seen = false;
+        var iters: u32 = 0;
+        while (!seen) : (iters += 1) {
+            try std.testing.expect(iters < 20_000);
+            try h.pumpUpstream();
+            for (h.upstream_server_events.items) |event| {
+                if (event != .webtransport_unknown_capsule) continue;
+                const unknown = event.webtransport_unknown_capsule;
+                try std.testing.expectEqual(h.upstream_server_wt.sessionId(), unknown.session_id);
+                try std.testing.expectEqual(unknown_type, unknown.capsule_type);
+                try std.testing.expectEqualStrings(unknown_value, unknown.value);
+                seen = true;
+            }
+            h.clearUpstreamEvents();
+        }
+    }
     const after_unknown = h.upstream_server_wt.flowState() orelse return error.MissingUpstreamFlow;
     try std.testing.expectEqual(before_unknown.peer_max_data, after_unknown.peer_max_data);
     try std.testing.expectEqual(before_unknown.received_drain, after_unknown.received_drain);
 
-    var close_buf: [64]u8 = undefined;
-    const close_n = try http3_zig.webtransport.encodeCloseSession(&close_buf, 7, "bye");
-    const close_decoded = try http3_zig.capsule.decode(close_buf[0..close_n]);
-    try h.proxy_in_wt.forwardCapsuleTo(close_decoded.capsule, &h.proxy_out_wt);
+    // CLOSE: ends the proxy's downstream session on arrival (native
+    // ingestion), forwards as a CLOSE on the upstream leg (ending the
+    // proxy's upstream session locally via `close`), and ends the
+    // upstream server's session when it lands.
+    try h.downstream_client_wt.close(7, "bye");
+    _ = try h.forwardDownstream(.webtransport_session_closed);
+    try std.testing.expect(h.proxy_in_wt.flowState() == null);
+    try std.testing.expect(h.proxy_out_wt.flowState() == null);
 
-    const upstream_close = try h.nextUpstreamServerCapsule();
-    try expectCapsuleEqual(close_decoded.capsule, upstream_close);
-    try std.testing.expect(h.proxy_in_wt.flowState() != null);
-    try std.testing.expect(h.proxy_out_wt.flowState() != null);
-    // Native ingestion: the upstream server folds the forwarded CLOSE the
-    // moment it arrives — its session ends (registry gone, flow state
-    // null) instead of lingering until the CONNECT FIN as it used to.
+    {
+        var seen = false;
+        var iters: u32 = 0;
+        while (!seen) : (iters += 1) {
+            try std.testing.expect(iters < 20_000);
+            try h.pumpUpstream();
+            for (h.upstream_server_events.items) |event| {
+                if (event != .webtransport_session_closed) continue;
+                const closed = event.webtransport_session_closed;
+                try std.testing.expectEqual(h.upstream_server_wt.sessionId(), closed.session_id);
+                try std.testing.expect(closed.how == .close_capsule);
+                try std.testing.expectEqual(@as(?u32, 7), closed.code);
+                try std.testing.expectEqualStrings("bye", closed.reason);
+                seen = true;
+            }
+            h.clearUpstreamEvents();
+        }
+    }
     try std.testing.expect(h.upstream_server_wt.flowState() == null);
 }

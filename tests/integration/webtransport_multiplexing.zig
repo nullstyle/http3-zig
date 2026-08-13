@@ -348,34 +348,20 @@ test "WebTransport: 3 sessions, one DRAINs while others stay active" {
         }
 
         for (client_events.items) |event| {
-            switch (try client_runner.observe(event)) {
-                .response_updated, .response_complete => |response_state| {
-                    const response = response_state.reader();
-                    const sid = response.streamId();
-                    if (response.body().len > 0) {
-                        // Find which client session this CONNECT stream belongs to.
-                        var idx: ?usize = null;
-                        for (session_ids, 0..) |s, i| {
-                            if (s == sid) {
-                                idx = i;
-                                break;
-                            }
-                        }
-                        if (idx) |i| {
-                            var it = http3_zig.capsule.iter(response.body());
-                            while (try it.next()) |decoded| {
-                                try client_sessions[i].observeCapsule(decoded.capsule);
-                            }
-                            if (i == drain_index) {
-                                if (client_sessions[i].flowState()) |snap| {
-                                    if (snap.received_drain) saw_drain_on_session_1 = true;
-                                }
-                            }
-                        }
-                    }
+            // Native ingestion folds the DRAIN per session; the typed
+            // event's session_id attributes it to the drained CONNECT
+            // stream only.
+            switch (event) {
+                .webtransport_session_draining => |draining| {
+                    try std.testing.expectEqual(session_ids[drain_index], draining.session_id);
+                    const snap = client_sessions[drain_index].flowState() orelse
+                        return error.MissingFlowState;
+                    try std.testing.expect(snap.received_drain);
+                    saw_drain_on_session_1 = true;
                 },
                 else => {},
             }
+            _ = try client_runner.observe(event);
         }
         clearSessionEvents(allocator, &client_events);
     }
@@ -636,31 +622,27 @@ test "WebTransport: per-session WT_MAX_STREAMS_UNI applies independently" {
         }
 
         for (client_events.items) |event| {
-            switch (try client_runner.observe(event)) {
-                .response_updated, .response_complete => |response_state| {
-                    const response = response_state.reader();
-                    const sid = response.streamId();
-                    if (response.body().len > 0) {
-                        const target: ?*http3_zig.WebTransportClientStream = if (sid == sid_a)
-                            &client_a
-                        else if (sid == sid_b)
-                            &client_b
-                        else
-                            null;
-                        if (target) |wt| {
-                            var it = http3_zig.capsule.iter(response.body());
-                            while (try it.next()) |decoded| {
-                                try wt.observeCapsule(decoded.capsule);
-                            }
-                            if (wt.flowState()) |snap| {
-                                if (sid == sid_a and snap.peer_max_streams_uni == limit_a) saw_limit_a = true;
-                                if (sid == sid_b and snap.peer_max_streams_uni == limit_b) saw_limit_b = true;
-                            }
-                        }
-                    }
+            // Per-session credit updates arrive natively; the typed
+            // event's session_id attributes each limit to its own
+            // session, and flowState confirms the fold.
+            switch (event) {
+                .webtransport_credit_granted => |credit| {
+                    try std.testing.expect(credit.kind == .streams_uni);
+                    if (credit.session_id == sid_a) {
+                        try std.testing.expectEqual(limit_a, credit.limit);
+                        const snap = client_a.flowState() orelse return error.MissingFlowState;
+                        try std.testing.expectEqual(@as(?u64, limit_a), snap.peer_max_streams_uni);
+                        saw_limit_a = true;
+                    } else if (credit.session_id == sid_b) {
+                        try std.testing.expectEqual(limit_b, credit.limit);
+                        const snap = client_b.flowState() orelse return error.MissingFlowState;
+                        try std.testing.expectEqual(@as(?u64, limit_b), snap.peer_max_streams_uni);
+                        saw_limit_b = true;
+                    } else return error.UnexpectedSession;
                 },
                 else => {},
             }
+            _ = try client_runner.observe(event);
         }
         clearSessionEvents(allocator, &client_events);
     }

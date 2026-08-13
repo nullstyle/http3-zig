@@ -571,27 +571,67 @@ pub const WebTransportServerStream = struct {
         try self.writer.capsule(decoded.capsule_type, decoded.value);
     }
 
-    /// Folds an inbound capsule decoded from the CONNECT stream's body
-    /// into the per-session flow-control state. Mirror of
-    /// `WebTransportClientStream.observeCapsule`.
-    pub fn observeCapsule(
+    /// Intermediary forwarding: re-emits a session-scoped WebTransport
+    /// event observed on THIS session onto another WebTransport session
+    /// (the other leg of a proxy), byte-equivalent on the wire. Returns
+    /// true when the event belonged to this session and was forwarded;
+    /// false for events of other sessions or non-session-scoped
+    /// variants. FIN/reset/datagram policy stays application-owned, as
+    /// does deciding WHICH events to forward. Mirror of
+    /// `WebTransportClientStream.forwardSessionEventTo`.
+    pub fn forwardSessionEventTo(
         self: *WebTransportServerStream,
-        decoded: capsule_mod.Capsule,
-    ) session_mod.Error!void {
-        try self.writer.server.session.observeWebTransportCapsule(self.sessionId(), decoded);
-    }
-
-    /// Intermediary helper: observe an inbound WebTransport capsule on this
-    /// handle, then forward the exact capsule bytes on `other`. The helper
-    /// intentionally does not finish/reset either CONNECT stream; applications
-    /// forward stream lifecycle separately.
-    pub fn forwardCapsuleTo(
-        self: *WebTransportServerStream,
-        decoded: capsule_mod.Capsule,
+        event: session_mod.Event,
         other: anytype,
-    ) session_mod.Error!void {
-        try self.observeCapsule(decoded);
-        try other.sendCapsule(decoded);
+    ) (session_mod.Error || webtransport_mod.Error)!bool {
+        switch (event) {
+            .webtransport_credit_granted => |credit| {
+                if (credit.session_id != self.sessionId()) return false;
+                // Re-granting through the send verbs keeps `other`'s
+                // local_max_* bookkeeping in sync with the wire.
+                switch (credit.kind) {
+                    .data => try other.sendMaxData(credit.limit),
+                    .streams_bidi => try other.sendMaxStreamsBidi(credit.limit),
+                    .streams_uni => try other.sendMaxStreamsUni(credit.limit),
+                }
+                return true;
+            },
+            .webtransport_peer_blocked => |blocked| {
+                if (blocked.session_id != self.sessionId()) return false;
+                // BLOCKED is a pure signal — re-encode byte-equivalent
+                // without touching either leg's limits.
+                var buf: [24]u8 = undefined;
+                const n = switch (blocked.kind) {
+                    .data => try webtransport_mod.encodeDataBlocked(&buf, blocked.offered_limit),
+                    .streams_bidi => try webtransport_mod.encodeStreamsBlockedBidi(&buf, blocked.offered_limit),
+                    .streams_uni => try webtransport_mod.encodeStreamsBlockedUni(&buf, blocked.offered_limit),
+                };
+                try other.writer.write(buf[0..n]);
+                return true;
+            },
+            .webtransport_session_draining => |draining| {
+                if (draining.session_id != self.sessionId()) return false;
+                try other.sendDrain();
+                return true;
+            },
+            .webtransport_session_closed => |closed| {
+                if (closed.session_id != self.sessionId()) return false;
+                // Only the peer's CLOSE capsule maps to a capsule on the
+                // other leg; FIN/reset/local-violation propagation is
+                // application policy (draft-ietf-webtrans-http3 §5.4).
+                if (closed.how != .close_capsule) return false;
+                try other.close(closed.code orelse 0, closed.reason);
+                return true;
+            },
+            .webtransport_unknown_capsule => |unknown| {
+                if (unknown.session_id != self.sessionId()) return false;
+                // Unknown capsules forward byte-exact so extensions
+                // survive the intermediary (RFC 9297 §3.2).
+                try other.writer.capsule(unknown.capsule_type, unknown.value);
+                return true;
+            },
+            else => return false,
+        }
     }
 
     pub fn flowState(self: *const WebTransportServerStream) ?session_mod.WTSessionFlowSnapshot {

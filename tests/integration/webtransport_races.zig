@@ -6,7 +6,7 @@
 //! drain batch. The drain ordering invariant the session enforces
 //! (cf. `Session.drain` →
 //! `replayBufferedWebTransportStreams`/`processWebTransportStreamState`/
-//! `observeWebTransportCapsule`) must hold even when a peer sprays
+//! native capsule ingestion) must hold even when a peer sprays
 //! multiple things at once.
 
 const std = @import("std");
@@ -145,21 +145,19 @@ test "WebTransport: DRAIN arrives in same drain batch as 50 peer-opened streams"
         }
 
         for (client_events.items) |event| {
+            // Native ingestion applies the DRAIN and surfaces the typed
+            // draining event in the same drain pass as the batched
+            // stream-opens.
+            if (event == .webtransport_session_draining) {
+                try std.testing.expectEqual(session_id, event.webtransport_session_draining.session_id);
+                saw_drain_on_client = true;
+            }
             switch (try client_runner.observe(event)) {
                 .response_updated, .response_complete => |response_state| {
                     const response = response_state.reader();
                     if (!client_saw_response and response.headers().len > 0) {
                         try std.testing.expect(response.webTransportAccepted());
                         client_saw_response = true;
-                    }
-                    if (response.body().len > 0) {
-                        var it = http3_zig.capsule.iter(response.body());
-                        while (try it.next()) |decoded| {
-                            try client_wt.observeCapsule(decoded.capsule);
-                        }
-                        if (client_wt.flowState()) |snap| {
-                            if (snap.received_drain) saw_drain_on_client = true;
-                        }
                     }
                 },
                 .webtransport_stream_opened => |opened| {
@@ -200,17 +198,11 @@ test "WebTransport: CLOSE_WT capsule interleaved with WT_MAX_DATA" {
     // The wire sequence is: peer sends WT_MAX_DATA capsule on the
     // CONNECT stream's body, then sends CLOSE_WEBTRANSPORT_SESSION,
     // then FINs. All three land in the same drain pass on the receiving
-    // side; `processState` surfaces the body and `observeFin` runs
-    // `endWebTransportSession`, both in the same drain. The application
-    // then iterates events in order: response_updated (body) → close.
-    //
-    // For v0.2 we chose fix option (b): `observeWebTransportCapsule`
-    // tolerates a session that was just torn down — it silently no-ops
-    // rather than returning `UnknownWebTransportSession`. The MAX_DATA
-    // value isn't folded (the flow state is gone) but the application's
-    // drain loop doesn't crash mid-close. (Option (a) — defer teardown
-    // — is a bigger session-machine change; deferred to a future
-    // release if real usage shows the dropped MAX_DATA matters.)
+    // side. Native ingestion folds the coalesced capsules in wire
+    // order within that single drain: the MAX_DATA is applied (and its
+    // credit event emitted) BEFORE the CLOSE tears the session down —
+    // the old manual-observe race that silently dropped the MAX_DATA
+    // is gone, because the session is the consumer, not the app.
     const allocator = std.testing.allocator;
     const h3_settings: http3_zig.Settings = .{
         .enable_connect_protocol = true,
@@ -284,12 +276,12 @@ test "WebTransport: CLOSE_WT capsule interleaved with WT_MAX_DATA" {
     try server_wt.?.sendMaxData(1024 * 1024);
     try server_wt.?.close(0, "ok");
 
-    // Client: pump until session is torn down. Within each drain, the
-    // application iterates capsules from the response body and feeds
-    // each through `observeCapsule`. The MAX_DATA capsule arrived
-    // before close on the wire but the close-driven teardown may
-    // already have run by the time the app processes the body — that's
-    // exactly the race observeCapsule is now tolerant of.
+    // Client: pump until session is torn down. Native ingestion delivers
+    // the typed events in wire order: credit first (the MAX_DATA IS
+    // applied, unlike the old manual-observe race that lost it to
+    // teardown), then the close.
+    var saw_credit = false;
+    var saw_closed = false;
     while (client_wt.flowState() != null) : (iters += 1) {
         try std.testing.expect(iters < 20_000);
         try pumpH3(
@@ -302,26 +294,34 @@ test "WebTransport: CLOSE_WT capsule interleaved with WT_MAX_DATA" {
             &now_us,
         );
         for (client_events.items) |event| {
-            switch (try client_runner.observe(event)) {
-                .response_updated, .response_complete => |response_state| {
-                    const response = response_state.reader();
-                    if (response.body().len > 0) {
-                        var it = http3_zig.capsule.iter(response.body());
-                        while (try it.next()) |decoded| {
-                            // MUST NOT raise UnknownWebTransportSession
-                            // even if the close-driven teardown has
-                            // already run earlier in this drain.
-                            try client_wt.observeCapsule(decoded.capsule);
-                        }
-                    }
+            switch (event) {
+                .webtransport_credit_granted => |credit| {
+                    try std.testing.expectEqual(client_wt.sessionId(), credit.session_id);
+                    try std.testing.expect(credit.kind == .data);
+                    try std.testing.expectEqual(@as(u64, 1024 * 1024), credit.limit);
+                    try std.testing.expect(!saw_closed);
+                    saw_credit = true;
+                },
+                .webtransport_session_closed => |closed| {
+                    try std.testing.expectEqual(client_wt.sessionId(), closed.session_id);
+                    try std.testing.expect(closed.how == .close_capsule);
+                    try std.testing.expectEqual(@as(?u32, 0), closed.code);
+                    try std.testing.expectEqualStrings("ok", closed.reason);
+                    // The credit event precedes the close in the same
+                    // drain — wire order is preserved.
+                    try std.testing.expect(saw_credit);
+                    saw_closed = true;
                 },
                 else => {},
             }
+            _ = try client_runner.observe(event);
         }
         for (server_events.items) |event| _ = try server_runner.observe(event);
         clearSessionEvents(allocator, &client_events);
         clearSessionEvents(allocator, &server_events);
     }
+    try std.testing.expect(saw_credit);
+    try std.testing.expect(saw_closed);
 
     // Clean close: no error code surfaced on either peer.
     try std.testing.expectEqual(@as(?http3_zig.errors.ConnectionError, null), pair.client_h3.lastCloseError());
