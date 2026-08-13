@@ -8,23 +8,23 @@ connection tables, routing policy, body storage, and worker scheduling.
 ## Consuming From Your Own Project
 
 Add http3-zig as a `build.zig.zon` dependency and import three modules —
-`http3_zig` plus the `quic_zig`/`boringssl` instances it exports. The
-embedding API below is quic_zig-typed (your app constructs and owns the
-`*quic_zig.Connection`), and the TLS helpers traffic in
+`http3_zig` plus the `quic`/`boringssl` instances it exports. The
+embedding API below is quic-typed (your app constructs and owns the
+`*quic.Connection`), and the TLS helpers traffic in
 `boringssl.tls.Context`, so both sibling modules are load-bearing. Never
 declare your own quic-zig or boringssl-zig dependency next to http3-zig:
 that creates second module instances whose types do not unify with
-http3-zig's (`expected quic_zig.Connection, found quic_zig.Connection`).
+http3-zig's (`expected quic.Connection, found quic.Connection`).
 
 ```zig
 const http3_dep = b.dependency("http3_zig", .{ .target = target, .optimize = optimize });
 exe.root_module.addImport("http3_zig", http3_dep.module("http3_zig"));
-exe.root_module.addImport("quic_zig", http3_dep.module("quic_zig"));
+exe.root_module.addImport("quic", http3_dep.module("quic"));
 exe.root_module.addImport("boringssl", http3_dep.module("boringssl"));
 ```
 
 If you prefer a single import, the same instances are re-exported as
-`http3_zig.quic_zig` and `http3_zig.boringssl`. A complete out-of-tree
+`http3_zig.quic` and `http3_zig.boringssl`. A complete out-of-tree
 consumer (CI-checked) lives in
 [`tools/consumer-smoke/`](../tools/consumer-smoke/).
 
@@ -33,13 +33,13 @@ consumer (CI-checked) lives in
 For each accepted or dialed QUIC connection, keep these objects together:
 
 ```zig
-var quic = try quic_zig.Connection.initServer(allocator, tls);
-defer quic.deinit();
+const conn = try quic.Connection.createServer(allocator, tls);
+defer conn.destroy();
 
 var h3 = http3_zig.Session.init(
     allocator,
     .server,
-    &quic,
+    conn,
     http3_zig.SessionConfig.production(.{}),
 );
 defer h3.deinit();
@@ -50,7 +50,7 @@ var events: std.ArrayList(http3_zig.Event) = .empty;
 defer events.deinit(allocator);
 ```
 
-`Session` borrows the `quic_zig.Connection`; it does not own or free it.
+`Session` borrows the `quic.Connection`; it does not own or free it.
 Pin the `Session` to one thread or shard. Public operations mutate state
 directly and do not lock internally.
 
@@ -62,10 +62,10 @@ loopback fixtures, not for peers you don't control. See
 
 ## Accepting Connections (multi-connection servers)
 
-A real server does not build `quic_zig.Connection`s by hand — the
-`quic_zig.Server` wrapper owns accept, packet demux, Retry/NEW_TOKEN
+A real server does not build `quic.Connection`s by hand — the
+`quic.Server` wrapper owns accept, packet demux, Retry/NEW_TOKEN
 address validation, per-source rate limits, and the connection (slot)
-table, and `quic_zig.transport.runUdpServer` owns the socket and the
+table, and `quic.transport.runUdpServer` owns the socket and the
 receive/tick/drain loop. http3-zig layers one `Session` per slot on top:
 
 - **Init on first sight, in the `on_iteration` hook.** The hook is the one
@@ -92,10 +92,10 @@ order:
 
 0. Clients only, once at connect time: run the handshake state machine with
    `quic.advance()` (or `TransportEndpoint.advance`) so the first ClientHello
-   is queued for step 3. `quic_zig.Client.connect` deliberately defers this
+   is queued for step 3. `quic.Client.connect` deliberately defers this
    so 0-RTT data can be staged first — on a real network there is no inbound
    packet to bootstrap from, so a client that skips `advance` hangs before
-   its first flight. `quic_zig.transport.runUdpClient` performs the call
+   its first flight. `quic.transport.runUdpClient` performs the call
    itself; loopback examples/tests rely on the in-process peer shim instead
    and never need it.
 1. Read UDP datagrams from your socket and pass each one to `quic.handle`.
@@ -162,7 +162,7 @@ recovery timers backwards. `runUdpServer`/`runUdpClient` own the clock
 `on_iteration` hook, so hook code just uses the `now_us` parameter.
 
 Open-coded loops own wakeups too: size the poll/recv timeout with
-`quic_zig.Server.nextTimerDeadline(now_us)` (the earliest deadline across
+`quic.Server.nextTimerDeadline(now_us)` (the earliest deadline across
 slots) or per-connection `Connection.nextTimerDeadline`, rather than a
 fixed sleep — that keeps PTO/loss-detection firing on schedule at idle
 without busy-spinning.
@@ -194,7 +194,7 @@ Runnable examples:
 - Run the full cookbook with `zig build run-examples` or `just run-examples`.
 - `examples/udp_server.zig` / `examples/udp_client.zig`: start here for a
   real server/client — UDP sockets, multi-connection accept via
-  `quic_zig.Server`, per-slot `Session` lifecycle, SIGINT GOAWAY drain.
+  `quic.Server`, per-slot `Session` lifecycle, SIGINT GOAWAY drain.
   `zig build run-udp-smoke` proves the pair end-to-end in one process.
 - `examples/loopback_get.zig`: facade runners and complete response tracking.
 - `examples/manual_pump_get.zig`: the same GET while manually driving QUIC
@@ -312,7 +312,7 @@ keeps the context it was created against alive until that connection is torn
 down — deinit the old context after its last connection closes (or refcount
 it the way quic-zig's own wrapper does).
 
-If you embed via quic-zig's multi-connection `quic_zig.Server` wrapper
+If you embed via quic-zig's multi-connection `quic.Server` wrapper
 instead, use `Server.replaceTlsContext` (`Server.TlsReload`): it swaps the
 context for future accepts, drains the old one behind a per-slot refcount,
 and documents the resumption caveat (session tickets minted under the old

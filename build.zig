@@ -10,19 +10,19 @@ pub fn build(b: *std.Build) void {
     });
     const boringssl_mod = boringssl_dep.module("boringssl");
 
-    const quic_zig_dep = b.dependency("quic_zig", .{
+    const quic_dep = b.dependency("quic", .{
         .target = target,
         .optimize = optimize,
     });
     // quic-zig's root.zig single-sources version() from a `build_options`
     // module that its own build.zig provides. Because we recreate the
-    // quic_zig module here (to share http3-zig's boringssl instance across
+    // quic module here (to share http3-zig's boringssl instance across
     // the diamond, see build.zig.zon), we must supply that module too or a
-    // reference to quic_zig.version() fails to compile. Value is cosmetic —
-    // http3-zig never calls version() — but must match the quic_zig tag
+    // reference to quic.version() fails to compile. Value is cosmetic —
+    // http3-zig never calls version() — but must match the quic tag
     // pinned in build.zig.zon; tools/check-boringssl-pin.sh lints this.
     const quic_build_options = b.addOptions();
-    quic_build_options.addOption([]const u8, "version", "0.10.0");
+    quic_build_options.addOption([]const u8, "version", "0.12.0");
     const quic_build_options_mod = quic_build_options.createModule();
 
     // Single-source http3-zig's own version() from build.zig.zon so it can
@@ -31,34 +31,34 @@ pub fn build(b: *std.Build) void {
     h3_build_options.addOption([]const u8, "version", @import("build.zig.zon").version);
     const h3_build_options_mod = h3_build_options.createModule();
 
-    const quic_zig_mod = b.createModule(.{
-        .root_source_file = quic_zig_dep.path("src/root.zig"),
+    const quic_mod = b.createModule(.{
+        .root_source_file = quic_dep.path("src/root.zig"),
         .target = target,
         .optimize = optimize,
     });
-    quic_zig_mod.addImport("boringssl", boringssl_mod);
-    quic_zig_mod.addImport("build_options", quic_build_options_mod);
+    quic_mod.addImport("boringssl", boringssl_mod);
+    quic_mod.addImport("build_options", quic_build_options_mod);
 
     const http3_zig_mod = b.addModule("http3_zig", .{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
         .optimize = optimize,
     });
-    http3_zig_mod.addImport("quic_zig", quic_zig_mod);
+    http3_zig_mod.addImport("quic", quic_mod);
     http3_zig_mod.addImport("boringssl", boringssl_mod);
     http3_zig_mod.addImport("build_options", h3_build_options_mod);
 
     // Export the exact module instances http3_zig itself links against.
-    // The public API is quic_zig-typed (`Session.init` takes a
-    // `*quic_zig.Connection`; TLS helpers take `boringssl.tls.Context`),
+    // The public API is quic-typed (`Session.init` takes a
+    // `*quic.Connection`; TLS helpers take `boringssl.tls.Context`),
     // so a consumer that declared its own quic-zig/boringssl dependency
     // would get distinct module instances whose types do not unify with
     // http3_zig's. Registering the shared instances lets consumers write
-    // `dep.module("quic_zig")` / `dep.module("boringssl")` and import
-    // types with the correct identity. See also the `pub const quic_zig`
+    // `dep.module("quic")` / `dep.module("boringssl")` and import
+    // types with the correct identity. See also the `pub const quic`
     // / `pub const boringssl` re-exports in src/root.zig, which cover
     // consumers that only import `http3_zig`.
-    b.modules.put(b.graph.arena, "quic_zig", quic_zig_mod) catch @panic("OOM");
+    b.modules.put(b.graph.arena, "quic", quic_mod) catch @panic("OOM");
     b.modules.put(b.graph.arena, "boringssl", boringssl_mod) catch @panic("OOM");
 
     const fuzz_codecs_lib_mod = b.createModule(.{
@@ -80,7 +80,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     tests_mod.addImport("http3_zig", http3_zig_mod);
-    tests_mod.addImport("quic_zig", quic_zig_mod);
+    tests_mod.addImport("quic", quic_mod);
     tests_mod.addImport("boringssl", boringssl_mod);
     tests_mod.addImport("http3_zig_fuzz_codecs", fuzz_codecs_lib_mod);
     const integration_tests = b.addTest(.{ .root_module = tests_mod });
@@ -125,7 +125,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     conformance_mod.addImport("http3_zig", http3_zig_mod);
-    conformance_mod.addImport("quic_zig", quic_zig_mod);
+    conformance_mod.addImport("quic", quic_mod);
     conformance_mod.addImport("boringssl", boringssl_mod);
     const conformance_tests = b.addTest(.{
         .root_module = conformance_mod,
@@ -192,7 +192,7 @@ pub fn build(b: *std.Build) void {
     // `fuzz/corpus/<target>/`. The output directory is
     // version-controlled, so this only needs to run when the corpus
     // is being regenerated (new seed types added, codec wire format
-    // changed, …). It depends on the http3_zig + quic_zig modules
+    // changed, …). It depends on the http3_zig + quic modules
     // because most of the well-formed seeds use the project's own
     // encoders.
     const fuzz_seed_mod = b.createModule(.{
@@ -201,7 +201,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     fuzz_seed_mod.addImport("http3_zig", http3_zig_mod);
-    fuzz_seed_mod.addImport("quic_zig", quic_zig_mod);
+    fuzz_seed_mod.addImport("quic", quic_mod);
     const fuzz_seed = b.addExecutable(.{
         .name = "http3-zig-fuzz-seed",
         .root_module = fuzz_seed_mod,
@@ -251,7 +251,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     fuzz_wt_interleaved_mod.addImport("http3_zig", http3_zig_mod);
-    fuzz_wt_interleaved_mod.addImport("quic_zig", quic_zig_mod);
+    fuzz_wt_interleaved_mod.addImport("quic", quic_mod);
     fuzz_wt_interleaved_mod.addImport("boringssl", boringssl_mod);
     const fuzz_wt_interleaved = b.addExecutable(.{
         .name = "http3-zig-fuzz-wt-interleaved",
@@ -278,7 +278,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     curl_h3_server_mod.addImport("http3_zig", http3_zig_mod);
-    curl_h3_server_mod.addImport("quic_zig", quic_zig_mod);
+    curl_h3_server_mod.addImport("quic", quic_mod);
     curl_h3_server_mod.addImport("boringssl", boringssl_mod);
     const curl_h3_server = b.addExecutable(.{
         .name = "http3-zig-curl-h3-server",
@@ -294,7 +294,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     external_h3_client_mod.addImport("http3_zig", http3_zig_mod);
-    external_h3_client_mod.addImport("quic_zig", quic_zig_mod);
+    external_h3_client_mod.addImport("quic", quic_mod);
     external_h3_client_mod.addImport("boringssl", boringssl_mod);
     const external_h3_client = b.addExecutable(.{
         .name = "http3-zig-external-h3-client",
@@ -310,7 +310,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     external_wt_client_mod.addImport("http3_zig", http3_zig_mod);
-    external_wt_client_mod.addImport("quic_zig", quic_zig_mod);
+    external_wt_client_mod.addImport("quic", quic_mod);
     external_wt_client_mod.addImport("boringssl", boringssl_mod);
     const external_wt_client = b.addExecutable(.{
         .name = "http3-zig-external-wt-client",
@@ -335,7 +335,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     external_wt_server_mod.addImport("http3_zig", http3_zig_mod);
-    external_wt_server_mod.addImport("quic_zig", quic_zig_mod);
+    external_wt_server_mod.addImport("quic", quic_mod);
     external_wt_server_mod.addImport("boringssl", boringssl_mod);
     const external_wt_server = b.addExecutable(.{
         .name = "http3-zig-external-wt-server",
@@ -397,7 +397,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     loopback_get_mod.addImport("http3_zig", http3_zig_mod);
-    loopback_get_mod.addImport("quic_zig", quic_zig_mod);
+    loopback_get_mod.addImport("quic", quic_mod);
     const loopback_get = b.addExecutable(.{
         .name = "http3-zig-loopback-get",
         .root_module = loopback_get_mod,
@@ -416,7 +416,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     manual_pump_mod.addImport("http3_zig", http3_zig_mod);
-    manual_pump_mod.addImport("quic_zig", quic_zig_mod);
+    manual_pump_mod.addImport("quic", quic_mod);
     const manual_pump = b.addExecutable(.{
         .name = "http3-zig-manual-pump-get",
         .root_module = manual_pump_mod,
@@ -435,7 +435,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     observability_metrics_mod.addImport("http3_zig", http3_zig_mod);
-    observability_metrics_mod.addImport("quic_zig", quic_zig_mod);
+    observability_metrics_mod.addImport("quic", quic_mod);
     const observability_metrics = b.addExecutable(.{
         .name = "http3-zig-observability-metrics",
         .root_module = observability_metrics_mod,
@@ -454,7 +454,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     request_reset_mod.addImport("http3_zig", http3_zig_mod);
-    request_reset_mod.addImport("quic_zig", quic_zig_mod);
+    request_reset_mod.addImport("quic", quic_mod);
     const request_reset = b.addExecutable(.{
         .name = "http3-zig-request-reset",
         .root_module = request_reset_mod,
@@ -473,7 +473,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     tracked_datagram_mod.addImport("http3_zig", http3_zig_mod);
-    tracked_datagram_mod.addImport("quic_zig", quic_zig_mod);
+    tracked_datagram_mod.addImport("quic", quic_mod);
     const tracked_datagram = b.addExecutable(.{
         .name = "http3-zig-tracked-datagram",
         .root_module = tracked_datagram_mod,
@@ -492,7 +492,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     bounded_body_mod.addImport("http3_zig", http3_zig_mod);
-    bounded_body_mod.addImport("quic_zig", quic_zig_mod);
+    bounded_body_mod.addImport("quic", quic_mod);
     const bounded_body = b.addExecutable(.{
         .name = "http3-zig-bounded-body-sink",
         .root_module = bounded_body_mod,
@@ -511,7 +511,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     streaming_upload_mod.addImport("http3_zig", http3_zig_mod);
-    streaming_upload_mod.addImport("quic_zig", quic_zig_mod);
+    streaming_upload_mod.addImport("quic", quic_mod);
     const streaming_upload = b.addExecutable(.{
         .name = "http3-zig-streaming-upload",
         .root_module = streaming_upload_mod,
@@ -530,7 +530,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     graceful_shutdown_mod.addImport("http3_zig", http3_zig_mod);
-    graceful_shutdown_mod.addImport("quic_zig", quic_zig_mod);
+    graceful_shutdown_mod.addImport("quic", quic_mod);
     const graceful_shutdown = b.addExecutable(.{
         .name = "http3-zig-graceful-shutdown",
         .root_module = graceful_shutdown_mod,
@@ -549,7 +549,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     loopback_wt_mod.addImport("http3_zig", http3_zig_mod);
-    loopback_wt_mod.addImport("quic_zig", quic_zig_mod);
+    loopback_wt_mod.addImport("quic", quic_mod);
     const loopback_wt = b.addExecutable(.{
         .name = "http3-zig-loopback-wt",
         .root_module = loopback_wt_mod,
@@ -568,7 +568,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     wt_proxy_mod.addImport("http3_zig", http3_zig_mod);
-    wt_proxy_mod.addImport("quic_zig", quic_zig_mod);
+    wt_proxy_mod.addImport("quic", quic_mod);
     wt_proxy_mod.addImport("boringssl", boringssl_mod);
     const wt_proxy = b.addExecutable(.{
         .name = "http3-zig-webtransport-proxy",
@@ -588,7 +588,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     udp_server_mod.addImport("http3_zig", http3_zig_mod);
-    udp_server_mod.addImport("quic_zig", quic_zig_mod);
+    udp_server_mod.addImport("quic", quic_mod);
     const udp_server = b.addExecutable(.{
         .name = "http3-zig-udp-server",
         .root_module = udp_server_mod,
@@ -603,7 +603,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     udp_client_mod.addImport("http3_zig", http3_zig_mod);
-    udp_client_mod.addImport("quic_zig", quic_zig_mod);
+    udp_client_mod.addImport("quic", quic_mod);
     const udp_client = b.addExecutable(.{
         .name = "http3-zig-udp-client",
         .root_module = udp_client_mod,
@@ -622,7 +622,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     udp_smoke_mod.addImport("http3_zig", http3_zig_mod);
-    udp_smoke_mod.addImport("quic_zig", quic_zig_mod);
+    udp_smoke_mod.addImport("quic", quic_mod);
     const udp_smoke = b.addExecutable(.{
         .name = "http3-zig-udp-smoke",
         .root_module = udp_smoke_mod,
@@ -677,7 +677,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     wt_bench_mod.addImport("http3_zig", http3_zig_mod);
-    wt_bench_mod.addImport("quic_zig", quic_zig_mod);
+    wt_bench_mod.addImport("quic", quic_mod);
     wt_bench_mod.addImport("boringssl", boringssl_mod);
     const wt_bench = b.addExecutable(.{
         .name = "http3-zig-wt-bench",
@@ -700,7 +700,7 @@ pub fn build(b: *std.Build) void {
     // whole point of this binary, and they only function with safety
     // on.
     //
-    // Builds private boringssl + quic_zig + http3_zig module
+    // Builds private boringssl + quic + http3_zig module
     // instances at the same `.ReleaseSafe` mode so the link-time
     // ubsan handler symbols match across the C++ archives and the Zig
     // root. Mirrors the pattern `wt-load` uses for its own pinned
@@ -712,23 +712,23 @@ pub fn build(b: *std.Build) void {
         .optimize = mem_profile_optimize,
     });
     const boringssl_safe_mod = boringssl_safe_dep.module("boringssl");
-    const quic_zig_safe_dep = b.dependency("quic_zig", .{
+    const quic_safe_dep = b.dependency("quic", .{
         .target = target,
         .optimize = mem_profile_optimize,
     });
-    const quic_zig_safe_mod = b.createModule(.{
-        .root_source_file = quic_zig_safe_dep.path("src/root.zig"),
+    const quic_safe_mod = b.createModule(.{
+        .root_source_file = quic_safe_dep.path("src/root.zig"),
         .target = target,
         .optimize = mem_profile_optimize,
     });
-    quic_zig_safe_mod.addImport("boringssl", boringssl_safe_mod);
-    quic_zig_safe_mod.addImport("build_options", quic_build_options_mod);
+    quic_safe_mod.addImport("boringssl", boringssl_safe_mod);
+    quic_safe_mod.addImport("build_options", quic_build_options_mod);
     const http3_zig_safe_mod = b.createModule(.{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
         .optimize = mem_profile_optimize,
     });
-    http3_zig_safe_mod.addImport("quic_zig", quic_zig_safe_mod);
+    http3_zig_safe_mod.addImport("quic", quic_safe_mod);
     http3_zig_safe_mod.addImport("boringssl", boringssl_safe_mod);
     http3_zig_safe_mod.addImport("build_options", h3_build_options_mod);
     const wt_memory_mod = b.createModule(.{
@@ -737,7 +737,7 @@ pub fn build(b: *std.Build) void {
         .optimize = mem_profile_optimize,
     });
     wt_memory_mod.addImport("http3_zig", http3_zig_safe_mod);
-    wt_memory_mod.addImport("quic_zig", quic_zig_safe_mod);
+    wt_memory_mod.addImport("quic", quic_safe_mod);
     wt_memory_mod.addImport("boringssl", boringssl_safe_mod);
     const wt_memory = b.addExecutable(.{
         .name = "http3-zig-wt-memory",
@@ -777,23 +777,23 @@ pub fn build(b: *std.Build) void {
         .optimize = wt_load_optimize,
     });
     const boringssl_release_mod = boringssl_release_dep.module("boringssl");
-    const quic_zig_release_dep = b.dependency("quic_zig", .{
+    const quic_release_dep = b.dependency("quic", .{
         .target = target,
         .optimize = wt_load_optimize,
     });
-    const quic_zig_release_mod = b.createModule(.{
-        .root_source_file = quic_zig_release_dep.path("src/root.zig"),
+    const quic_release_mod = b.createModule(.{
+        .root_source_file = quic_release_dep.path("src/root.zig"),
         .target = target,
         .optimize = wt_load_optimize,
     });
-    quic_zig_release_mod.addImport("boringssl", boringssl_release_mod);
-    quic_zig_release_mod.addImport("build_options", quic_build_options_mod);
+    quic_release_mod.addImport("boringssl", boringssl_release_mod);
+    quic_release_mod.addImport("build_options", quic_build_options_mod);
     const http3_zig_release_mod = b.createModule(.{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
         .optimize = wt_load_optimize,
     });
-    http3_zig_release_mod.addImport("quic_zig", quic_zig_release_mod);
+    http3_zig_release_mod.addImport("quic", quic_release_mod);
     http3_zig_release_mod.addImport("boringssl", boringssl_release_mod);
     http3_zig_release_mod.addImport("build_options", h3_build_options_mod);
     const wt_load_mod = b.createModule(.{
@@ -802,7 +802,7 @@ pub fn build(b: *std.Build) void {
         .optimize = wt_load_optimize,
     });
     wt_load_mod.addImport("http3_zig", http3_zig_release_mod);
-    wt_load_mod.addImport("quic_zig", quic_zig_release_mod);
+    wt_load_mod.addImport("quic", quic_release_mod);
     wt_load_mod.addImport("boringssl", boringssl_release_mod);
     const wt_load = b.addExecutable(.{
         .name = "http3-zig-wt-load",

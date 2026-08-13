@@ -16,9 +16,9 @@
 
 const std = @import("std");
 const http3_zig = @import("http3_zig");
-const quic_zig = @import("quic_zig");
+const quic = @import("quic");
 
-const varint = quic_zig.wire.varint;
+const varint = quic.wire.varint;
 
 pub fn main(init: std.process.Init) !void {
     const allocator = init.gpa;

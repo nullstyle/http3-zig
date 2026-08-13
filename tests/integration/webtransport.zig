@@ -1,6 +1,6 @@
 const std = @import("std");
 const http3_zig = @import("http3_zig");
-const quic_zig = @import("quic_zig");
+const quic = @import("quic");
 const fixt = @import("_fixtures.zig");
 
 const clearSessionEvents = fixt.clearSessionEvents;
@@ -1678,7 +1678,7 @@ test "WebTransport: 64 concurrent datagrams round-trip" {
 
         // Once the session is confirmed, queue datagrams. Send a few per
         // pump cycle so the queue between client and server doesn't
-        // overflow (max_pending_datagram_count = 64 in quic_zig). The
+        // overflow (max_pending_datagram_count = 64 in quic). The
         // loopback delivers `max_datagrams_per_direction = 1` per pump,
         // so we keep the in-flight count low by sending no more than 4
         // ahead of the receiver at a time.

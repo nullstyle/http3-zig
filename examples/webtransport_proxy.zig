@@ -16,7 +16,7 @@
 const std = @import("std");
 const boringssl = @import("boringssl");
 const http3_zig = @import("http3_zig");
-const quic_zig = @import("quic_zig");
+const quic = @import("quic");
 
 const ClientCid = [_]u8{ 0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37, 0x38 };
 const ServerCid = [_]u8{ 0x91, 0x92, 0x93, 0x94, 0x95, 0x96, 0x97, 0x98 };
@@ -38,8 +38,8 @@ const close_reason = "proxy-demo-complete";
 const H3Pair = struct {
     client_tls: boringssl.tls.Context,
     server_tls: boringssl.tls.Context,
-    client: quic_zig.Connection,
-    server: quic_zig.Connection,
+    client: quic.Connection,
+    server: quic.Connection,
     client_h3: http3_zig.Session,
     server_h3: http3_zig.Session,
 
@@ -55,10 +55,10 @@ const H3Pair = struct {
         self.server_tls = try http3_zig.server.initTlsContext(.{}, cert_pem, key_pem);
         errdefer self.server_tls.deinit();
 
-        self.client = try quic_zig.Connection.initClient(allocator, self.client_tls, "localhost");
+        try quic.Connection.initClientAt(&self.client, allocator, self.client_tls, "localhost");
         errdefer self.client.deinit();
 
-        self.server = try quic_zig.Connection.initServer(allocator, self.server_tls);
+        try quic.Connection.initServerAt(&self.server, allocator, self.server_tls);
         errdefer self.server.deinit();
 
         try connectQuic(&self.client, &self.server);
@@ -836,13 +836,11 @@ fn pumpPair(
     now_us.* = driver.now_us;
 }
 
-fn connectQuic(client: *quic_zig.Connection, server: *quic_zig.Connection) !void {
-    try client.bind();
-    try server.bind();
+fn connectQuic(client: *quic.Connection, server: *quic.Connection) !void {
     client.peer = server;
     server.peer = client;
 
-    const tp: quic_zig.tls.TransportParams = .{
+    const tp: quic.tls.TransportParams = .{
         .initial_max_data = 1 << 22,
         .initial_max_stream_data_bidi_local = 1 << 20,
         .initial_max_stream_data_bidi_remote = 1 << 20,

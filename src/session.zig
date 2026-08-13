@@ -1,4 +1,4 @@
-//! HTTP/3 session layer over `quic_zig.Connection`.
+//! HTTP/3 session layer over `quic.Connection`.
 //!
 //! The session owns HTTP/3 stream classification, control stream
 //! SETTINGS, message framing, and request/response convenience APIs.
@@ -6,7 +6,7 @@
 //! dynamic table state wired through the HTTP/3 QPACK encoder/decoder streams.
 
 const std = @import("std");
-const quic_zig = @import("quic_zig");
+const quic = @import("quic");
 
 const errors_mod = @import("errors.zig");
 const capsule_mod = @import("capsule.zig");
@@ -22,9 +22,9 @@ const settings_mod = @import("settings.zig");
 const stream_mod = @import("stream.zig");
 const webtransport_mod = @import("webtransport.zig");
 
-const varint = quic_zig.wire.varint;
+const varint = quic.wire.varint;
 
-pub const Error = quic_zig.conn.state.Error ||
+pub const Error = quic.conn.state.Error ||
     frame_mod.Error ||
     capsule_mod.Error ||
     datagram_mod.Error ||
@@ -290,7 +290,7 @@ pub const Config = struct {
     max_capsule_value_size: ?usize = null,
     /// Client-only opt-in for server push. Null means do not send MAX_PUSH_ID.
     max_push_id: ?u64 = null,
-    /// Optional cap on per-stream bytes buffered in quic_zig but not yet
+    /// Optional cap on per-stream bytes buffered in quic but not yet
     /// acknowledged. Leave null to preserve unbounded legacy behavior.
     max_stream_send_buffered: ?usize = null,
     /// Optional cap on owned payload bytes copied for any single emitted event.
@@ -497,11 +497,11 @@ pub const DatagramEvent = struct {
 // quic-zig 0.5.0 re-exports these ConnectionEvent-payload types at the top
 // level, so name them there instead of reaching into the internal `conn.*` /
 // `conn.state.*` tier (not covered by quic-zig's stability guarantee).
-pub const DatagramSendEvent = quic_zig.DatagramSendEvent;
-pub const FlowBlockedEvent = quic_zig.FlowBlockedInfo;
-pub const FlowBlockedKind = quic_zig.FlowBlockedKind;
-pub const FlowBlockedSource = quic_zig.FlowBlockedSource;
-pub const ConnectionIdsNeededEvent = quic_zig.ConnectionIdReplenishInfo;
+pub const DatagramSendEvent = quic.DatagramSendEvent;
+pub const FlowBlockedEvent = quic.FlowBlockedInfo;
+pub const FlowBlockedKind = quic.FlowBlockedKind;
+pub const FlowBlockedSource = quic.FlowBlockedSource;
+pub const ConnectionIdsNeededEvent = quic.ConnectionIdReplenishInfo;
 
 pub const StreamSendState = struct {
     stream_id: u64,
@@ -542,8 +542,8 @@ pub const RequestRejectedEvent = struct {
 };
 
 pub const ConnectionClosedEvent = struct {
-    source: quic_zig.CloseSource,
-    error_space: quic_zig.CloseErrorSpace,
+    source: quic.CloseSource,
+    error_space: quic.CloseErrorSpace,
     error_code: u64,
     frame_type: u64,
     reason: []u8,
@@ -578,7 +578,7 @@ pub const ShutdownState = enum {
 /// across drains (though the stream it names may close in the meantime).
 pub const OpenRequestStream = struct {
     stream_id: u64,
-    /// Connection-clock time (`quic_zig.Connection.last_activity_us`,
+    /// Connection-clock time (`quic.Connection.last_activity_us`,
     /// i.e. the same `now_us` domain the embedder feeds
     /// `handle`/`tick`/`poll`) at which the session last surfaced an
     /// event for this stream — or the stream's creation time if no
@@ -991,7 +991,7 @@ const StreamState = struct {
     /// quic-zig retains its own stream entry until the connection
     /// teardown — http3-zig handles its registry independently.
     locally_finished: bool = false,
-    /// Connection-clock time (`quic_zig.Connection.last_activity_us`,
+    /// Connection-clock time (`quic.Connection.last_activity_us`,
     /// i.e. the embedder's `now_us` domain) at which the session last
     /// surfaced an event for this stream. Stamped at creation and again
     /// in `appendReservedEvent` — the single choke point every emitted
@@ -1182,7 +1182,7 @@ pub const WTSessionFlowSnapshot = struct {
 pub const Session = struct {
     allocator: std.mem.Allocator,
     role: protocol.Role,
-    quic: *quic_zig.Connection,
+    quic: *quic.Connection,
     config: Config = .{},
     local_settings: settings_mod.Settings = .{},
     peer_settings: ?settings_mod.Settings = null,
@@ -1257,13 +1257,13 @@ pub const Session = struct {
     pub fn init(
         allocator: std.mem.Allocator,
         role: protocol.Role,
-        quic: *quic_zig.Connection,
+        conn: *quic.Connection,
         config: Config,
     ) Session {
         return .{
             .allocator = allocator,
             .role = role,
-            .quic = quic,
+            .quic = conn,
             .config = config,
             .local_settings = config.settings,
             .qpack_encoder_table = qpack.DynamicTable.init(allocator, config.qpack_encoder_table_capacity),
@@ -2746,7 +2746,7 @@ pub const Session = struct {
 
     fn observeConnectionClose(
         self: *Session,
-        close_event: quic_zig.CloseEvent,
+        close_event: quic.CloseEvent,
         events: *std.ArrayList(Event),
         budget: *DrainBudget,
     ) Error!void {
@@ -5319,7 +5319,7 @@ pub const Session = struct {
     }
 };
 
-fn errorSourceFromCloseSource(source: quic_zig.CloseSource) ?errors_mod.Source {
+fn errorSourceFromCloseSource(source: quic.CloseSource) ?errors_mod.Source {
     return switch (source) {
         .local => .local,
         .peer => .peer,
@@ -5507,7 +5507,7 @@ fn freeFields(allocator: std.mem.Allocator, fields: []qpack.FieldLine) void {
 
 test "session emits deep-owned message events" {
     const allocator = std.testing.allocator;
-    var client_quic: quic_zig.Connection = undefined;
+    var client_quic: quic.Connection = undefined;
 
     var session = Session.init(allocator, .client, &client_quic, .{});
     defer session.deinit();
@@ -5593,7 +5593,7 @@ const TraceRecorder = struct {
 
 test "session observability hooks record emitted events and metrics" {
     const allocator = std.testing.allocator;
-    var client_quic: quic_zig.Connection = undefined;
+    var client_quic: quic.Connection = undefined;
     var recorder: TraceRecorder = .{};
 
     var session = Session.init(allocator, .client, &client_quic, .{
@@ -5636,7 +5636,7 @@ test "session observability hooks record emitted events and metrics" {
 
 test "session event budget resumes pending trailers" {
     const allocator = std.testing.allocator;
-    var client_quic: quic_zig.Connection = undefined;
+    var client_quic: quic.Connection = undefined;
 
     var session = Session.init(allocator, .client, &client_quic, .{
         .max_events_per_drain = 1,
@@ -5691,7 +5691,7 @@ test "session event budget resumes pending trailers" {
 
 test "session DATAGRAM capsule path gates on peer h3_datagram (RFC 9297 §3.4)" {
     const allocator = std.testing.allocator;
-    var client_quic: quic_zig.Connection = undefined;
+    var client_quic: quic.Connection = undefined;
 
     // Peer hasn't sent SETTINGS yet — every datagram-capsule entry point
     // must surface MissingSettings rather than emit a stream-bound capsule
@@ -5719,7 +5719,7 @@ test "session DATAGRAM capsule path gates on peer h3_datagram (RFC 9297 §3.4)" 
     // Server-side parity: `sendResponseDatagramCapsule` /
     // `sendResponseDatagramContextCapsule` enforce the same gate.
     {
-        var server_quic: quic_zig.Connection = undefined;
+        var server_quic: quic.Connection = undefined;
         var session = Session.init(allocator, .server, &server_quic, .{});
         defer session.deinit();
         _ = try session.ensureMessageState(0, .request, .response);
@@ -5735,7 +5735,7 @@ test "session DATAGRAM capsule path gates on peer h3_datagram (RFC 9297 §3.4)" 
 
 test "session caps outgoing capsule values before allocation" {
     const allocator = std.testing.allocator;
-    var client_quic: quic_zig.Connection = undefined;
+    var client_quic: quic.Connection = undefined;
 
     var session = Session.init(allocator, .client, &client_quic, .{
         .max_capsule_value_size = 1,
@@ -5793,14 +5793,14 @@ test "production config applies bounded defaults and feature opt-ins" {
 }
 
 test "session validates GOAWAY stream ids by role" {
-    var quic: quic_zig.Connection = undefined;
-    var server_session = Session.init(std.testing.allocator, .server, &quic, .{});
+    var conn: quic.Connection = undefined;
+    var server_session = Session.init(std.testing.allocator, .server, &conn, .{});
     try server_session.validateLocalGoawayId(0);
     try server_session.validateLocalGoawayId(4);
     try std.testing.expectError(Error.InvalidGoawayId, server_session.validateLocalGoawayId(1));
     try std.testing.expectError(Error.InvalidGoawayId, server_session.validateLocalGoawayId(2));
 
-    var client_session = Session.init(std.testing.allocator, .client, &quic, .{});
+    var client_session = Session.init(std.testing.allocator, .client, &conn, .{});
     try client_session.validateLocalGoawayId(1);
     try client_session.validatePeerGoawayId(0);
     try std.testing.expectError(Error.InvalidGoawayId, client_session.validatePeerGoawayId(3));
@@ -5815,10 +5815,10 @@ test "session validates GOAWAY stream ids by role" {
 
 test "session derives the graceful GOAWAY id from observed peer streams" {
     const allocator = std.testing.allocator;
-    var quic: quic_zig.Connection = undefined;
-    quic.last_activity_us = 0;
+    var conn: quic.Connection = undefined;
+    conn.last_activity_us = 0;
 
-    var server_session = Session.init(allocator, .server, &quic, .{});
+    var server_session = Session.init(allocator, .server, &conn, .{});
     defer server_session.deinit();
 
     // No request stream observed yet: RFC 9114 §5.2's "no requests were
@@ -5847,7 +5847,7 @@ test "session derives the graceful GOAWAY id from observed peer streams" {
     try std.testing.expectEqual(@as(u64, 4), server_session.gracefulGoawayId());
 
     // Client role: the id space is push ids (§5.2 ¶1), the increment 1.
-    var client_session = Session.init(allocator, .client, &quic, .{ .max_push_id = 8 });
+    var client_session = Session.init(allocator, .client, &conn, .{ .max_push_id = 8 });
     defer client_session.deinit();
     try std.testing.expectEqual(@as(?u64, null), client_session.highestPeerRequestStreamId());
     try std.testing.expectEqual(@as(u64, 0), client_session.gracefulGoawayId());
@@ -5857,10 +5857,10 @@ test "session derives the graceful GOAWAY id from observed peer streams" {
 
 test "session counts open request streams and stamps last-event activity" {
     const allocator = std.testing.allocator;
-    var quic: quic_zig.Connection = undefined;
-    quic.last_activity_us = 111;
+    var conn: quic.Connection = undefined;
+    conn.last_activity_us = 111;
 
-    var session = Session.init(allocator, .server, &quic, .{});
+    var session = Session.init(allocator, .server, &conn, .{});
     defer session.deinit();
 
     try std.testing.expectEqual(@as(usize, 0), session.openRequestStreamCount());
@@ -5872,7 +5872,7 @@ test "session counts open request streams and stamps last-event activity" {
     try std.testing.expectEqual(@as(u64, 111), pending.last_event_us);
 
     // Emitting an event through the single choke point refreshes the stamp.
-    quic.last_activity_us = 222;
+    conn.last_activity_us = 222;
     const state = try session.ensureMessageState(4, .request, .response);
     state.bidi_kind = .request;
     var events: std.ArrayList(Event) = .empty;
@@ -5880,7 +5880,7 @@ test "session counts open request streams and stamps last-event activity" {
         session.clearEvents(&events);
         events.deinit(allocator);
     }
-    quic.last_activity_us = 333;
+    conn.last_activity_us = 333;
     try session.appendReservedEvent(&events, .{
         .stream_finished = .{ .stream_id = 4, .kind = .request },
     });
@@ -5926,7 +5926,7 @@ test "session counts open request streams and stamps last-event activity" {
 
 test "session emits stream reset once" {
     const allocator = std.testing.allocator;
-    var client_quic: quic_zig.Connection = undefined;
+    var client_quic: quic.Connection = undefined;
 
     var session = Session.init(allocator, .client, &client_quic, .{});
     defer session.deinit();
@@ -5962,7 +5962,7 @@ test "session emits stream reset once" {
 
 test "session clears blocked QPACK state when a stream resets" {
     const allocator = std.testing.allocator;
-    var client_quic: quic_zig.Connection = undefined;
+    var client_quic: quic.Connection = undefined;
 
     var session = Session.init(allocator, .client, &client_quic, .{
         .settings = .{

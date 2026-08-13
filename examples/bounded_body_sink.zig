@@ -1,6 +1,6 @@
 const std = @import("std");
 const http3_zig = @import("http3_zig");
-const quic_zig = @import("quic_zig");
+const quic = @import("quic");
 
 const ClientCid = [_]u8{ 0x42, 0x6f, 0x64, 0x79, 0x43, 0x6c, 0x69, 0x00 };
 const ServerCid = [_]u8{ 0x42, 0x6f, 0x64, 0x79, 0x53, 0x72, 0x76, 0x00 };
@@ -27,12 +27,12 @@ pub fn main(init: std.process.Init) !void {
     var server_tls = try http3_zig.server.initTlsContext(.{}, cert_pem, key_pem);
     defer server_tls.deinit();
 
-    var client_quic = try quic_zig.Connection.initClient(allocator, client_tls, "localhost");
-    defer client_quic.deinit();
-    var server_quic = try quic_zig.Connection.initServer(allocator, server_tls);
-    defer server_quic.deinit();
+    const client_quic = try quic.Connection.createClient(allocator, client_tls, "localhost");
+    defer client_quic.destroy();
+    const server_quic = try quic.Connection.createServer(allocator, server_tls);
+    defer server_quic.destroy();
 
-    try connectQuic(&client_quic, &server_quic);
+    try connectQuic(client_quic, server_quic);
 
     const session_config = http3_zig.SessionConfig.production(.{
         .max_data_frame_payload = 8,
@@ -40,9 +40,9 @@ pub fn main(init: std.process.Init) !void {
         .max_event_payload_bytes_per_drain = 256,
         .max_events_per_drain = 32,
     });
-    var client_h3 = http3_zig.Session.init(allocator, .client, &client_quic, session_config);
+    var client_h3 = http3_zig.Session.init(allocator, .client, client_quic, session_config);
     defer client_h3.deinit();
-    var server_h3 = http3_zig.Session.init(allocator, .server, &server_quic, session_config);
+    var server_h3 = http3_zig.Session.init(allocator, .server, server_quic, session_config);
     defer server_h3.deinit();
 
     var client = http3_zig.Client.init(&client_h3);
@@ -65,8 +65,8 @@ pub fn main(init: std.process.Init) !void {
     }
 
     var driver = http3_zig.TransportLoopback.init(
-        http3_zig.TransportEndpoint.withSession(&client_quic, &client_h3, &client_events),
-        http3_zig.TransportEndpoint.withSession(&server_quic, &server_h3, &server_events),
+        http3_zig.TransportEndpoint.withSession(client_quic, &client_h3, &client_events),
+        http3_zig.TransportEndpoint.withSession(server_quic, &server_h3, &server_events),
         .{},
     );
 
@@ -240,13 +240,11 @@ fn fieldValue(fields: []const http3_zig.FieldLine, name: []const u8) ?[]const u8
     return null;
 }
 
-fn connectQuic(client: *quic_zig.Connection, server: *quic_zig.Connection) !void {
-    try client.bind();
-    try server.bind();
+fn connectQuic(client: *quic.Connection, server: *quic.Connection) !void {
     client.peer = server;
     server.peer = client;
 
-    const tp: quic_zig.tls.TransportParams = .{
+    const tp: quic.tls.TransportParams = .{
         .initial_max_data = 1 << 22,
         .initial_max_stream_data_bidi_local = 1 << 20,
         .initial_max_stream_data_bidi_remote = 1 << 20,

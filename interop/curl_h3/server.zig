@@ -1,6 +1,6 @@
 const std = @import("std");
 const boringssl = @import("boringssl");
-const quic_zig = @import("quic_zig");
+const quic = @import("quic");
 const http3_zig = @import("http3_zig");
 
 const Net = std.Io.net;
@@ -203,12 +203,11 @@ pub fn main(init: std.process.Init) !void {
     var server_tls = try http3_zig.server.initTlsContext(.{}, cert_pem, key_pem);
     defer server_tls.deinit();
 
-    var conn = try quic_zig.Connection.initServer(allocator, server_tls);
-    defer conn.deinit();
-    try conn.bind();
+    const conn = try quic.Connection.createServer(allocator, server_tls);
+    defer conn.destroy();
     try conn.setLocalScid(&server_cid);
 
-    var h3 = http3_zig.Session.init(allocator, .server, &conn, .{
+    var h3 = http3_zig.Session.init(allocator, .server, conn, .{
         .settings = .{
             .qpack_max_table_capacity = 256,
             .qpack_blocked_streams = 4,
@@ -241,7 +240,7 @@ pub fn main(init: std.process.Init) !void {
         for (events.items) |event| event.deinit(allocator);
         events.deinit(allocator);
     }
-    var driver = http3_zig.TransportEndpoint.withSession(&conn, &h3, &events);
+    var driver = http3_zig.TransportEndpoint.withSession(conn, &h3, &events);
 
     const UdpSink = struct {
         socket: @TypeOf(sock),
@@ -270,9 +269,9 @@ pub fn main(init: std.process.Init) !void {
             idle_after_done_ms = 0;
             if (!transport_params_set) {
                 const ids = peekInitialIds(msg.data) orelse continue;
-                const params: quic_zig.tls.TransportParams = .{
-                    .original_destination_connection_id = quic_zig.conn.path.ConnectionId.fromSlice(ids.dcid),
-                    .initial_source_connection_id = quic_zig.conn.path.ConnectionId.fromSlice(&server_cid),
+                const params: quic.tls.TransportParams = .{
+                    .original_destination_connection_id = quic.conn.path.ConnectionId.fromSlice(ids.dcid),
+                    .initial_source_connection_id = quic.conn.path.ConnectionId.fromSlice(&server_cid),
                     .max_idle_timeout_ms = 30_000,
                     .initial_max_data = 16 * 1024 * 1024,
                     .initial_max_stream_data_bidi_local = 16 * 1024 * 1024,

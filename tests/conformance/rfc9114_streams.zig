@@ -90,7 +90,7 @@
 
 const std = @import("std");
 const http3_zig = @import("http3_zig");
-const quic_zig = @import("quic_zig");
+const quic = @import("quic");
 const fixture = @import("_h3_fixture.zig");
 
 const stream = http3_zig.stream;

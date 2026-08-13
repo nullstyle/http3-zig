@@ -19,14 +19,14 @@
 //! tunnel.
 
 const std = @import("std");
-const quic_zig = @import("quic_zig");
+const quic = @import("quic");
 
 const capsule_mod = @import("capsule.zig");
 const protocol = @import("protocol.zig");
 const qpack = @import("qpack/root.zig");
 const settings_mod = @import("settings.zig");
 
-const varint = quic_zig.wire.varint;
+const varint = quic.wire.varint;
 
 pub const protocol_token = "webtransport";
 

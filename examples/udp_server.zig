@@ -11,7 +11,7 @@
 //!
 //! The shape to copy for your own server:
 //!
-//!  1. `quic_zig.Server.init` owns TLS, accept/demux, Retry, and the
+//!  1. `quic.Server.init` owns TLS, accept/demux, Retry, and the
 //!     connection table. This example uses the auto-built TLS path
 //!     (`tls_cert_pem`/`tls_key_pem` + `.alpn_protocols = &.{"h3"}`):
 //!     it produces the same TLS-1.3-only / ALPN-pinned context that
@@ -22,7 +22,7 @@
 //!     TLS behavior the auto-built path doesn't expose, e.g. keylog or
 //!     session-ticket callbacks; the override context's lifetime then
 //!     stays yours.)
-//!  2. `quic_zig.transport.runUdpServer` owns the socket and the
+//!  2. `quic.transport.runUdpServer` owns the socket and the
 //!     receive/tick/drain loop on a monotonic clock. ALL application
 //!     logic lives in the `on_iteration` hook — the one place where
 //!     touching a loop-owned `Server` is safe (no internal locking;
@@ -53,7 +53,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const http3_zig = @import("http3_zig");
-const quic_zig = @import("quic_zig");
+const quic = @import("quic");
 
 /// Self-signed localhost certificate + key (PEM). Test fixtures copied
 /// from `tests/data/` so this module (rooted at `examples/`) can
@@ -85,7 +85,7 @@ const drain_grace_us: u64 = 3 * std.time.us_per_s;
 /// request streams, and a non-zero `max_datagram_frame_size` so the
 /// RFC 9297 HTTP/3 DATAGRAM extension path stays open (costs nothing
 /// for plain request/response).
-fn transportParams() quic_zig.tls.TransportParams {
+fn transportParams() quic.tls.TransportParams {
     return .{
         .max_idle_timeout_ms = 30_000,
         .initial_max_data = 1 << 22,
@@ -101,10 +101,10 @@ fn transportParams() quic_zig.tls.TransportParams {
 
 /// Per-connection application state, allocated on the first sight of a
 /// slot, hung off `Slot.user_data`, and freed in
-/// `onConnectionWillClose`. quic_zig never reads or frees `user_data`;
+/// `onConnectionWillClose`. quic never reads or frees `user_data`;
 /// the will-close hook is the last safe place to release it.
 const ConnState = struct {
-    /// HTTP/3 session over the slot's `*quic_zig.Connection`.
+    /// HTTP/3 session over the slot's `*quic.Connection`.
     /// `SessionConfig.production(.{})` is the deployment posture — the
     /// bare `.{}` defaults are a compatibility posture with unbounded
     /// buffers.
@@ -129,7 +129,7 @@ const ConnState = struct {
     requests_served: u32 = 0,
 };
 
-fn connState(slot: *quic_zig.Server.Slot) ?*ConnState {
+fn connState(slot: *quic.Server.Slot) ?*ConnState {
     const ptr = slot.user_data orelse return null;
     return @ptrCast(@alignCast(ptr));
 }
@@ -154,11 +154,11 @@ pub const App = struct {
     /// `handle`/`tick`/`poll` call and `OpenRequestStream.last_event_us`
     /// use. Embedders that open-code the loop instead of using
     /// `runUdpServer` size their poll/sleep timeout with
-    /// `quic_zig.Server.nextTimerDeadline(now_us)` (per-connection:
+    /// `quic.Server.nextTimerDeadline(now_us)` (per-connection:
     /// `Connection.nextTimerDeadline`) rather than sleeping a fixed
     /// interval — that keeps PTO/loss timers firing on schedule without
     /// busy-spinning.
-    pub fn onIteration(ctx: ?*anyopaque, server: *quic_zig.Server, now_us: u64) anyerror!void {
+    pub fn onIteration(ctx: ?*anyopaque, server: *quic.Server, now_us: u64) anyerror!void {
         const app: *App = @ptrCast(@alignCast(ctx.?));
 
         // Shutdown phase 1: SIGINT observed -> start the HTTP/3 drain.
@@ -227,7 +227,7 @@ pub const App = struct {
     /// else) is what makes reap safe. Events are cleared with the
     /// session-bound `clearEvents` first (payloads were cloned from the
     /// session's allocator), then the session, then the state itself.
-    pub fn onConnectionWillClose(ctx: ?*anyopaque, slot: *quic_zig.Server.Slot) void {
+    pub fn onConnectionWillClose(ctx: ?*anyopaque, slot: *quic.Server.Slot) void {
         const app: *App = @ptrCast(@alignCast(ctx.?));
         const state = connState(slot) orelse return;
         std.debug.print(
@@ -242,7 +242,7 @@ pub const App = struct {
         slot.user_data = null;
     }
 
-    fn ensureState(app: *App, slot: *quic_zig.Server.Slot) !*ConnState {
+    fn ensureState(app: *App, slot: *quic.Server.Slot) !*ConnState {
         if (connState(slot)) |state| return state;
         const state = try app.allocator.create(ConnState);
         errdefer app.allocator.destroy(state);
@@ -347,7 +347,7 @@ pub fn serve(
     };
     const alpn = [_][]const u8{"h3"};
 
-    var server = try quic_zig.Server.init(.{
+    var server = try quic.Server.init(.{
         .allocator = allocator,
         .tls_cert_pem = cert_pem,
         .tls_key_pem = key_pem,
@@ -360,7 +360,7 @@ pub fn serve(
 
     std.debug.print("[server] HTTP/3 server listening on {s} (ALPN h3)\n", .{listen});
 
-    try quic_zig.transport.runUdpServer(&server, .{
+    try quic.transport.runUdpServer(&server, .{
         .listen = listen,
         .io = io,
         .shutdown_flag = &loop_shutdown,

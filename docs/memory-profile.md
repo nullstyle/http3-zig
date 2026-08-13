@@ -32,32 +32,39 @@ The harness:
    if no allocation escaped `freeEvent` / the per-component `deinit`.
 
 Numbers reflect *library overhead only* — the loopback shim hands buffers
-between two `quic_zig.Connection` instances in-process. No kernel sockets,
+between two `quic.Connection` instances in-process. No kernel sockets,
 no real network. Useful as a steady-state signal, not a wire-line
 working-set claim.
 
 ## The numbers
 
-2 000-iteration trace on the current tree (http3-zig against quic-zig
-0.4.0):
+2 000-iteration trace on the current tree (http3-zig against quic
+0.12.0):
 
 | Stage | iters | bytes-in-use | max-bytes-ever | Δ vs warm-up |
 | --- | ---: | ---: | ---: | ---: |
-| warm-up | 0 | 2 527 500 | 2 527 550 | +0 |
-| 500 iters | 500 | 2 649 708 | 2 652 293 | +122 208 |
-| 1k iters | 1 000 | 2 771 116 | 2 773 701 | +243 616 |
-| 2k iters | 2 000 | 3 013 932 | 3 016 517 | +486 432 |
+| warm-up | 0 | 6 199 916 | 6 199 966 | +0 |
+| 500 iters | 500 | 6 326 124 | 6 328 717 | +126 208 |
+| 1k iters | 1 000 | 6 451 532 | 6 454 125 | +251 616 |
+| 2k iters | 2 000 | 6 702 348 | 6 704 941 | +502 432 |
 
-**Δ bytes-in-use warm-up → 2k iters: +486 432 bytes over 2 000 iters
-(≈ 243 bytes/iter).** `gpa.deinit()` reports **ok** — every allocation
+**Δ bytes-in-use warm-up → 2k iters: +502 432 bytes over 2 000 iters
+(≈ 251 bytes/iter).** `gpa.deinit()` reports **ok** — every allocation
 made during the loop is reachable from the `Session` deinit chain.
+
+The fixed warm-up footprint roughly doubled moving quic 0.10 → 0.12
+(≈ 2.5 MB → ≈ 6.2 MB for the two-connection pair): the transport's
+modern congestion-control spine — CUBIC/HyStart++ state, the pacing
+outlet, per-packet delivery-rate stamps, and the BBR-capable
+controller — is per-connection overhead, not per-iteration cost. The
+slope the gate watches is unchanged.
 
 ## Verdict
 
-Per-iteration growth is **≈ 243 bytes/iter**, down **~91 %** from the
+Per-iteration growth is **≈ 251 bytes/iter**, down **~91 %** from the
 ≈ 2 755 bytes/iter this harness measured before terminal-stream reaping
 landed (see history below). The delta is constant across windows
-(warm-up→500: 244/iter; 500→1k: 243/iter; 1k→2k: 243/iter), so it is a
+(warm-up→500: 252/iter; 500→1k: 251/iter; 1k→2k: 251/iter), so it is a
 small predictable per-iteration cost, not a fixed warm-up overhead
 amortizing away. The remaining growth is connection-level bookkeeping that
 scales with the total number of streams a single connection has ever
@@ -124,7 +131,7 @@ cd http3-zig
 zig build mem-profile --cache-dir /tmp/h3-cache-W2
 ```
 
-The step always builds with `-OReleaseSafe` (private boringssl + quic_zig
+The step always builds with `-OReleaseSafe` (private boringssl + quic
 + http3_zig instances at the same optimize mode), so the `DebugAllocator`
 leak detector and the counting allocator overhead are both in scope. The
 harness writes a Markdown table to stdout and exits non-zero if the leak

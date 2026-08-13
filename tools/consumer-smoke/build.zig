@@ -16,9 +16,9 @@ pub fn build(b: *std.Build) void {
     });
     exe_mod.addImport("http3_zig", http3_dep.module("http3_zig"));
     // The exported shared instances are the point of this smoke test: a
-    // consumer must be able to name quic_zig/boringssl types that unify
+    // consumer must be able to name quic/boringssl types that unify
     // with http3_zig's API without declaring its own copies of those deps.
-    exe_mod.addImport("quic_zig", http3_dep.module("quic_zig"));
+    exe_mod.addImport("quic", http3_dep.module("quic"));
     exe_mod.addImport("boringssl", http3_dep.module("boringssl"));
 
     const exe = b.addExecutable(.{

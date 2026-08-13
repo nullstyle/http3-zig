@@ -11,7 +11,7 @@
 const std = @import("std");
 const boringssl = @import("boringssl");
 const http3_zig = @import("http3_zig");
-const quic_zig = @import("quic_zig");
+const quic = @import("quic");
 
 pub const test_cert_pem = @embedFile("../data/test_cert.pem");
 pub const test_key_pem = @embedFile("../data/test_key.pem");
@@ -23,7 +23,7 @@ pub fn discardKeylog(line: []const u8) void {
     _ = line;
 }
 
-pub fn handshake(client: *quic_zig.Connection, server: *quic_zig.Connection) !void {
+pub fn handshake(client: *quic.Connection, server: *quic.Connection) !void {
     var step: u32 = 0;
     while (step < 50) : (step += 1) {
         if (client.handshakeDone() and server.handshakeDone()) break;
@@ -38,27 +38,25 @@ pub fn initConnectedQuic(
     allocator: std.mem.Allocator,
     client_tls: anytype,
     server_tls: anytype,
-    client: *quic_zig.Connection,
-    server: *quic_zig.Connection,
+    client: *quic.Connection,
+    server: *quic.Connection,
 ) !void {
-    client.* = try quic_zig.Connection.initClient(allocator, client_tls, "localhost");
+    try quic.Connection.initClientAt(client, allocator, client_tls, "localhost");
     errdefer client.deinit();
-    server.* = try quic_zig.Connection.initServer(allocator, server_tls);
+    try quic.Connection.initServerAt(server, allocator, server_tls);
     errdefer server.deinit();
 
     // Surface CONNECTION_CLOSE reason phrases in the integration tests
-    // so close-event assertions can verify them. quic_zig's hardening
+    // so close-event assertions can verify them. quic's hardening
     // default redacts the reason on the wire (hardening guide §9 / §12);
     // tests opt in to the visible form.
     client.reveal_close_reason_on_wire = true;
     server.reveal_close_reason_on_wire = true;
 
-    try client.bind();
-    try server.bind();
     client.peer = server;
     server.peer = client;
 
-    const tp: quic_zig.tls.TransportParams = .{
+    const tp: quic.tls.TransportParams = .{
         .initial_max_data = 1 << 22,
         .initial_max_stream_data_bidi_local = 1 << 20,
         .initial_max_stream_data_bidi_remote = 1 << 20,
@@ -104,8 +102,8 @@ pub fn clearSessionEvents(
 }
 
 pub fn pumpH3(
-    client: *quic_zig.Connection,
-    server: *quic_zig.Connection,
+    client: *quic.Connection,
+    server: *quic.Connection,
     client_h3: *http3_zig.Session,
     server_h3: *http3_zig.Session,
     client_events: *std.ArrayList(http3_zig.session.Event),
@@ -127,8 +125,8 @@ pub fn pumpH3(
 
 pub fn pumpUntilH3Error(
     allocator: std.mem.Allocator,
-    client: *quic_zig.Connection,
-    server: *quic_zig.Connection,
+    client: *quic.Connection,
+    server: *quic.Connection,
     client_h3: *http3_zig.Session,
     server_h3: *http3_zig.Session,
     client_events: *std.ArrayList(http3_zig.session.Event),
@@ -156,14 +154,14 @@ pub fn pumpUntilH3Error(
     return error.ExpectedH3ErrorNotFound;
 }
 
-pub fn writeFrame(conn: *quic_zig.Connection, stream_id: u64, frame: http3_zig.Frame) !void {
+pub fn writeFrame(conn: *quic.Connection, stream_id: u64, frame: http3_zig.Frame) !void {
     var buf: [4096]u8 = undefined;
     const n = try http3_zig.frame.encode(&buf, frame);
     _ = try conn.streamWrite(stream_id, buf[0..n]);
 }
 
 pub fn writeQpackEncoderInstruction(
-    conn: *quic_zig.Connection,
+    conn: *quic.Connection,
     stream_id: u64,
     instruction: http3_zig.QpackEncoderInstruction,
 ) !void {
@@ -172,31 +170,31 @@ pub fn writeQpackEncoderInstruction(
     _ = try conn.streamWrite(stream_id, buf[0..n]);
 }
 
-pub fn writeStreamType(conn: *quic_zig.Connection, stream_id: u64, stream_type: u64) !void {
+pub fn writeStreamType(conn: *quic.Connection, stream_id: u64, stream_type: u64) !void {
     var buf: [8]u8 = undefined;
-    const n = try quic_zig.wire.varint.encode(&buf, stream_type);
+    const n = try quic.wire.varint.encode(&buf, stream_type);
     _ = try conn.streamWrite(stream_id, buf[0..n]);
 }
 
-pub fn writeVarint(conn: *quic_zig.Connection, stream_id: u64, value: u64) !void {
+pub fn writeVarint(conn: *quic.Connection, stream_id: u64, value: u64) !void {
     var buf: [8]u8 = undefined;
-    const n = try quic_zig.wire.varint.encode(&buf, value);
+    const n = try quic.wire.varint.encode(&buf, value);
     _ = try conn.streamWrite(stream_id, buf[0..n]);
 }
 
-pub fn openUniWithType(conn: *quic_zig.Connection, stream_id: u64, stream_type: u64) !void {
+pub fn openUniWithType(conn: *quic.Connection, stream_id: u64, stream_type: u64) !void {
     _ = try conn.openUni(stream_id);
     try writeStreamType(conn, stream_id, stream_type);
 }
 
-pub fn writeHeadersFrame(conn: *quic_zig.Connection, stream_id: u64, fields: []const http3_zig.FieldLine) !void {
+pub fn writeHeadersFrame(conn: *quic.Connection, stream_id: u64, fields: []const http3_zig.FieldLine) !void {
     var block: [2048]u8 = undefined;
     const block_n = try http3_zig.qpack.encodeFieldSection(&block, fields);
     try writeFrame(conn, stream_id, .{ .headers = block[0..block_n] });
 }
 
 pub fn writePushPromiseFrame(
-    conn: *quic_zig.Connection,
+    conn: *quic.Connection,
     stream_id: u64,
     push_id: u64,
     fields: []const http3_zig.FieldLine,
@@ -226,8 +224,8 @@ pub fn fieldValue(fields: []const http3_zig.FieldLine, name: []const u8) ?[]cons
 pub const H3Pair = struct {
     client_tls: boringssl.tls.Context,
     server_tls: boringssl.tls.Context,
-    client: quic_zig.Connection,
-    server: quic_zig.Connection,
+    client: quic.Connection,
+    server: quic.Connection,
     client_h3: http3_zig.Session,
     server_h3: http3_zig.Session,
 
@@ -378,7 +376,7 @@ pub fn openGetAndAwaitServerHeaders(
     return error.ExpectedRequestHeaders;
 }
 
-pub fn sendRawH3Datagram(conn: *quic_zig.Connection, stream_id: u64, payload: []const u8) !void {
+pub fn sendRawH3Datagram(conn: *quic.Connection, stream_id: u64, payload: []const u8) !void {
     var buf: [2048]u8 = undefined;
     const n = try http3_zig.datagram.encode(&buf, stream_id, payload);
     try conn.sendDatagram(buf[0..n]);

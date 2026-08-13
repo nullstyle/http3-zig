@@ -1,7 +1,7 @@
 //! In-process WebTransport-over-HTTP/3 loopback example.
 //!
 //! Sister to `examples/loopback_get.zig`. Stands up a client and server
-//! `http3_zig.Session` over a single-process `quic_zig.Connection` pair,
+//! `http3_zig.Session` over a single-process `quic.Connection` pair,
 //! negotiates WebTransport via SETTINGS, opens an Extended CONNECT, and
 //! exchanges a datagram in each direction plus a unidirectional WT
 //! stream from the client. The client then sends
@@ -13,7 +13,7 @@
 
 const std = @import("std");
 const http3_zig = @import("http3_zig");
-const quic_zig = @import("quic_zig");
+const quic = @import("quic");
 
 const ClientCid = [_]u8{ 0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37, 0x38 };
 const ServerCid = [_]u8{ 0x91, 0x92, 0x93, 0x94, 0x95, 0x96, 0x97, 0x98 };
@@ -38,12 +38,12 @@ pub fn main(init: std.process.Init) !void {
     var server_tls = try http3_zig.server.initTlsContext(.{}, cert_pem, key_pem);
     defer server_tls.deinit();
 
-    var client_quic = try quic_zig.Connection.initClient(allocator, client_tls, "localhost");
-    defer client_quic.deinit();
-    var server_quic = try quic_zig.Connection.initServer(allocator, server_tls);
-    defer server_quic.deinit();
+    const client_quic = try quic.Connection.createClient(allocator, client_tls, "localhost");
+    defer client_quic.destroy();
+    const server_quic = try quic.Connection.createServer(allocator, server_tls);
+    defer server_quic.destroy();
 
-    try connectQuic(&client_quic, &server_quic);
+    try connectQuic(client_quic, server_quic);
     std.debug.print("step 1: QUIC handshake complete\n", .{});
 
     const wt_settings: http3_zig.Settings = .{
@@ -51,9 +51,9 @@ pub fn main(init: std.process.Init) !void {
         .h3_datagram = true,
         .wt_enabled = true,
     };
-    var client_h3 = http3_zig.Session.init(allocator, .client, &client_quic, .{ .settings = wt_settings });
+    var client_h3 = http3_zig.Session.init(allocator, .client, client_quic, .{ .settings = wt_settings });
     defer client_h3.deinit();
-    var server_h3 = http3_zig.Session.init(allocator, .server, &server_quic, .{ .settings = wt_settings });
+    var server_h3 = http3_zig.Session.init(allocator, .server, server_quic, .{ .settings = wt_settings });
     defer server_h3.deinit();
     try client_h3.start();
     try server_h3.start();
@@ -85,7 +85,7 @@ pub fn main(init: std.process.Init) !void {
         var iters: u32 = 0;
         while (client_h3.peer_settings == null or server_h3.peer_settings == null) : (iters += 1) {
             if (iters >= 20_000) return error.SettingsExchangeTimedOut;
-            try pump(&client_quic, &server_quic, &client_h3, &server_h3, &client_events, &server_events, &now_us, &packet);
+            try pump(client_quic, server_quic, &client_h3, &server_h3, &client_events, &server_events, &now_us, &packet);
             server_h3.clearEvents(&server_events);
             client_h3.clearEvents(&client_events);
         }
@@ -115,7 +115,7 @@ pub fn main(init: std.process.Init) !void {
     var iters: u32 = 0;
     while (!server_saw_close) : (iters += 1) {
         if (iters >= 20_000) return error.ExampleTimedOut;
-        try pump(&client_quic, &server_quic, &client_h3, &server_h3, &client_events, &server_events, &now_us, &packet);
+        try pump(client_quic, server_quic, &client_h3, &server_h3, &client_events, &server_events, &now_us, &packet);
 
         for (server_events.items) |event| {
             switch (try server_runner.observe(event)) {
@@ -253,8 +253,8 @@ pub fn main(init: std.process.Init) !void {
 }
 
 fn pump(
-    client: *quic_zig.Connection,
-    server: *quic_zig.Connection,
+    client: *quic.Connection,
+    server: *quic.Connection,
     client_h3: *http3_zig.Session,
     server_h3: *http3_zig.Session,
     client_events: *std.ArrayList(http3_zig.Event),
@@ -274,15 +274,13 @@ fn pump(
     now_us.* = driver.now_us;
 }
 
-fn connectQuic(client: *quic_zig.Connection, server: *quic_zig.Connection) !void {
-    try client.bind();
-    try server.bind();
+fn connectQuic(client: *quic.Connection, server: *quic.Connection) !void {
     client.peer = server;
     server.peer = client;
 
     // WebTransport requires QUIC datagram frames; keep the cap healthy
     // so the loopback can carry our test payloads (RFC 9221).
-    const tp: quic_zig.tls.TransportParams = .{
+    const tp: quic.tls.TransportParams = .{
         .initial_max_data = 1 << 22,
         .initial_max_stream_data_bidi_local = 1 << 20,
         .initial_max_stream_data_bidi_remote = 1 << 20,

@@ -56,12 +56,12 @@ github_raw_zon_url() {
             path=${path#*/}
             repo=${path%%.git#*}
             ref=${path#*.git#}
-            [ "$repo" != "$path" ] || die "unsupported quic_zig git URL: $url"
-            [ -n "$ref" ] || die "missing ref in quic_zig git URL: $url"
+            [ "$repo" != "$path" ] || die "unsupported quic git URL: $url"
+            [ -n "$ref" ] || die "missing ref in quic git URL: $url"
             printf 'https://raw.githubusercontent.com/%s/%s/%s/build.zig.zon\n' "$owner" "$repo" "$ref"
             ;;
         *)
-            die "unsupported quic_zig URL: $url"
+            die "unsupported quic URL: $url"
             ;;
     esac
 }
@@ -69,15 +69,15 @@ github_raw_zon_url() {
 http3_zon=${1:-build.zig.zon}
 [ -f "$http3_zon" ] || die "missing http3-zig manifest: $http3_zon"
 
-quic_url=$(extract_dep_field quic_zig url "$http3_zon") ||
-    die "could not read quic_zig.url from $http3_zon"
+quic_url=$(extract_dep_field quic url "$http3_zon") ||
+    die "could not read quic.url from $http3_zon"
 http3_boringssl_url=$(extract_dep_field boringssl_zig url "$http3_zon") ||
     die "could not read boringssl_zig.url from $http3_zon"
 http3_boringssl_hash=$(extract_dep_field boringssl_zig hash "$http3_zon") ||
     die "could not read boringssl_zig.hash from $http3_zon"
 
-if [ "${QUIC_ZIG_BUILD_ZON:-}" ]; then
-    quic_zon=$QUIC_ZIG_BUILD_ZON
+if [ "${QUIC_BUILD_ZON:-}" ]; then
+    quic_zon=$QUIC_BUILD_ZON
     [ -f "$quic_zon" ] || die "missing quic-zig manifest: $quic_zon"
 else
     tmp_dir=$(mktemp -d)
@@ -104,7 +104,7 @@ fi
 
 printf 'boringssl_zig pin matches pinned quic-zig (%s)\n' "$http3_boringssl_hash"
 
-# build.zig recreates the quic_zig module and must hand it a build_options
+# build.zig recreates the quic module and must hand it a build_options
 # "version" string. The value is cosmetic, but it must not drift from the
 # tag pinned in build.zig.zon (it did once: 0.6.0 vs v0.7.5).
 quic_tag=""
@@ -123,13 +123,13 @@ case "$quic_tag" in
         build_zig=$(dirname "$http3_zon")/build.zig
         [ -f "$build_zig" ] || die "missing build.zig next to $http3_zon"
         if ! grep -q "addOption(\[\]const u8, \"version\", \"$quic_version\")" "$build_zig"; then
-            printf 'quic_zig build_options version in build.zig does not match pinned tag %s\n' "$quic_tag" >&2
+            printf 'quic build_options version in build.zig does not match pinned tag %s\n' "$quic_tag" >&2
             grep -n 'addOption(\[\]const u8, "version"' "$build_zig" >&2 || true
             exit 1
         fi
-        printf 'quic_zig build_options version matches pinned tag (%s)\n' "$quic_tag"
+        printf 'quic build_options version matches pinned tag (%s)\n' "$quic_tag"
         ;;
     *)
-        printf 'note: quic_zig pin is not a release tag (%s); skipping build_options version check\n' "${quic_tag:-$quic_url}"
+        printf 'note: quic pin is not a release tag (%s); skipping build_options version check\n' "${quic_tag:-$quic_url}"
         ;;
 esac

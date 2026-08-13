@@ -10,7 +10,7 @@ on:
 # transport dependency it builds against. CI uses jdx/mise-action to install
 # the same toolchain as local development.
 #
-# build.zig.zon pins quic_zig and boringssl_zig as URL+hash release-tarball
+# build.zig.zon pins quic and boringssl_zig as URL+hash release-tarball
 # deps, so a standalone CI checkout fetches everything itself — no local path
 # checkout needed. To bump quic-zig, edit build.zig.zon's `.url` + `.hash` by
 # hand (run `zig fetch <new-tarball-url>` for the hash — do NOT
@@ -114,7 +114,7 @@ jobs:
         run: zig build run-udp-smoke --summary all
 
       # Consume http3-zig from an out-of-tree project and prove the exported
-      # quic_zig/boringssl module instances type-unify with the public API
+      # quic/boringssl module instances type-unify with the public API
       # (tools/consumer-smoke/src/main.zig). Module identity is
       # platform-independent — one runner is enough.
       - name: Consumer package smoke (module identity)

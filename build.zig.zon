@@ -4,24 +4,22 @@
     .fingerprint = 0x71cd45b0dc74266b,
     .minimum_zig_version = "0.17.0-dev.1683+5ceec001b",
     .dependencies = .{
-        // quic-zig 0.10.0 — the consumer-adoption release, and the first
-        // tagged cut since v0.7.6 (0.8.0 and 0.9.0 were prepared but
-        // deliberately never tagged, so this pin finally rides a real tag
-        // instead of a release-prep commit). Carries everything the 0.9.0
-        // release-prep pin had — lifecycle events
-        // (handshake_established / stream_opened), Slot.user_data +
-        // on_connection_will_close ordered teardown, on_iteration loop
-        // hooks, Server.nextTimerDeadline, wrapper 0-RTT, auto CID
-        // replenish, negotiatedAlpn() — plus private-CA/mTLS through the
-        // wrappers (Client.Config.ca_pem / client_cert_pem / client_key_pem,
-        // Server.Config.client_ca_pem) and a slimmer consumer archive.
+        // quic 0.12.0 — the shape release, and the first tag under the
+        // renamed package identity: the package is `.quic` now (dep key,
+        // b.dependency("quic"), module "quic", @import("quic")); the repo
+        // is still github.com/nullstyle/quic-zig. The rename changed
+        // .name/.fingerprint, so this is a new package identity — the hash
+        // has no continuity with the old quic_zig-* pins. Inherits 0.11.0
+        // (which http3-zig skipped): CUBIC + pacing + HyStart++ as
+        // wire-behavior defaults, batched UDP datapath, O(1) sent-packet
+        // tracker, TimerKind.pacing. New in 0.12.0: BBRv3 (opt-in via
+        // congestion_control = .bbr), Connection address-for-life
+        // (createClient/createServer/destroy replace init-then-bind;
+        // Client/Server wrappers unaffected), and bundled UDP loops that
+        // tolerate peer-provoked receive/send socket errors.
         //
-        // BREAKING in 0.10.0, but only for Server.Config, which http3-zig
-        // does not construct: six nullable rate/quota fields collapsed onto
-        // Server.RateLimit, the 0-RTT pair became Server.EarlyData,
-        // versions -> accepted_versions, max_auto_replenish_cids usize -> u8.
-        // http3-zig's only reach into quic-zig internals is
-        // quic_zig.conn.state.Error (src/session.zig), which is unaffected.
+        // http3-zig's only reach into quic internals is
+        // quic.conn.state.Error (src/session.zig), which is unaffected.
         //
         // To bump: run `zig fetch <git-url>#<ref>` and paste its hash here
         // by hand — do NOT `zig fetch --save`, which mangles a dependency
@@ -29,18 +27,22 @@
         // build.zig to the new release (tools/check-boringssl-pin.sh lints
         // this on tag pins) and mirror any boringssl_zig pin change below
         // byte-for-byte.
-        .quic_zig = .{
-            .url = "git+https://github.com/nullstyle/quic-zig.git#v0.10.0",
-            .hash = "quic_zig-0.10.0-jMbGHfXQJQA4jqdbJtcW7cMSNWCuLLM4GVHW2XYow_zF",
+        .quic = .{
+            .url = "git+https://github.com/nullstyle/quic-zig.git#v0.12.0",
+            .hash = "quic-0.12.0-DnSYvceUKwDfkGRGLtid8dcB27U2i04DZ4W_bUu7EpeN",
         },
-        // MUST match quic-zig's boringssl_zig entry byte-for-byte so the
+        // MUST match quic's boringssl_zig entry byte-for-byte so the
         // package manager dedupes to a single boringssl module instance;
-        // http3-zig crosses boringssl.tls.Context into quic_zig, so a
+        // http3-zig crosses boringssl.tls.Context into quic, so a
         // mismatch yields "expected boringssl.tls.Context, found
         // boringssl.tls.Context" type errors at the boundary.
+        //
+        // Commit-SHA tarball rather than a tag: quic pins boringssl-zig
+        // 0.6.5 at 292c70a2 (the native-Windows pkg-config linker fix,
+        // which landed before boringssl-zig cut its next release tag).
         .boringssl_zig = .{
-            .url = "https://github.com/nullstyle/boringssl-zig/archive/refs/tags/v0.6.4.tar.gz",
-            .hash = "boringssl_zig-0.6.4-4iEdPG_EAQAatmfvnEyavDt9y1XW-WF5RpkdoMfQtpor",
+            .url = "https://github.com/nullstyle/boringssl-zig/archive/292c70a2fbe8e48c4efc482c9e5f450e1f22bc6b.tar.gz",
+            .hash = "boringssl_zig-0.6.5-4iEdPEz1AQDkuuIR0qV6v4sv7Iy9mxOl2-bX2yZW1xCG",
         },
     },
     .paths = .{

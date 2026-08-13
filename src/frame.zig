@@ -1,10 +1,10 @@
 //! HTTP/3 frame codec.
 
-const quic_zig = @import("quic_zig");
+const quic = @import("quic");
 const protocol = @import("protocol.zig");
 const settings_mod = @import("settings.zig");
 
-const varint = quic_zig.wire.varint;
+const varint = quic.wire.varint;
 
 pub const Error = varint.Error || settings_mod.Error || error{
     InvalidFramePayload,

@@ -1,6 +1,6 @@
 const std = @import("std");
 const http3_zig = @import("http3_zig");
-const quic_zig = @import("quic_zig");
+const quic = @import("quic");
 const fixt = @import("_fixtures.zig");
 
 // Aliases — pulls in only the helpers this file's tests reference. It's
@@ -30,7 +30,7 @@ const exchangePairSettings = fixt.exchangePairSettings;
 const openGetAndAwaitServerHeaders = fixt.openGetAndAwaitServerHeaders;
 const sendRawH3Datagram = fixt.sendRawH3Datagram;
 
-test "session exchanges HTTP/3 datagrams over quic_zig datagram frames" {
+test "session exchanges HTTP/3 datagrams over quic datagram frames" {
     const allocator = std.testing.allocator;
 
     var server_tls = try http3_zig.server.initTlsContext(.{}, test_cert_pem, test_key_pem);
@@ -38,8 +38,8 @@ test "session exchanges HTTP/3 datagrams over quic_zig datagram frames" {
     var client_tls = try http3_zig.client.initTlsContext(.{ .verify = .none });
     defer client_tls.deinit();
 
-    var client: quic_zig.Connection = undefined;
-    var server: quic_zig.Connection = undefined;
+    var client: quic.Connection = undefined;
+    var server: quic.Connection = undefined;
     try initConnectedQuic(allocator, client_tls, server_tls, &client, &server);
     defer client.deinit();
     defer server.deinit();

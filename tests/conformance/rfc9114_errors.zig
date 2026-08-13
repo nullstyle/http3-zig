@@ -91,7 +91,7 @@
 //! Out of scope here (covered elsewhere):
 //!   RFC9114 §5.2    GOAWAY semantics                  → rfc9114_session.zig
 //!   RFC9114 §6.2.1  closed-critical-stream detection  → rfc9114_streams.zig
-//!   RFC9000 §20.2   QUIC application error encoding   → quic_zig conformance suites
+//!   RFC9000 §20.2   QUIC application error encoding   → quic conformance suites
 
 const std = @import("std");
 const http3_zig = @import("http3_zig");

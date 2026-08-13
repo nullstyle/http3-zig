@@ -1,6 +1,6 @@
 const std = @import("std");
 const http3_zig = @import("http3_zig");
-const quic_zig = @import("quic_zig");
+const quic = @import("quic");
 const fuzz_codecs = @import("http3_zig_fuzz_codecs");
 const fixt = @import("_fixtures.zig");
 
@@ -151,7 +151,7 @@ test "HTTP/3 SETTINGS frame round-trip" {
 }
 
 test "SETTINGS decoder rejects duplicate reserved and invalid values" {
-    const varint = quic_zig.wire.varint;
+    const varint = quic.wire.varint;
 
     var duplicate: [16]u8 = undefined;
     var pos: usize = 0;
@@ -311,8 +311,8 @@ test "capsule and context datagram codecs round-trip" {
 test "capsule decoder rejects truncated capsule payloads" {
     var buf: [16]u8 = undefined;
     var pos: usize = 0;
-    pos += try quic_zig.wire.varint.encode(buf[pos..], http3_zig.capsule.Type.datagram);
-    pos += try quic_zig.wire.varint.encode(buf[pos..], 4);
+    pos += try quic.wire.varint.encode(buf[pos..], http3_zig.capsule.Type.datagram);
+    pos += try quic.wire.varint.encode(buf[pos..], 4);
     buf[pos] = 'x';
     pos += 1;
     try std.testing.expectError(error.InsufficientBytes, http3_zig.capsule.decode(buf[0..pos]));

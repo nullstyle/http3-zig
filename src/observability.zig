@@ -6,14 +6,14 @@
 
 const std = @import("std");
 const boringssl = @import("boringssl");
-const quic_zig = @import("quic_zig");
+const quic = @import("quic");
 
 const protocol = @import("protocol.zig");
 
 pub const KeylogCallback = boringssl.tls.KeylogCallback;
-pub const QuicQlogCallback = quic_zig.QlogCallback;
-pub const QuicQlogEvent = quic_zig.QlogEvent;
-pub const QuicQlogEventName = quic_zig.QlogEventName;
+pub const QuicQlogCallback = quic.QlogCallback;
+pub const QuicQlogEvent = quic.QlogEvent;
+pub const QuicQlogEventName = quic.QlogEventName;
 
 pub const TraceEventName = enum {
     control_stream_opened,

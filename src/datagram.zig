@@ -1,9 +1,9 @@
 //! HTTP/3 DATAGRAM payload codec (RFC 9297).
 
 const std = @import("std");
-const quic_zig = @import("quic_zig");
+const quic = @import("quic");
 
-const varint = quic_zig.wire.varint;
+const varint = quic.wire.varint;
 
 pub const Error = varint.Error || error{
     InvalidDatagramStream,

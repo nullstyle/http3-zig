@@ -81,7 +81,7 @@
 //!                   rfc9114_settings.zig and the Settings round-trip
 //!                   test in tests/root.zig.
 //!   RFC9297 §2.2   QUIC DATAGRAM *frame* layout (RFC 9221 §4) → covered
-//!                   by quic_zig's RFC 9221 conformance suite.
+//!                   by quic's RFC 9221 conformance suite.
 //!   RFC9298 §3     CONNECT-UDP Context ID 0 + UDP target/path encoding
 //!                   → covered by rfc9298_masque.zig. The generic
 //!                   Context ID payload codec lives here.
@@ -90,7 +90,7 @@
 
 const std = @import("std");
 const http3_zig = @import("http3_zig");
-const quic_zig = @import("quic_zig");
+const quic = @import("quic");
 const fixture = @import("_h3_fixture.zig");
 
 const datagram = http3_zig.datagram;
@@ -119,7 +119,7 @@ test "MUST encode SETTINGS_H3_DATAGRAM=1 to advertise HTTP/3 datagram support [R
 
 test "MUST decode SETTINGS_H3_DATAGRAM=0 as datagrams disabled [RFC9297 §2.1 ¶1]" {
     // §2.1 ¶1: value 0 explicitly indicates the endpoint does not
-    // support HTTP/3 datagrams. quic_zig omits a default-false setting
+    // support HTTP/3 datagrams. quic omits a default-false setting
     // from the encoded blob; an absent setting MUST decode to false.
     var buf: [4]u8 = undefined;
     const n = try (settings_mod.Settings{}).encode(&buf);
@@ -133,7 +133,7 @@ test "MUST NOT accept a SETTINGS_H3_DATAGRAM value greater than 1 [RFC9297 §2.1
     // `InvalidSettingValue`, which the session maps to
     // H3_SETTINGS_ERROR (covered in rfc9114_session.zig for the
     // end-to-end gate).
-    const varint = quic_zig.wire.varint;
+    const varint = quic.wire.varint;
     var buf: [16]u8 = undefined;
     var pos: usize = 0;
     pos += try varint.encode(buf[pos..], protocol.SettingId.h3_datagram);

@@ -29,14 +29,14 @@
 //! payload that escaped `freeEvent`.
 //!
 //! Numbers reflect *library overhead only* — the loopback shim hands
-//! buffers between two `quic_zig.Connection` instances in-process. No
+//! buffers between two `quic.Connection` instances in-process. No
 //! kernel sockets, no real network. The numbers exist to detect
 //! monotonic growth across a single long-lived session, not to claim
 //! any particular working-set size.
 
 const std = @import("std");
 const http3_zig = @import("http3_zig");
-const quic_zig = @import("quic_zig");
+const quic = @import("quic");
 const boringssl = @import("boringssl");
 
 const Allocator = std.mem.Allocator;
@@ -166,8 +166,8 @@ const Persistent = struct {
     allocator: Allocator,
     client_tls: boringssl.tls.Context,
     server_tls: boringssl.tls.Context,
-    client_quic: quic_zig.Connection,
-    server_quic: quic_zig.Connection,
+    client_quic: quic.Connection,
+    server_quic: quic.Connection,
     client_h3: http3_zig.Session,
     server_h3: http3_zig.Session,
     client: http3_zig.Client,
@@ -191,9 +191,9 @@ const Persistent = struct {
         self.server_tls = try http3_zig.server.initTlsContext(.{}, cert_pem, key_pem);
         errdefer self.server_tls.deinit();
 
-        self.client_quic = try quic_zig.Connection.initClient(allocator, self.client_tls, "localhost");
+        try quic.Connection.initClientAt(&self.client_quic, allocator, self.client_tls, "localhost");
         errdefer self.client_quic.deinit();
-        self.server_quic = try quic_zig.Connection.initServer(allocator, self.server_tls);
+        try quic.Connection.initServerAt(&self.server_quic, allocator, self.server_tls);
         errdefer self.server_quic.deinit();
 
         try connectQuic(&self.client_quic, &self.server_quic);
@@ -312,7 +312,7 @@ fn doWorkUnit(p: *Persistent, stream_payload: []const u8, datagram_payload: []co
     // ---- Stream half ----
     // The peer's `initial_max_streams_uni` (4096) is below our 10 000
     // iteration count, so once the initial credit is exhausted we have
-    // to wait for the MAX_STREAMS replenishment quic_zig sends as
+    // to wait for the MAX_STREAMS replenishment quic sends as
     // streams close. Pump until `openUniStream` succeeds — this is
     // the same pattern the "16 concurrent uni streams" test uses.
     const uni_id = blk: while (true) {
@@ -627,21 +627,19 @@ fn clearEvents(allocator: Allocator, events: *std.ArrayList(http3_zig.session.Ev
     events.clearRetainingCapacity();
 }
 
-fn connectQuic(client: *quic_zig.Connection, server: *quic_zig.Connection) !void {
-    try client.bind();
-    try server.bind();
+fn connectQuic(client: *quic.Connection, server: *quic.Connection) !void {
     client.peer = server;
     server.peer = client;
 
     // The memory profile opens a fresh uni stream every iteration for
     // 10 000 iterations on a single connection. The 16-stream cap used
     // by the bench / fixtures runs out almost immediately. Set the
-    // initial uni-stream count to quic_zig's per-connection ceiling
+    // initial uni-stream count to quic's per-connection ceiling
     // (`max_streams_per_connection = 4096`) so the initial credit is
     // as generous as possible; the MAX_STREAMS frames the peer sends
     // as streams close will keep us going past that floor over the
     // 10 000-iter run.
-    const tp: quic_zig.tls.TransportParams = .{
+    const tp: quic.tls.TransportParams = .{
         .initial_max_data = 1 << 22,
         .initial_max_stream_data_bidi_local = 1 << 20,
         .initial_max_stream_data_bidi_remote = 1 << 20,

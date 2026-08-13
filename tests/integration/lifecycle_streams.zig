@@ -1,6 +1,6 @@
 const std = @import("std");
 const http3_zig = @import("http3_zig");
-const quic_zig = @import("quic_zig");
+const quic = @import("quic");
 const fixt = @import("_fixtures.zig");
 
 // Aliases — pulls in only the helpers this file's tests reference. It's
@@ -30,7 +30,7 @@ const exchangePairSettings = fixt.exchangePairSettings;
 const openGetAndAwaitServerHeaders = fixt.openGetAndAwaitServerHeaders;
 const sendRawH3Datagram = fixt.sendRawH3Datagram;
 
-test "session exchanges HTTP/3 request and response over quic_zig streams" {
+test "session exchanges HTTP/3 request and response over quic streams" {
     const allocator = std.testing.allocator;
 
     var server_tls = try http3_zig.server.initTlsContext(.{}, test_cert_pem, test_key_pem);
@@ -38,17 +38,15 @@ test "session exchanges HTTP/3 request and response over quic_zig streams" {
     var client_tls = try http3_zig.client.initTlsContext(.{ .verify = .none });
     defer client_tls.deinit();
 
-    var client = try quic_zig.Connection.initClient(allocator, client_tls, "localhost");
-    defer client.deinit();
-    var server = try quic_zig.Connection.initServer(allocator, server_tls);
-    defer server.deinit();
+    const client = try quic.Connection.createClient(allocator, client_tls, "localhost");
+    defer client.destroy();
+    const server = try quic.Connection.createServer(allocator, server_tls);
+    defer server.destroy();
 
-    try client.bind();
-    try server.bind();
-    client.peer = &server;
-    server.peer = &client;
+    client.peer = server;
+    server.peer = client;
 
-    const tp: quic_zig.tls.TransportParams = .{
+    const tp: quic.tls.TransportParams = .{
         .initial_max_data = 1 << 22,
         .initial_max_stream_data_bidi_local = 1 << 20,
         .initial_max_stream_data_bidi_remote = 1 << 20,
@@ -60,7 +58,7 @@ test "session exchanges HTTP/3 request and response over quic_zig streams" {
     try client.setTransportParams(tp);
     try server.setTransportParams(tp);
 
-    try handshake(&client, &server);
+    try handshake(client, server);
     try std.testing.expectEqualStrings("h3", client.inner.alpnSelected().?);
     try std.testing.expectEqualStrings("h3", server.inner.alpnSelected().?);
 
@@ -74,14 +72,14 @@ test "session exchanges HTTP/3 request and response over quic_zig streams" {
         .qpack_blocked_streams = 4,
         .max_field_section_size = 1 << 20,
     };
-    var client_h3 = http3_zig.Session.init(allocator, .client, &client, .{
+    var client_h3 = http3_zig.Session.init(allocator, .client, client, .{
         .settings = h3_settings,
         .qpack_encoder_table_capacity = 256,
         .qpack_indexing = http3_zig.QpackIndexingPolicy.aggressive,
         .max_field_section_size = 1 << 20,
     });
     defer client_h3.deinit();
-    var server_h3 = http3_zig.Session.init(allocator, .server, &server, .{
+    var server_h3 = http3_zig.Session.init(allocator, .server, server, .{
         .settings = h3_settings,
         .qpack_encoder_table_capacity = 256,
         .qpack_indexing = http3_zig.QpackIndexingPolicy.aggressive,
@@ -141,8 +139,8 @@ test "session exchanges HTTP/3 request and response over quic_zig streams" {
     while (!client_saw_response_finish or !client_saw_goaway or !server_saw_qpack_ack) : (iters += 1) {
         try std.testing.expect(iters < 20_000);
         try pumpH3(
-            &client,
-            &server,
+            client,
+            server,
             &client_h3,
             &server_h3,
             &client_events,
@@ -295,8 +293,8 @@ test "session exchanges HTTP/3 request and response over quic_zig streams" {
     while (!server_saw_rejection) : (iters += 1) {
         try std.testing.expect(iters < 20_000);
         try pumpH3(
-            &client,
-            &server,
+            client,
+            server,
             &client_h3,
             &server_h3,
             &client_events,

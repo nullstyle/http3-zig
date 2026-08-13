@@ -1,9 +1,9 @@
 //! HTTP/3 SETTINGS frame payload codec.
 
-const quic_zig = @import("quic_zig");
+const quic = @import("quic");
 const protocol = @import("protocol.zig");
 
-const varint = quic_zig.wire.varint;
+const varint = quic.wire.varint;
 
 pub const Error = varint.Error || error{
     DuplicateSetting,

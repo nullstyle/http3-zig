@@ -1,6 +1,6 @@
 const std = @import("std");
 const http3_zig = @import("http3_zig");
-const quic_zig = @import("quic_zig");
+const quic = @import("quic");
 const fixt = @import("_fixtures.zig");
 
 // Aliases — pulls in only the helpers this file's tests reference. It's
@@ -311,7 +311,7 @@ test "session rejects push streams sent to servers" {
     try expectLastCloseCode(&pair.server_h3, http3_zig.protocol.ErrorCode.stream_creation_error);
 }
 
-test "session surfaces quic_zig flow blocked events" {
+test "session surfaces quic flow blocked events" {
     const allocator = std.testing.allocator;
 
     var pair: H3Pair = undefined;

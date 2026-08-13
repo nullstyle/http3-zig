@@ -1,6 +1,6 @@
 const std = @import("std");
 const http3_zig = @import("http3_zig");
-const quic_zig = @import("quic_zig");
+const quic = @import("quic");
 const fixt = @import("_fixtures.zig");
 
 // Aliases — pulls in only the helpers this file's tests reference. It's
@@ -30,7 +30,7 @@ const exchangePairSettings = fixt.exchangePairSettings;
 const openGetAndAwaitServerHeaders = fixt.openGetAndAwaitServerHeaders;
 const sendRawH3Datagram = fixt.sendRawH3Datagram;
 
-test "session surfaces quic_zig connection close events" {
+test "session surfaces quic connection close events" {
     const allocator = std.testing.allocator;
 
     var server_tls = try http3_zig.server.initTlsContext(.{}, test_cert_pem, test_key_pem);
@@ -38,8 +38,8 @@ test "session surfaces quic_zig connection close events" {
     var client_tls = try http3_zig.client.initTlsContext(.{ .verify = .none });
     defer client_tls.deinit();
 
-    var client: quic_zig.Connection = undefined;
-    var server: quic_zig.Connection = undefined;
+    var client: quic.Connection = undefined;
+    var server: quic.Connection = undefined;
     try initConnectedQuic(allocator, client_tls, server_tls, &client, &server);
     defer client.deinit();
     defer server.deinit();
@@ -69,8 +69,8 @@ test "session surfaces quic_zig connection close events" {
     try std.testing.expectEqual(@as(usize, 1), server_events.items.len);
     switch (server_events.items[0]) {
         .connection_closed => |closed| {
-            try std.testing.expectEqual(quic_zig.CloseSource.local, closed.source);
-            try std.testing.expectEqual(quic_zig.CloseErrorSpace.application, closed.error_space);
+            try std.testing.expectEqual(quic.CloseSource.local, closed.source);
+            try std.testing.expectEqual(quic.CloseErrorSpace.application, closed.error_space);
             try std.testing.expectEqual(http3_zig.protocol.ErrorCode.no_error, closed.error_code);
             try std.testing.expectEqualStrings("server shutdown", closed.reason);
             try std.testing.expectEqualStrings("H3_NO_ERROR", closed.application.?.name);
@@ -98,8 +98,8 @@ test "session surfaces quic_zig connection close events" {
             switch (event) {
                 .connection_closed => |closed| {
                     client_saw_close = true;
-                    try std.testing.expectEqual(quic_zig.CloseSource.peer, closed.source);
-                    try std.testing.expectEqual(quic_zig.CloseErrorSpace.application, closed.error_space);
+                    try std.testing.expectEqual(quic.CloseSource.peer, closed.source);
+                    try std.testing.expectEqual(quic.CloseErrorSpace.application, closed.error_space);
                     try std.testing.expectEqual(http3_zig.protocol.ErrorCode.no_error, closed.error_code);
                     try std.testing.expectEqualStrings("server shutdown", closed.reason);
                     try std.testing.expectEqualStrings("H3_NO_ERROR", closed.application.?.name);
@@ -122,8 +122,8 @@ test "client send-side reset is surfaced as server request reset" {
     var client_tls = try http3_zig.client.initTlsContext(.{ .verify = .none });
     defer client_tls.deinit();
 
-    var client: quic_zig.Connection = undefined;
-    var server: quic_zig.Connection = undefined;
+    var client: quic.Connection = undefined;
+    var server: quic.Connection = undefined;
     try initConnectedQuic(allocator, client_tls, server_tls, &client, &server);
     defer client.deinit();
     defer server.deinit();
@@ -215,8 +215,8 @@ test "peer RESET reclaims the half-closed stream when reclaim_peer_reset_streams
     var client_tls = try http3_zig.client.initTlsContext(.{ .verify = .none });
     defer client_tls.deinit();
 
-    var client: quic_zig.Connection = undefined;
-    var server: quic_zig.Connection = undefined;
+    var client: quic.Connection = undefined;
+    var server: quic.Connection = undefined;
     try initConnectedQuic(allocator, client_tls, server_tls, &client, &server);
     defer client.deinit();
     defer server.deinit();
@@ -296,8 +296,8 @@ test "peer RESET leaves the stream tracked when reclaim_peer_reset_streams is of
     var client_tls = try http3_zig.client.initTlsContext(.{ .verify = .none });
     defer client_tls.deinit();
 
-    var client: quic_zig.Connection = undefined;
-    var server: quic_zig.Connection = undefined;
+    var client: quic.Connection = undefined;
+    var server: quic.Connection = undefined;
     try initConnectedQuic(allocator, client_tls, server_tls, &client, &server);
     defer client.deinit();
     defer server.deinit();
@@ -369,8 +369,8 @@ test "server send-side reset is surfaced as client response reset" {
     var client_tls = try http3_zig.client.initTlsContext(.{ .verify = .none });
     defer client_tls.deinit();
 
-    var client: quic_zig.Connection = undefined;
-    var server: quic_zig.Connection = undefined;
+    var client: quic.Connection = undefined;
+    var server: quic.Connection = undefined;
     try initConnectedQuic(allocator, client_tls, server_tls, &client, &server);
     defer client.deinit();
     defer server.deinit();

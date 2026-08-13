@@ -31,7 +31,7 @@
 
 const std = @import("std");
 const boringssl = @import("boringssl");
-const quic_zig = @import("quic_zig");
+const quic = @import("quic");
 const http3_zig = @import("http3_zig");
 
 const Net = std.Io.net;
@@ -139,9 +139,8 @@ fn runHarness(allocator: std.mem.Allocator, io: std.Io, options: Options) !void 
     var client_tls = try http3_zig.client.initTlsContext(.{ .verify = options.verify });
     defer client_tls.deinit();
 
-    var conn = try quic_zig.Connection.initClient(allocator, client_tls, sni_z);
-    defer conn.deinit();
-    try conn.bind();
+    const conn = try quic.Connection.createClient(allocator, client_tls, sni_z);
+    defer conn.destroy();
 
     try conn.setInitialDcid(&initial_dcid);
     try conn.setPeerDcid(&initial_dcid);
@@ -162,7 +161,7 @@ fn runHarness(allocator: std.mem.Allocator, io: std.Io, options: Options) !void 
         .max_datagram_frame_size = 1200,
     });
 
-    var h3 = http3_zig.Session.init(allocator, .client, &conn, .{
+    var h3 = http3_zig.Session.init(allocator, .client, conn, .{
         .settings = .{
             .qpack_max_table_capacity = 256,
             .qpack_blocked_streams = 4,
@@ -189,7 +188,7 @@ fn runHarness(allocator: std.mem.Allocator, io: std.Io, options: Options) !void 
         events.deinit(allocator);
     }
 
-    var endpoint = http3_zig.TransportEndpoint.withSession(&conn, &h3, &events);
+    var endpoint = http3_zig.TransportEndpoint.withSession(conn, &h3, &events);
 
     var rx: [64 * 1024]u8 = undefined;
     var tx: [4096]u8 = undefined;
@@ -202,7 +201,7 @@ fn runHarness(allocator: std.mem.Allocator, io: std.Io, options: Options) !void 
     std.debug.print("external_wt: phase 1 — waiting for SETTINGS exchange\n", .{});
     while (h3.peer_settings == null) : (iters += 1) {
         if (now_us >= deadline_us or iters >= options.max_iterations) return error.SettingsExchangeTimedOut;
-        try pumpOnce(allocator, io, &endpoint, &events, sock, remote_addr, &rx, &tx, now_us, &conn);
+        try pumpOnce(allocator, io, &endpoint, &events, sock, remote_addr, &rx, &tx, now_us, conn);
         try endpoint.tick(now_us);
         clearEvents(allocator, &events);
         now_us += http3_zig.driver.default_step_us;
@@ -239,7 +238,7 @@ fn runHarness(allocator: std.mem.Allocator, io: std.Io, options: Options) !void 
             return error.ConnectionClosedEarly;
         }
 
-        try pumpOnce(allocator, io, &endpoint, &events, sock, remote_addr, &rx, &tx, now_us, &conn);
+        try pumpOnce(allocator, io, &endpoint, &events, sock, remote_addr, &rx, &tx, now_us, conn);
 
         for (events.items) |event| {
             const observation = try runner.observe(event);
@@ -344,7 +343,7 @@ fn pumpOnce(
     rx: []u8,
     tx: []u8,
     now_us: u64,
-    conn: *quic_zig.Connection,
+    conn: *quic.Connection,
 ) !void {
     _ = allocator;
     _ = events;

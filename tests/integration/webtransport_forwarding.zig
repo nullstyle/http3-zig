@@ -1,6 +1,6 @@
 const std = @import("std");
 const http3_zig = @import("http3_zig");
-const quic_zig = @import("quic_zig");
+const quic = @import("quic");
 const fixt = @import("_fixtures.zig");
 
 const clearSessionEvents = fixt.clearSessionEvents;
@@ -252,7 +252,7 @@ const ForwardingHarness = struct {
 };
 
 fn varintCapsule(capsule_type: u64, value: u64, storage: *[8]u8) !http3_zig.Capsule {
-    const n = try quic_zig.wire.varint.encode(storage[0..], value);
+    const n = try quic.wire.varint.encode(storage[0..], value);
     return .{ .capsule_type = capsule_type, .value = storage[0..n] };
 }
 

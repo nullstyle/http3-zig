@@ -48,7 +48,7 @@
 const std = @import("std");
 const boringssl = @import("boringssl");
 const http3_zig = @import("http3_zig");
-const quic_zig = @import("quic_zig");
+const quic = @import("quic");
 
 const max_sessions = 4;
 const max_streams_per_session = 8;
@@ -687,8 +687,8 @@ fn clearSessionEvents(
 const H3Pair = struct {
     client_tls: boringssl.tls.Context,
     server_tls: boringssl.tls.Context,
-    client: quic_zig.Connection,
-    server: quic_zig.Connection,
+    client: quic.Connection,
+    server: quic.Connection,
     client_h3: http3_zig.Session,
     server_h3: http3_zig.Session,
 
@@ -734,23 +734,21 @@ fn initConnectedQuic(
     allocator: std.mem.Allocator,
     client_tls: anytype,
     server_tls: anytype,
-    client: *quic_zig.Connection,
-    server: *quic_zig.Connection,
+    client: *quic.Connection,
+    server: *quic.Connection,
 ) !void {
-    client.* = try quic_zig.Connection.initClient(allocator, client_tls, "localhost");
+    try quic.Connection.initClientAt(client, allocator, client_tls, "localhost");
     errdefer client.deinit();
-    server.* = try quic_zig.Connection.initServer(allocator, server_tls);
+    try quic.Connection.initServerAt(server, allocator, server_tls);
     errdefer server.deinit();
 
     client.reveal_close_reason_on_wire = true;
     server.reveal_close_reason_on_wire = true;
 
-    try client.bind();
-    try server.bind();
     client.peer = server;
     server.peer = client;
 
-    const tp: quic_zig.tls.TransportParams = .{
+    const tp: quic.tls.TransportParams = .{
         .initial_max_data = 1 << 22,
         .initial_max_stream_data_bidi_local = 1 << 20,
         .initial_max_stream_data_bidi_remote = 1 << 20,

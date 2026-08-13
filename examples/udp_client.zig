@@ -9,14 +9,14 @@
 //!
 //! The shape to copy for your own client:
 //!
-//!  1. `quic_zig.Client.connect` builds the TLS context (system trust
+//!  1. `quic.Client.connect` builds the TLS context (system trust
 //!     store by default; `--insecure` maps to `insecure_skip_verify`
 //!     for the demo server's self-signed cert — never set that against
 //!     an untrusted network) and a ready-to-tick `Connection`.
 //!  2. `http3_zig.Session` + `Client` facade + `ClientRunner` ride on
 //!     `client.conn`; `TransportEndpoint.withSession` keeps the H3
 //!     drain order in one place.
-//!  3. `quic_zig.transport.runUdpClient` owns the socket and the
+//!  3. `quic.transport.runUdpClient` owns the socket and the
 //!     advance/receive/tick loop; ALL application logic lives in the
 //!     `on_iteration` hook, on the loop thread.
 //!  4. The request is sent only after `handshakeDone()` — http3-zig has
@@ -29,7 +29,7 @@
 
 const std = @import("std");
 const http3_zig = @import("http3_zig");
-const quic_zig = @import("quic_zig");
+const quic = @import("quic");
 
 pub const default_target = "127.0.0.1:4433";
 
@@ -46,7 +46,7 @@ const Options = struct {
 /// limit (the RFC 9000 default) so the server's coalesced handshake
 /// datagrams are not dropped as too large — 1200 is the RFC minimum
 /// send floor, not a good receive limit.
-fn transportParams() quic_zig.tls.TransportParams {
+fn transportParams() quic.tls.TransportParams {
     return .{
         .max_idle_timeout_ms = 30_000,
         .initial_max_data = 1 << 22,
@@ -85,7 +85,7 @@ const FetchFlow = struct {
     /// loop iteration on the loop thread, after inbound datagrams are
     /// handled and the clock ticked; anything queued here ships on the
     /// very next outbox drain.
-    pub fn onIteration(ctx: ?*anyopaque, client: *quic_zig.Client, now_us: u64) anyerror!void {
+    pub fn onIteration(ctx: ?*anyopaque, client: *quic.Client, now_us: u64) anyerror!void {
         const flow: *FetchFlow = @ptrCast(@alignCast(ctx.?));
         if (flow.done) return;
         if (now_us > flow.deadline_us) return error.RequestTimedOut;
@@ -154,7 +154,7 @@ pub fn run(
 ) !void {
     const alpn = [_][]const u8{"h3"};
 
-    var client = try quic_zig.Client.connect(.{
+    var client = try quic.Client.connect(.{
         .allocator = allocator,
         .server_name = options.sni,
         .alpn_protocols = &alpn,
@@ -208,7 +208,7 @@ pub fn run(
         .path = options.path,
         .deadline_us = timeout_us,
     };
-    try quic_zig.transport.runUdpClient(&client, .{
+    try quic.transport.runUdpClient(&client, .{
         .target = options.target,
         .io = io,
         // Demo posture, same as the server: run unprivileged.

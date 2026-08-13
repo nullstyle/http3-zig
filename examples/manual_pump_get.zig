@@ -1,6 +1,6 @@
 const std = @import("std");
 const http3_zig = @import("http3_zig");
-const quic_zig = @import("quic_zig");
+const quic = @import("quic");
 
 const ClientCid = [_]u8{ 0x4d, 0x61, 0x6e, 0x75, 0x43, 0x6c, 0x69, 0x00 };
 const ServerCid = [_]u8{ 0x4d, 0x61, 0x6e, 0x75, 0x53, 0x72, 0x76, 0x00 };
@@ -21,17 +21,17 @@ pub fn main(init: std.process.Init) !void {
     var server_tls = try http3_zig.server.initTlsContext(.{}, cert_pem, key_pem);
     defer server_tls.deinit();
 
-    var client_quic = try quic_zig.Connection.initClient(allocator, client_tls, "localhost");
-    defer client_quic.deinit();
-    var server_quic = try quic_zig.Connection.initServer(allocator, server_tls);
-    defer server_quic.deinit();
+    const client_quic = try quic.Connection.createClient(allocator, client_tls, "localhost");
+    defer client_quic.destroy();
+    const server_quic = try quic.Connection.createServer(allocator, server_tls);
+    defer server_quic.destroy();
 
-    try connectQuic(&client_quic, &server_quic);
+    try connectQuic(client_quic, server_quic);
 
     const session_config = http3_zig.SessionConfig.production(.{});
-    var client_h3 = http3_zig.Session.init(allocator, .client, &client_quic, session_config);
+    var client_h3 = http3_zig.Session.init(allocator, .client, client_quic, session_config);
     defer client_h3.deinit();
-    var server_h3 = http3_zig.Session.init(allocator, .server, &server_quic, session_config);
+    var server_h3 = http3_zig.Session.init(allocator, .server, server_quic, session_config);
     defer server_h3.deinit();
     try client_h3.start();
     try server_h3.start();
@@ -69,8 +69,8 @@ pub fn main(init: std.process.Init) !void {
         if (steps >= 20_000) return error.ExampleTimedOut;
 
         try pumpOnce(
-            &client_quic,
-            &server_quic,
+            client_quic,
+            server_quic,
             &client_h3,
             &server_h3,
             &client_events,
@@ -114,8 +114,8 @@ pub fn main(init: std.process.Init) !void {
 }
 
 fn pumpOnce(
-    client_quic: *quic_zig.Connection,
-    server_quic: *quic_zig.Connection,
+    client_quic: *quic.Connection,
+    server_quic: *quic.Connection,
     client_h3: *http3_zig.Session,
     server_h3: *http3_zig.Session,
     client_events: *std.ArrayList(http3_zig.Event),
@@ -133,8 +133,8 @@ fn pumpOnce(
 }
 
 fn relayDatagrams(
-    from: *quic_zig.Connection,
-    to: *quic_zig.Connection,
+    from: *quic.Connection,
+    to: *quic.Connection,
     packet: []u8,
     now_us: u64,
 ) !void {
@@ -152,16 +152,14 @@ fn headerValue(fields: []const http3_zig.FieldLine, name: []const u8) ?[]const u
     return null;
 }
 
-fn connectQuic(client: *quic_zig.Connection, server: *quic_zig.Connection) !void {
-    try client.bind();
-    try server.bind();
+fn connectQuic(client: *quic.Connection, server: *quic.Connection) !void {
     // The in-process TLS handshake shim uses `peer`; the HTTP/3 traffic below
     // is still driven through the same `tick` / `poll` / `handle` calls an
     // embedder wires to sockets.
     client.peer = server;
     server.peer = client;
 
-    const tp: quic_zig.tls.TransportParams = .{
+    const tp: quic.tls.TransportParams = .{
         .initial_max_data = 1 << 22,
         .initial_max_stream_data_bidi_local = 1 << 20,
         .initial_max_stream_data_bidi_remote = 1 << 20,

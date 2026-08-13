@@ -1,6 +1,6 @@
 const std = @import("std");
 const http3_zig = @import("http3_zig");
-const quic_zig = @import("quic_zig");
+const quic = @import("quic");
 const fixt = @import("_fixtures.zig");
 
 // Aliases — pulls in only the helpers this file's tests reference. It's
@@ -42,8 +42,8 @@ test "session negotiates and surfaces extended CONNECT requests" {
     );
     defer server_tls.deinit();
 
-    var client: quic_zig.Connection = undefined;
-    var server: quic_zig.Connection = undefined;
+    var client: quic.Connection = undefined;
+    var server: quic.Connection = undefined;
     try initConnectedQuic(allocator, client_tls, server_tls, &client, &server);
     defer client.deinit();
     defer server.deinit();

@@ -1,6 +1,6 @@
 const std = @import("std");
 const boringssl = @import("boringssl");
-const quic_zig = @import("quic_zig");
+const quic = @import("quic");
 const http3_zig = @import("http3_zig");
 
 const Net = std.Io.net;
@@ -41,9 +41,8 @@ pub fn main(init: std.process.Init) !void {
     });
     defer client_tls.deinit();
 
-    var conn = try quic_zig.Connection.initClient(allocator, client_tls, sni);
-    defer conn.deinit();
-    try conn.bind();
+    const conn = try quic.Connection.createClient(allocator, client_tls, sni);
+    defer conn.destroy();
 
     try conn.setInitialDcid(&initial_dcid);
     try conn.setPeerDcid(&initial_dcid);
@@ -63,7 +62,7 @@ pub fn main(init: std.process.Init) !void {
         .max_datagram_frame_size = 1200,
     });
 
-    var h3 = http3_zig.Session.init(allocator, .client, &conn, .{
+    var h3 = http3_zig.Session.init(allocator, .client, conn, .{
         .settings = .{
             .qpack_max_table_capacity = 256,
             .qpack_blocked_streams = 4,
@@ -99,7 +98,7 @@ pub fn main(init: std.process.Init) !void {
     var completed: std.ArrayList(*http3_zig.ResponseState) = .empty;
     defer completed.deinit(allocator);
 
-    var endpoint = http3_zig.TransportEndpoint.withSession(&conn, &h3, &events);
+    var endpoint = http3_zig.TransportEndpoint.withSession(conn, &h3, &events);
 
     const UdpSink = struct {
         socket: @TypeOf(sock),

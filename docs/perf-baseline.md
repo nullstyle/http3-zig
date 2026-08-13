@@ -31,7 +31,7 @@ Three operations:
 ## Important caveat: in-process loopback, not network
 
 The benchmark harness **does not use real sockets.** Both
-`quic_zig.Connection`s share an in-process buffer shim (the same one
+`quic.Connection`s share an in-process buffer shim (the same one
 the integration tests use). The timer therefore measures **library
 CPU overhead only** — encoding, decoding, frame parsing, QPACK,
 session bookkeeping. There is no kernel context switch, no NIC, no

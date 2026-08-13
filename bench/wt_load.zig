@@ -33,7 +33,7 @@
 //!     etc. surfaced.
 //!
 //! This is an **in-process** harness — `http3_zig.TransportLoopback`
-//! shuttles bytes between two `quic_zig.Connection` instances; no
+//! shuttles bytes between two `quic.Connection` instances; no
 //! kernel sockets, no real network. Wall-clock numbers reflect
 //! library overhead only.
 //!
@@ -43,7 +43,7 @@
 
 const std = @import("std");
 const http3_zig = @import("http3_zig");
-const quic_zig = @import("quic_zig");
+const quic = @import("quic");
 const boringssl = @import("boringssl");
 
 // Cert + key buffers populated at startup from `tests/data/...` via
@@ -220,16 +220,16 @@ fn runLoad(
     var server_tls = try http3_zig.server.initTlsContext(.{}, cert_pem, key_pem);
     defer server_tls.deinit();
 
-    var client_quic = try quic_zig.Connection.initClient(allocator, client_tls, "localhost");
-    defer client_quic.deinit();
-    var server_quic = try quic_zig.Connection.initServer(allocator, server_tls);
-    defer server_quic.deinit();
+    const client_quic = try quic.Connection.createClient(allocator, client_tls, "localhost");
+    defer client_quic.destroy();
+    const server_quic = try quic.Connection.createServer(allocator, server_tls);
+    defer server_quic.destroy();
 
-    try connectQuic(&client_quic, &server_quic);
+    try connectQuic(client_quic, server_quic);
 
-    var client_h3 = http3_zig.Session.init(allocator, .client, &client_quic, .{ .settings = wt_settings });
+    var client_h3 = http3_zig.Session.init(allocator, .client, client_quic, .{ .settings = wt_settings });
     defer client_h3.deinit();
-    var server_h3 = http3_zig.Session.init(allocator, .server, &server_quic, .{ .settings = wt_settings });
+    var server_h3 = http3_zig.Session.init(allocator, .server, server_quic, .{ .settings = wt_settings });
     defer server_h3.deinit();
     try client_h3.start();
     try server_h3.start();
@@ -260,7 +260,7 @@ fn runLoad(
         var iters: u32 = 0;
         while (client_h3.peer_settings == null or server_h3.peer_settings == null) : (iters += 1) {
             if (iters >= 20_000) return error.SettingsTimedOut;
-            try pump(&client_quic, &server_quic, &client_h3, &server_h3, &client_events, &server_events, &now_us, &packet);
+            try pump(client_quic, server_quic, &client_h3, &server_h3, &client_events, &server_events, &now_us, &packet);
             clearEvents(allocator, &server_events);
             clearEvents(allocator, &client_events);
         }
@@ -398,8 +398,8 @@ fn runLoad(
         }
 
         try pump(
-            &client_quic,
-            &server_quic,
+            client_quic,
+            server_quic,
             &client_h3,
             &server_h3,
             &client_events,
@@ -882,8 +882,8 @@ fn elapsedNs(start: i96, end: i96) u64 {
 }
 
 fn pump(
-    client: *quic_zig.Connection,
-    server: *quic_zig.Connection,
+    client: *quic.Connection,
+    server: *quic.Connection,
     client_h3: *http3_zig.Session,
     server_h3: *http3_zig.Session,
     client_events: *std.ArrayList(http3_zig.session.Event),
@@ -908,9 +908,7 @@ fn pump(
     now_us.* = driver.now_us;
 }
 
-fn connectQuic(client: *quic_zig.Connection, server: *quic_zig.Connection) !void {
-    try client.bind();
-    try server.bind();
+fn connectQuic(client: *quic.Connection, server: *quic.Connection) !void {
     client.peer = server;
     server.peer = client;
 
@@ -924,7 +922,7 @@ fn connectQuic(client: *quic_zig.Connection, server: *quic_zig.Connection) !void
     //   - `initial_max_data = 16 MiB` is the maximum the underlying
     //     QUIC stack accepts (`default_connection_receive_window`).
     //     Comfortably covers ~500 KiB stream payload + headers.
-    const tp: quic_zig.tls.TransportParams = .{
+    const tp: quic.tls.TransportParams = .{
         .initial_max_data = 16 * 1024 * 1024,
         .initial_max_stream_data_bidi_local = 1 << 20,
         .initial_max_stream_data_bidi_remote = 1 << 20,

@@ -85,6 +85,33 @@ breaking changes; see notes per release.
   `http3_zig.clearEvents` / `deinitEvents` forms now document the trap
   and remain for contexts without a session pointer.
 
+### Changed (BREAKING)
+
+- **quic dependency bumped v0.10.0 → v0.12.0, and the package is named
+  `quic` now, not `quic_zig`** (upstream renamed it in 0.12.0; the repo
+  is still github.com/nullstyle/quic-zig). http3-zig follows the rename
+  end to end, so every consumer-facing identifier moves at once: the
+  exported module is `dep.module("quic")`, the root re-export is
+  `http3_zig.quic`, and app imports become `@import("quic")` /
+  `exe.root_module.addImport("quic", ...)`. Same pre-1.0 reasoning as
+  upstream: the `_zig` suffix was redundant and this is the last cheap
+  moment to shed it.
+- **Raw `quic.Connection` construction follows upstream's 0.12.0
+  address-for-life API.** A `Connection` now has one address for its
+  whole life: `Connection.createClient(alloc, ctx, name)` /
+  `createServer(alloc, ctx)` return a stable `*Connection` paired with
+  `destroy()`; caller-owned storage uses `initClientAt` / `initServerAt`
+  paired with `deinit()`; `bind()` no longer exists. Embedders using the
+  `quic.Client` / `quic.Server` wrappers are unaffected. All in-tree
+  fixtures, examples, benches, and interop harnesses are migrated.
+- **Inherited wire-behavior defaults from quic 0.11.0** (which http3-zig
+  skipped): CUBIC congestion control, packet pacing, and HyStart++ are
+  now on by default at the transport layer (each individually
+  revertible via `Client.Config` / `Server.Config`). 0.12.0 also adds
+  opt-in BBRv3 (`congestion_control = .bbr`). The boringssl-zig pin
+  moves 0.6.4 → 0.6.5 (a commit-SHA tarball, mirrored byte-for-byte
+  from quic's manifest) for the native-Windows pkg-config linker fix.
+
 ### Fixed
 
 - Fixed the drain loop resurrecting streams that `gcClosedStreams` had

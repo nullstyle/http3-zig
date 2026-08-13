@@ -44,7 +44,7 @@ exe.root_module.addImport("http3_zig", http3_zig.module("http3_zig"));
 
 http3-zig pulls in `quic-zig` and `boringssl-zig` as transitive
 dependencies — do **not** declare your own copies of them. The embedding
-API is quic_zig-typed (`Session.init` takes a `*quic_zig.Connection` that
+API is quic-typed (`Session.init` takes a `*quic.Connection` that
 your app owns), so every real endpoint needs those types with the same
 module identity http3-zig was built against; a separately-declared
 quic-zig dependency produces a second module instance whose types do not
@@ -52,12 +52,12 @@ unify. http3-zig exports the shared instances:
 
 ```zig
 // Same module instances http3_zig itself links against:
-exe.root_module.addImport("quic_zig", http3_zig.module("quic_zig"));
+exe.root_module.addImport("quic", http3_zig.module("quic"));
 exe.root_module.addImport("boringssl", http3_zig.module("boringssl"));
 ```
 
 Alternatively, skip the extra imports and reach the same modules through
-the re-exports `http3_zig.quic_zig` and `http3_zig.boringssl`. A
+the re-exports `http3_zig.quic` and `http3_zig.boringssl`. A
 buildable out-of-tree consumer showing the full wiring lives in
 [`tools/consumer-smoke/`](tools/consumer-smoke/) and is checked in CI.
 
@@ -66,7 +66,7 @@ buildable out-of-tree consumer showing the full wiring lives in
 For a real server or client, start with
 [`examples/udp_server.zig`](examples/udp_server.zig) and
 [`examples/udp_client.zig`](examples/udp_client.zig): real UDP sockets,
-multi-connection accept via `quic_zig.Server` + `runUdpServer`, one
+multi-connection accept via `quic.Server` + `runUdpServer`, one
 `Session` per connection hung off `Slot.user_data`, ordered teardown in
 `on_connection_will_close`, and a SIGINT GOAWAY drain
 (`zig build run-udp-smoke` proves the pair end-to-end in one process).
@@ -80,7 +80,7 @@ The simplest end-to-end shape is the in-process loopback under
 const std = @import("std");
 const http3_zig = @import("http3_zig");
 
-// 1. Bring up `quic_zig.Connection` instances on both sides
+// 1. Bring up `quic.Connection` instances on both sides
 //    (handshake, transport params, etc.).
 // 2. Build paired `http3_zig.Session` objects with the production
 //    config preset:

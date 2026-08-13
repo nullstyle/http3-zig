@@ -15,7 +15,7 @@ emits, and explicit client-side `close(code, reason)` capsules.
 ## In-process disclaimer
 
 The harness is **in-process**: `http3_zig.TransportLoopback` shuttles
-QUIC packets between two `quic_zig.Connection` instances inside a
+QUIC packets between two `quic.Connection` instances inside a
 single Zig process. There are no kernel sockets, no real network, no
 real loss / pacing / RTT. Wall-clock numbers reflect *library
 overhead only* and are useful as a regression signal — not as a

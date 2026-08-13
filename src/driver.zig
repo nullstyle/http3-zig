@@ -2,11 +2,11 @@
 //!
 //! The helpers intentionally do not own sockets or clocks. Embedders still
 //! decide how packets are received, where outgoing datagrams are sent, and how
-//! time advances; this module just keeps the repeated quic_zig/http3_zig step
+//! time advances; this module just keeps the repeated quic/http3_zig step
 //! order in one place.
 
 const std = @import("std");
-const quic_zig = @import("quic_zig");
+const quic = @import("quic");
 const session_mod = @import("session.zig");
 
 pub const default_step_us: u64 = 1_000;
@@ -44,22 +44,22 @@ pub const StepStats = struct {
 };
 
 pub const Endpoint = struct {
-    quic: *quic_zig.Connection,
+    quic: *quic.Connection,
     session: ?*session_mod.Session = null,
     events: ?*std.ArrayList(session_mod.Event) = null,
     auto_start_session: bool = true,
 
-    pub fn init(quic: *quic_zig.Connection) Endpoint {
-        return .{ .quic = quic };
+    pub fn init(conn: *quic.Connection) Endpoint {
+        return .{ .quic = conn };
     }
 
     pub fn withSession(
-        quic: *quic_zig.Connection,
+        conn: *quic.Connection,
         session: *session_mod.Session,
         events: *std.ArrayList(session_mod.Event),
     ) Endpoint {
         return .{
-            .quic = quic,
+            .quic = conn,
             .session = session,
             .events = events,
         };
@@ -68,7 +68,7 @@ pub const Endpoint = struct {
     pub fn handle(
         self: *Endpoint,
         datagram: []u8,
-        from: ?quic_zig.Address,
+        from: ?quic.Address,
         now_us: u64,
     ) Error!void {
         try self.quic.handle(datagram, from, now_us);
@@ -77,12 +77,12 @@ pub const Endpoint = struct {
     /// Run the QUIC handshake state machine (`Connection.advance`): feed
     /// buffered CRYPTO to TLS and queue any resulting flight for the next
     /// `poll`/`flush`. Real-network clients MUST call this once after
-    /// `quic_zig.Client.connect` (and may call it once per loop iteration)
+    /// `quic.Client.connect` (and may call it once per loop iteration)
     /// — `connect` deliberately defers the first `advance` so 0-RTT data
     /// can be staged before the ClientHello, which means there is no
     /// inbound packet to bootstrap from and the very first ClientHello
     /// only reaches the wire via `advance` -> `poll` -> socket send.
-    /// (`quic_zig.transport.runUdpClient` performs this bootstrap call
+    /// (`quic.transport.runUdpClient` performs this bootstrap call
     /// itself; open-coded client loops own it.) Loopback examples and
     /// tests instead use the in-process peer shim, whose `advance` calls
     /// shuttle packets directly. Idempotent when there is nothing to do.
@@ -183,8 +183,8 @@ test "StepStats accumulates transport loop counters" {
 
 test "Endpoint clears attached session events" {
     const allocator = std.testing.allocator;
-    var quic: quic_zig.Connection = undefined;
-    var h3 = session_mod.Session.init(allocator, .client, &quic, .{});
+    var conn: quic.Connection = undefined;
+    var h3 = session_mod.Session.init(allocator, .client, &conn, .{});
     defer h3.deinit();
 
     var events: std.ArrayList(session_mod.Event) = .empty;
@@ -202,12 +202,12 @@ test "Endpoint clears attached session events" {
         },
     });
 
-    var endpoint = Endpoint.withSession(&quic, &h3, &events);
+    var endpoint = Endpoint.withSession(&conn, &h3, &events);
     try std.testing.expectEqual(@as(usize, 2), endpoint.clearEvents());
     try std.testing.expectEqual(@as(usize, 0), events.items.len);
     try std.testing.expectEqual(@as(usize, 0), endpoint.clearEvents());
 
-    var transport_only = Endpoint.init(&quic);
+    var transport_only = Endpoint.init(&conn);
     try std.testing.expectEqual(@as(usize, 0), transport_only.clearEvents());
 }
 

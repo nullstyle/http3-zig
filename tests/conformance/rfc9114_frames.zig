@@ -37,9 +37,9 @@
 //!   varint).
 //!
 //! Out of scope here (covered elsewhere):
-//!   RFC9114 §7.2.1 ¶?  declared Length > 2^62-1 — `quic_zig.wire.varint`
+//!   RFC9114 §7.2.1 ¶?  declared Length > 2^62-1 — `quic.wire.varint`
 //!     enforces the upper bound; the explicit-cap test lives in
-//!     `quic_zig/tests/conformance/rfc9000_varint.zig`.
+//!     `quic/tests/conformance/rfc9000_varint.zig`.
 //!   RFC9114 §7.2.4    SETTINGS payload codec                       → rfc9114_settings.zig
 //!   RFC9114 §6.2      stream-context placement (DATA only on req)  → rfc9114_streams.zig
 //!   RFC9114 §4        message-level malformed-pseudo-header rules  → rfc9114_messages.zig
@@ -48,11 +48,11 @@
 
 const std = @import("std");
 const http3_zig = @import("http3_zig");
-const quic_zig = @import("quic_zig");
+const quic = @import("quic");
 
 const frame_mod = http3_zig.frame;
 const protocol = http3_zig.protocol;
-const varint = quic_zig.wire.varint;
+const varint = quic.wire.varint;
 
 // ---------------------------------------------------------------- §7.1 frame envelope
 
@@ -84,7 +84,7 @@ test "MUST NOT accept a frame whose declared Length exceeds the available buffer
     // only 0 bytes follow.
     const truncated = [_]u8{ 0x00, 0x10 };
     try std.testing.expectError(
-        quic_zig.wire.varint.Error.InsufficientBytes,
+        quic.wire.varint.Error.InsufficientBytes,
         frame_mod.decode(&truncated),
     );
 }
@@ -94,7 +94,7 @@ test "MUST NOT accept a frame truncated mid-Type varint [RFC9114 §7.1 ¶1]" {
     // only one byte is present.
     const truncated = [_]u8{0x40};
     try std.testing.expectError(
-        quic_zig.wire.varint.Error.InsufficientBytes,
+        quic.wire.varint.Error.InsufficientBytes,
         frame_mod.decode(&truncated),
     );
 }
@@ -104,7 +104,7 @@ test "MUST NOT accept a frame truncated mid-Length varint [RFC9114 §7.1 ¶1]" {
     // is present.
     const truncated = [_]u8{ 0x00, 0x40 };
     try std.testing.expectError(
-        quic_zig.wire.varint.Error.InsufficientBytes,
+        quic.wire.varint.Error.InsufficientBytes,
         frame_mod.decode(&truncated),
     );
 }
@@ -113,7 +113,7 @@ test "MUST NOT accept a frame whose Length refers to bytes past the slice bounda
     // type=0x01 (HEADERS), length=0x05, only 3 payload bytes follow.
     const truncated = [_]u8{ 0x01, 0x05, 'a', 'b', 'c' };
     try std.testing.expectError(
-        quic_zig.wire.varint.Error.InsufficientBytes,
+        quic.wire.varint.Error.InsufficientBytes,
         frame_mod.decode(&truncated),
     );
 }
@@ -125,7 +125,7 @@ test "MUST NOT accept a frame whose embedded varint claims more bytes than decla
     // inconsistency that MUST surface as a parse error.
     const malformed = [_]u8{ 0x03, 0x01, 0x40 };
     try std.testing.expectError(
-        quic_zig.wire.varint.Error.InsufficientBytes,
+        quic.wire.varint.Error.InsufficientBytes,
         frame_mod.decode(&malformed),
     );
 }
@@ -280,7 +280,7 @@ test "MUST NOT accept a CANCEL_PUSH frame with empty payload [RFC9114 §7.2.3 ¶
     // The Push ID varint is required; a zero-length payload has none.
     const malformed = [_]u8{ 0x03, 0x00 };
     try std.testing.expectError(
-        quic_zig.wire.varint.Error.InsufficientBytes,
+        quic.wire.varint.Error.InsufficientBytes,
         frame_mod.decode(&malformed),
     );
 }
@@ -354,7 +354,7 @@ test "MUST round-trip the Push ID and Encoded Field Section carried by PUSH_PROM
 
 test "MUST accept a PUSH_PROMISE frame whose Field Section is zero bytes [RFC9114 §7.2.5 ¶1]" {
     // §7.2.5 ¶1 allows the Encoded Field Section to be empty (only
-    // the Push ID is required). quic_zig's codec MUST round-trip this.
+    // the Push ID is required). quic's codec MUST round-trip this.
     var buf: [8]u8 = undefined;
     const n = try frame_mod.encode(&buf, .{ .push_promise = .{ .push_id = 9, .field_section = "" } });
     const d = try frame_mod.decode(buf[0..n]);
@@ -371,7 +371,7 @@ test "MUST NOT accept a PUSH_PROMISE frame with empty payload (missing Push ID) 
     // type=0x05, length=0 — Push ID is required.
     const malformed = [_]u8{ 0x05, 0x00 };
     try std.testing.expectError(
-        quic_zig.wire.varint.Error.InsufficientBytes,
+        quic.wire.varint.Error.InsufficientBytes,
         frame_mod.decode(&malformed),
     );
 }
@@ -412,7 +412,7 @@ test "MUST NOT accept a GOAWAY frame with trailing garbage after the ID [RFC9114
 test "MUST NOT accept a GOAWAY frame with empty payload [RFC9114 §7.2.6 ¶1]" {
     const malformed = [_]u8{ 0x07, 0x00 };
     try std.testing.expectError(
-        quic_zig.wire.varint.Error.InsufficientBytes,
+        quic.wire.varint.Error.InsufficientBytes,
         frame_mod.decode(&malformed),
     );
 }
@@ -452,7 +452,7 @@ test "MUST NOT accept a MAX_PUSH_ID frame with trailing garbage [RFC9114 §7.1 �
 test "MUST NOT accept a MAX_PUSH_ID frame with empty payload [RFC9114 §7.2.7 ¶1]" {
     const malformed = [_]u8{ 0x0d, 0x00 };
     try std.testing.expectError(
-        quic_zig.wire.varint.Error.InsufficientBytes,
+        quic.wire.varint.Error.InsufficientBytes,
         frame_mod.decode(&malformed),
     );
 }
@@ -665,7 +665,7 @@ test "NORMATIVE frame iterator surfaces a parse error on a corrupt frame mid-str
     const ok = (try it.next()).?;
     try std.testing.expect(ok.frame == .data);
     try std.testing.expectError(
-        quic_zig.wire.varint.Error.InsufficientBytes,
+        quic.wire.varint.Error.InsufficientBytes,
         it.next(),
     );
 }

@@ -1,4 +1,4 @@
-//! http3_zig — HTTP/3 for Zig, layered above quic_zig and boringssl-zig.
+//! http3_zig — HTTP/3 for Zig, layered above quic and boringssl-zig.
 //!
 //! ## Concurrency model
 //!
@@ -11,7 +11,7 @@
 //!
 //! The expected usage shape is:
 //!
-//!   1. Pump packets in / out of the underlying `quic_zig.Connection`.
+//!   1. Pump packets in / out of the underlying `quic.Connection`.
 //!   2. Call `Session.drain(&events)` to emit a batch of typed events.
 //!   3. Process events; call back into `Session` to act on them.
 //!   4. Free drained events with `session.clearEvents(&events)` — the
@@ -91,7 +91,7 @@
 //!   headers, accumulated body bytes, trailers) independent of the
 //!   session — this allocator can differ from the session's, and the
 //!   tracker's `deinit` releases everything it cloned.
-//! - The underlying `*quic_zig.Connection` is owned by the embedder.
+//! - The underlying `*quic.Connection` is owned by the embedder.
 //!   `Session` borrows it; `Session.deinit` does not free it.
 
 const std = @import("std");
@@ -105,13 +105,13 @@ const std = @import("std");
 pub const boringssl = @import("boringssl");
 
 /// Re-export of the quic-zig module http3-zig is built against. The
-/// embedding API is quic_zig-typed (`Session.init` takes a
-/// `*quic_zig.Connection`; the embedder owns the connection, socket, and
+/// embedding API is quic-typed (`Session.init` takes a
+/// `*quic.Connection`; the embedder owns the connection, socket, and
 /// clock), so every real endpoint needs these types. Import them from here
-/// (`http3_zig.quic_zig.Connection`) or via `dep.module("quic_zig")` in
+/// (`http3_zig.quic.Connection`) or via `dep.module("quic")` in
 /// build.zig; a consumer-side quic-zig dependency declaration would not
 /// type-unify with this instance.
-pub const quic_zig = @import("quic_zig");
+pub const quic = @import("quic");
 
 pub const protocol = @import("protocol.zig");
 pub const settings = @import("settings.zig");
@@ -310,7 +310,7 @@ pub fn clearEvents(allocator: std.mem.Allocator, events: *std.ArrayList(Event)) 
 
 test {
     _ = boringssl;
-    _ = quic_zig;
+    _ = quic;
     _ = protocol;
     _ = settings;
     _ = frame;

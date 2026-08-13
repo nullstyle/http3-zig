@@ -5,7 +5,7 @@
 //!
 //! The implementation under test lives in `src/protocol.zig`, surfaced
 //! as `http3_zig.protocol`. This suite is the auditor-facing record of the
-//! values quic_zig's HTTP/3 layer recognises and the classification
+//! values quic's HTTP/3 layer recognises and the classification
 //! helpers it ships.
 //!
 //! ## Coverage
@@ -278,7 +278,7 @@ test "MUST treat SETTINGS ID 0x00 as reserved (HTTP/2 collision) [RFC9114 §7.2.
     // through 0x05] MUST NOT be sent, and a value with this identifier
     // MUST be treated as a connection error of type
     // H3_SETTINGS_ERROR." 0x00 is unused in HTTP/2 SETTINGS, but
-    // quic_zig's classification helper groups it with the reserved set so
+    // quic's classification helper groups it with the reserved set so
     // the codec rejects it identically.
     try std.testing.expect(protocol.isReservedHttp2Setting(0x00));
 }
@@ -302,7 +302,7 @@ test "MUST treat HTTP/2 SETTINGS_INITIAL_WINDOW_SIZE (0x05) as reserved [RFC9114
 
 test "MUST NOT treat defined HTTP/3 SETTINGS IDs as reserved-HTTP/2 [RFC9114 §7.2.4.1 ¶8]" {
     // The §7.2.4.1 reservation set excludes IDs that HTTP/3 defines
-    // for itself (0x01, 0x06, 0x07, 0x08, 0x33). quic_zig's classifier
+    // for itself (0x01, 0x06, 0x07, 0x08, 0x33). quic's classifier
     // must keep them disjoint.
     try std.testing.expect(!protocol.isReservedHttp2Setting(protocol.SettingId.qpack_max_table_capacity));
     try std.testing.expect(!protocol.isReservedHttp2Setting(protocol.SettingId.max_field_section_size));
