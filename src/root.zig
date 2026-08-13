@@ -115,6 +115,7 @@ pub const quic = @import("quic");
 
 pub const protocol = @import("protocol.zig");
 pub const settings = @import("settings.zig");
+pub const earlydata = @import("earlydata.zig");
 pub const frame = @import("frame.zig");
 pub const qpack = @import("qpack/root.zig");
 pub const headers = @import("headers.zig");

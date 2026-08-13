@@ -239,6 +239,17 @@ test "public API smoke: stable embedding surface compiles" {
         _ = H.TransportEndpoint.flush;
         _ = H.TransportEndpoint.handle;
         _ = H.TransportEndpoint.nextTimerDeadline;
+
+        _ = H.earlydata;
+        _ = H.earlydata.encode;
+        _ = H.earlydata.encodeAlloc;
+        _ = H.earlydata.decode;
+        _ = H.earlydata.Decoded;
+        _ = H.earlydata.validateRememberedSettings;
+        _ = H.earlydata.SettingsViolation;
+        _ = H.earlydata.applicationContext;
+        _ = H.earlydata.applicationContextAlloc;
+        _ = H.earlydata.TicketBinder;
         _ = H.TransportEndpoint.advance;
         _ = H.TransportEndpoint.tick;
         _ = H.TransportEndpoint.relayTo;
