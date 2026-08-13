@@ -125,9 +125,9 @@ client request reset surfacing as a typed server-side lifecycle event.
 tracked HTTP/3 DATAGRAM send IDs and ACK correlation in both directions.
 Intermediaries can start from
 [`examples/webtransport_proxy.zig`](examples/webtransport_proxy.zig), which
-forwards WT control capsules, QUIC DATAGRAM payloads, WT substream data, FIN,
-and resets across two in-process HTTP/3 pairs while keeping proxy policy in
-application code. Applications that need streaming response-body budgets can
+forwards typed WT session events (via `forwardSessionEventTo`), QUIC DATAGRAM
+payloads, WT substream data, FIN, and resets across two in-process HTTP/3
+pairs while keeping proxy policy in application code. Applications that need streaming response-body budgets can
 start from [`examples/bounded_body_sink.zig`](examples/bounded_body_sink.zig),
 which consumes raw response events into a caller-owned bounded sink instead of
 using the facade runners' body accumulation; streaming request-body producers
@@ -171,14 +171,18 @@ but calling those for a WT datagram is out of spec — they target the
 CONNECT stream's body, not WT's per-session datagram channel. The typed
 `WebTransportStream` substream handle deliberately carries no capsule or
 datagram surface, so `underlyingWriter()` is the only route to that
-out-of-spec path. Use the capsule paths only for pure RFC 9297
-datagram-on-stream cases or non-WT MASQUE multiplexing. WT control / extension capsules are
-different: intermediary code may forward them with
-`WebTransport*Stream.forwardCapsuleTo`, which observes the inbound capsule
-locally and writes the exact capsule on the paired outbound CONNECT stream.
-`examples/webtransport_proxy.zig` shows the rest of the datapath that remains
-application-owned: stream-id maps, datagram routing, and CONNECT FIN/reset
-policy.
+out-of-spec path (and, since the session now ingests WT CONNECT capsules
+natively, a WT-aware peer surfaces such a capsule as
+`webtransport_unknown_capsule`, not as a datagram). Use the capsule paths
+only for pure RFC 9297 datagram-on-stream cases or non-WT MASQUE
+multiplexing. WT control / extension capsules are different: they surface
+as typed `webtransport_*` session events, and intermediary code re-emits
+them onto the other leg of a proxy with
+`WebTransport*Stream.forwardSessionEventTo(event, other)` — byte-equivalent
+on the wire, with `underlyingWriter().capsule(...)` as the raw escape
+hatch. `examples/webtransport_proxy.zig` shows the rest of the datapath
+that remains application-owned: stream-id maps, datagram routing, and
+CONNECT FIN/reset policy.
 
 ## Stream lifecycle
 
@@ -242,9 +246,11 @@ provides:
   Protocol codecs, HTTP/3 DATAGRAM send/receive with a context registry,
   receive dispositions, bounded unknown-context buffering and Context ID
   allocation checks, WebSocket-over-HTTP/3 tunnel helpers, and CONNECT-UDP
-  receiver helpers. WebTransport exposes endpoint flow-control helpers and
-  explicit intermediary capsule forwarding helpers; socket/datagram/stream
-  proxy loops stay application-owned.
+  receiver helpers. WebTransport surfaces the CONNECT stream's capsule
+  protocol as typed session events, with endpoint flow-control helpers and
+  an explicit intermediary event-forwarding helper
+  (`forwardSessionEventTo`); socket/datagram/stream proxy loops stay
+  application-owned.
 - **Server push** — `MAX_PUSH_ID`, `PUSH_PROMISE`, push streams,
   `CANCEL_PUSH`, duplicate-promise validation, and client push policy.
 - **Observability & limits** — trace callbacks and metrics snapshots, TLS
@@ -436,8 +442,8 @@ just external-h3-interop
   Extended CONNECT coverage checks SETTINGS negotiation, client-side gating,
   and server-side `:protocol` request metadata. Capsule coverage includes
   DATAGRAM capsules and context-aware payloads over both QUIC DATAGRAM frames
-  and DATA-frame capsules, plus WebTransport control-capsule forwarding across
-  a two-hop intermediary fixture. Observability coverage checks TLS keylog hook
+  and DATA-frame capsules, plus WebTransport session-event forwarding
+  (`forwardSessionEventTo`) across a two-hop intermediary fixture. Observability coverage checks TLS keylog hook
   configuration plus HTTP/3 trace callback and metrics accounting for emitted
   events. WebSocket-over-HTTP/3 coverage checks negotiated Extended CONNECT
   gating, tunnel request/accept helpers, RFC 6455 frame encoding/decoding, and

@@ -313,7 +313,8 @@ Runnable examples:
 - `examples/graceful_shutdown.zig`: server-initiated GOAWAY drain where the
   accepted request completes and the client's next request is blocked.
 - `examples/webtransport_proxy.zig`: explicit intermediary policy for WT
-  capsules, datagrams, substreams, FIN, and reset forwarding.
+  session events (`forwardSessionEventTo`), datagrams, substreams, FIN, and
+  reset forwarding.
 
 ## Backpressure
 

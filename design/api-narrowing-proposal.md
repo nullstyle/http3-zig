@@ -8,6 +8,10 @@ WT facades (an `underlyingWriter()` variant without `datagramCapsule` /
 `datagramContextCapsule`) would type-prevent the WT-out-of-spec
 capsule-datagram path entirely; today the typed substream handle prevents it
 for substream code and the facade accessor keeps a doc WARNING.
+The 2026-08 WebTransport rework also removed the manual observe/forward
+capsule surface inventoried below (`observeCapsule` / `forwardCapsuleTo` /
+`Session.observeWebTransportCapsule`) in favor of native capsule ingestion
+with typed `webtransport_*` session events and `forwardSessionEventTo`.
 The audit text below is kept unchanged as the historical record.
 
 Scope: WebTransport-adjacent public API across `client.zig`, `server.zig`,

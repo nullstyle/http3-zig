@@ -26,6 +26,22 @@ or `Server.Config.production.toSessionConfig()`.
 | Pending WebTransport CONNECT sessions | `max_pending_wt_sessions` | 256 |
 | Per-stream pre-confirmation WT buffering | `wt_max_buffered_bytes_per_stream` | 64 KiB (`SessionConfig.production`) / 16 KiB (`Client` / `Server` facade presets) |
 | Aggregate pre-confirmation WT buffering | `wt_max_total_buffered_bytes` | 4 MiB |
+| Per-session WT receive credit: bytes | `settings.wt_initial_max_data` | null (not advertised — no receive-side enforcement) |
+| Per-session WT receive credit: uni streams | `settings.wt_initial_max_streams_uni` | null (not advertised — no receive-side enforcement) |
+| Per-session WT receive credit: bidi streams | `settings.wt_initial_max_streams_bidi` | null (not advertised — no receive-side enforcement) |
+
+The three `wt_initial_max_*` SETTINGS (draft-ietf-webtrans-http3 §9.2)
+advertise per-session WebTransport receive-side flow-control credit up
+front: the values seed every session's flow state at pending time, both as
+the peer's initial send budget and as the limits this endpoint enforces on
+inbound traffic (violations are session-fatal with `WT_FLOW_CONTROL_ERROR`;
+the connection survives). `SessionConfig.production(.{})` deliberately
+leaves them `null`: nothing is advertised, the peer starts with no
+SETTINGS-derived credit, and this endpoint enforces no receive-side
+session limits until the application advertises some — either by setting
+`wt_initial_max_*` explicitly or by sending `sendMaxData` /
+`sendMaxStreams*` capsules per session. Deployments that want bounded WT
+ingress must opt in with values sized to their own workload.
 
 ## Dynamic QPACK Posture
 
@@ -83,11 +99,13 @@ hot entries via Duplicate instead of pinning them near eviction (§2.1.1.1).
 - WebTransport flow-control errors (`WebTransportFlowControlExceeded`,
   `WebTransportStreamLimitExceeded`, `WebTransportSessionDraining`) indicate
   session-level or peer-advertised limits rather than transport failure.
-- `WebTransport*Stream.forwardCapsuleTo` is an explicit intermediary hook:
-  inbound WT control capsules are observed locally and forwarded unchanged to
-  a paired outbound handle, while stream/datagram copy policy stays with the
-  application. `examples/webtransport_proxy.zig` demonstrates that caller-owned
-  datapath end to end.
+- `WebTransport*Stream.forwardSessionEventTo(event, other)` is an explicit
+  intermediary hook: inbound WT control/extension capsule traffic surfaces as
+  typed session events (the session ingests the CONNECT stream's capsule
+  protocol natively), and one call re-emits an event byte-equivalent on the
+  paired outbound handle, while stream/datagram copy policy stays with the
+  application. `examples/webtransport_proxy.zig` demonstrates that
+  caller-owned datapath end to end.
 
 ## Still Caller-Owned
 
@@ -118,8 +136,8 @@ hot entries via Duplicate instead of pinning them near eviction (§2.1.1.1).
   pre-confirmation WebTransport buffering caps plus replay under tight drain
   budgets.
 - `tests/integration/webtransport_forwarding.zig` covers two-hop WT
-  control-capsule forwarding, including MAX_DATA, BLOCKED, DRAIN, unknown, and
-  CLOSE capsule behavior.
+  session-event forwarding via `forwardSessionEventTo`, including credit
+  (MAX_DATA), BLOCKED, DRAIN, unknown-capsule, and CLOSE behavior.
 - `zig build run-examples` runs the in-process embedding cookbook on CI,
   covering facade GET, manual QUIC/H3 pump ordering, observability metrics
   wiring, request reset lifecycle classification, tracked HTTP/3 DATAGRAM

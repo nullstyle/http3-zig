@@ -9,8 +9,10 @@
 //! existing Extended CONNECT, HTTP/3 Datagrams, and Capsule Protocol
 //! plumbing:
 //!
-//! - Handshake classification (`:protocol = webtransport`).
-//! - Settings advertisement (`SETTINGS_WT_ENABLED`, draft-15 §9.2).
+//! - Handshake classification (`:protocol = webtransport-h3`, with the
+//!   browser-era legacy token accepted).
+//! - Settings advertisement (`SETTINGS_WT_ENABLED`, §9.2) plus the
+//!   browser-era bootstrap codepoints and draft-era resolution.
 //! - Per-stream framing prefix (uni stream type 0x54, bidi frame type 0x41,
 //!   each followed by the WebTransport Session ID).
 //! - `CLOSE_WEBTRANSPORT_SESSION` (0x2843) and

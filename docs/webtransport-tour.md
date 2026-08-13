@@ -2,9 +2,13 @@
 
 A walkthrough of `http3-zig`'s WebTransport-over-HTTP/3 surface for application
 authors. The library tracks
-[`draft-ietf-webtrans-http3`](https://datatracker.ietf.org/doc/draft-ietf-webtrans-http3/15/)
-(July 2025), pinned in [`README.md`](../README.md). Datagrams use RFC 9297
-HTTP/3 Datagrams; capsules use the RFC 9297 Capsule Protocol.
+[`draft-ietf-webtrans-http3`](https://datatracker.ietf.org/doc/draft-ietf-webtrans-http3/16/)
+(revision -16), pinned in [`README.md`](../README.md). The CONNECT request
+sends `:protocol = webtransport-h3` (draft-16 §3.2); the browser-era legacy
+token `webtransport` is accepted on receive. Datagrams use RFC 9297 HTTP/3
+Datagrams; capsules use the RFC 9297 Capsule Protocol — and the session
+consumes the CONNECT stream's capsule protocol natively, surfacing typed
+`webtransport_*` events instead of raw body bytes.
 
 This tour assumes you already know what WebTransport is conceptually
 (Extended CONNECT, datagrams, peer-initiated streams) and want to wire up a
@@ -28,7 +32,7 @@ const std = @import("std");
 const http3_zig = @import("http3_zig");
 
 // Settings MUST advertise WebTransport, HTTP/3 Datagrams, and Extended CONNECT
-// (draft-15 §9.2). All three are required on both peers.
+// (draft-16 §9.2). All three are required on both peers.
 const wt_settings: http3_zig.Settings = .{
     .enable_connect_protocol = true,
     .h3_datagram = true,
@@ -49,8 +53,9 @@ var client_wt = try client.startWebTransport(allocator, .{
     .path = "/wt",
 });
 // `client_wt` is now in the "pending" state. It becomes "established"
-// when the 2xx response on the CONNECT stream arrives — observe it via
-// `ResponseReader.webTransportAccepted()` in the drain loop.
+// when the 2xx response on the CONNECT stream arrives — the drain that
+// observes it emits a `webtransport_session_established` event (and
+// `ResponseReader.webTransportAccepted()` reports it on the response).
 ```
 
 ### Server side
@@ -132,19 +137,23 @@ pub const ConnectOptions = struct {
 ```
 
 After `startWebTransport` returns, the CONNECT request is on the wire and the
-session is registered as **pending** in `Session`. It transitions to
-**established** when the client observes a 2xx response on the CONNECT stream
-— surface that via `ResponseReader.webTransportAccepted()`:
+session is registered as **pending** in `Session`. Pending sessions are
+flow-controlled from the moment they exist: per-session flow state is created
+at pending time, seeded from the peer's `SETTINGS_WT_INITIAL_MAX_*` credit
+(see [Flow control](#flow-control)), so opens and sends before the 2xx count
+against the same limits as afterwards.
+
+The session transitions to **established** when the client observes a 2xx
+response on the CONNECT stream. The drain that observes it emits
+`webtransport_session_established` — guaranteed to precede any replayed
+`webtransport_stream_*` events for streams that were buffered against the
+session — and `ResponseReader.webTransportAccepted()` reports it on the
+response:
 
 ```zig
-.response_updated, .response_complete => |response_state| {
-    const response = response_state.reader();
-    if (!client_saw_response and response.headers().len > 0) {
-        try std.testing.expect(response.webTransportAccepted());
-        try std.testing.expectEqualStrings("200", response.status().?);
-        client_saw_response = true;
-        // Now safe to open WT streams and send datagrams.
-    }
+.webtransport_session_established => |established| {
+    // established.session_id == the CONNECT stream id.
+    // Now safe to open WT streams and send datagrams.
 },
 ```
 
@@ -190,9 +199,25 @@ pub fn acceptWebTransport(
 ```
 
 The helper checks `request.isWebTransport()` (returns `error.NotWebTransport`
-if the CONNECT didn't carry `:protocol = webtransport`), then sends the
-response and confirms the session in the underlying `Session`. Status codes
-outside `2xx` are rejected with `error.InvalidAcceptStatus`.
+if the CONNECT didn't carry `:protocol = webtransport-h3` — or the legacy
+`webtransport` token, which browsers still send), then sends the response and
+confirms the session in the underlying `Session`. Status codes outside `2xx`
+are rejected with `error.InvalidAcceptStatus`.
+
+To refuse a pending session with a wire-visible signal instead of accepting
+it, use `Server.rejectWebTransport`:
+
+```zig
+try server.rejectWebTransport(request, .alpn_failed);          // WT_ALPN_ERROR
+try server.rejectWebTransport(request, .requirements_not_met); // WT_REQUIREMENTS_NOT_MET
+try server.rejectWebTransport(request, .{ .wire_code = code });
+```
+
+It aborts the CONNECT stream in both directions with the mapped `WT_*` code
+(draft §9.5) and clears the pending registry state; the peer observes a
+`webtransport_session_closed` event with `how == .reset` carrying the code.
+`acceptWebTransport`'s validation errors (like `SubprotocolNotOffered`)
+deliberately do NOT auto-reject — the application chooses the signal.
 
 `WebTransportAcceptOptions`:
 
@@ -326,8 +351,9 @@ for the full shape, including the `stream_id & 0b11 == 0b01` parity check.
 ## Datagrams
 
 WebTransport datagrams ride on RFC 9297 HTTP/3 Datagrams using the CONNECT
-stream's quarter-stream-id as the addressing key. The library exposes both
-the unreliable QUIC-DATAGRAM path and a reliable Capsule Protocol path.
+stream's quarter-stream-id as the addressing key. The QUIC-DATAGRAM path is
+the WT datagram path — the draft mandates it, and the old capsule fallback
+no longer round-trips as a datagram for WT sessions (see below).
 
 ### Unreliable: `sendDatagram`
 
@@ -346,11 +372,12 @@ advertise `max_datagram_frame_size > 0` you'll get
 
 ### Receiving datagrams
 
-Both reliable-mode and unreliable-mode datagrams surface as the same event:
-
 ```zig
 .datagram => |datagram| {
-    // datagram.stream_id is the WebTransport Session ID.
+    // datagram.stream_id IS the WebTransport Session ID: the wire
+    // carries a quarter-stream-id (RFC 9297 §2) and the decoder
+    // multiplies it back out to the CONNECT stream id, which is the
+    // Session ID (draft §2.3). Route on it directly.
     // datagram.payload is owned by the caller after drain.
     if (datagram.stream_id == session_id) {
         process(datagram.payload);
@@ -358,31 +385,24 @@ Both reliable-mode and unreliable-mode datagrams surface as the same event:
 },
 ```
 
-### Reliable: capsule path
+Datagrams remain legal after a DRAIN and after an H3 GOAWAY (draft-16) —
+only new stream opens are gated. See [GOAWAY and
+WebTransport](#goaway-and-webtransport).
 
-For situations where you need delivery (the QUIC peer didn't enable
-DATAGRAMs, or the payload is too large for a single frame), use
-`datagramCapsule` on the underlying writer:
+### The capsule escape hatch is not a WT datagram path
 
-```zig
-// WebTransport*Stream.underlyingWriter() returns the underlying
-// *RequestWriter / *ResponseWriter:
-try wt.underlyingWriter().datagramCapsule("reliable-payload");
-```
-
-This packages the bytes in a `DATAGRAM` capsule on the CONNECT stream body.
-The peer decodes it via `capsule.iter(body())` and the same
-`.datagram` event fires. Use the unreliable path by default; switch to
-capsule mode only when you've verified the peer doesn't support QUIC
-DATAGRAMs (`session.peer_settings.?.h3_datagram == false`) or you actually
-need ordering / delivery guarantees.
-
-**WARNING**: capsule-mode datagrams are out-of-spec for WebTransport — the
-draft mandates the QUIC-DATAGRAM path, and a capsule send targets the
-CONNECT stream's body, not WT's per-session datagram channel. That's why
-the path is only reachable through `underlyingWriter()`: the typed
-`WebTransportStream` substream handle deliberately carries no capsule or
-datagram surface. See README § Datagram sends for the full comparison.
+`underlyingWriter().datagramCapsule(...)` still exists on the CONNECT
+writer, but for WebTransport it is out-of-spec **and no longer round-trips
+as a datagram**: the draft mandates the QUIC-DATAGRAM path, and since the
+session now consumes the CONNECT stream's capsule protocol natively, a
+`DATAGRAM` capsule arriving on a WT CONNECT stream surfaces on a WT-aware
+peer as `webtransport_unknown_capsule` (capsule_type `0x00`), not as a
+`.datagram` event. That's why the path is only reachable through
+`underlyingWriter()`: the typed `WebTransportStream` substream handle
+deliberately carries no capsule or datagram surface. Use `sendDatagram` /
+`sendDatagramTracked` for WT datagrams, and reserve the capsule paths for
+non-WT RFC 9297 / MASQUE contexts. See README § Datagram sends for the full
+comparison.
 
 ---
 
@@ -403,6 +423,22 @@ stuck at this limit." The library auto-emits them when a local send hits the
 peer's advertised cap, and dedupes against `sent_*_blocked_for` so a
 steadily-blocked sender doesn't spam.
 
+A limit that was never advertised is not enforced: a `null` peer limit means
+your sends are ungated in that dimension, and a `null` local limit means the
+peer's traffic is not policed in that dimension.
+
+### Initial credit via SETTINGS
+
+The `SETTINGS_WT_INITIAL_MAX_DATA` / `SETTINGS_WT_INITIAL_MAX_STREAMS_UNI` /
+`SETTINGS_WT_INITIAL_MAX_STREAMS_BIDI` settings (draft §9.2, the
+`wt_initial_max_*` fields on `http3_zig.Settings`) advertise a starting
+limit that applies to every session, saving the bootstrap round-trip a
+`WT_MAX_DATA` capsule would cost. The credit is seeded into each session's
+flow state at **pending** time, so it gates traffic before the 2xx lands
+too. `null` (the default — including in `SessionConfig.production`) means
+"nothing advertised": the peer starts with no credit from SETTINGS, and
+your receive side enforces nothing until you advertise a limit explicitly.
+
 ### Advertising limits to the peer
 
 ```zig
@@ -415,49 +451,102 @@ Each of these is encoded as a single capsule on the CONNECT stream body and
 also updates the local snapshot's `local_*` counter so the receive-side
 enforcement uses the new limit immediately.
 
-### Observing inbound capsules
+### Session events: the capsule protocol, typed
 
-The peer's flow-control capsules ride on the CONNECT stream body. Iterate
-them and feed each one to `observeCapsule`:
+You never see — and never parse — the CONNECT stream's body. The session
+consumes it as the capsule protocol natively (a per-session reassembler
+handles capsules that legally span DATA frames) and folds every capsule
+into session state, surfacing six typed session-scoped events. `Event.data`
+is **not** emitted for WT CONNECT bodies. A drain-loop `switch` handling
+all six:
 
 ```zig
-.response_updated, .response_complete => |response_state| {
-    const response = response_state.reader();
-    if (response.body().len > 0) {
-        var it = http3_zig.capsule.iter(response.body());
-        while (try it.next()) |decoded| {
-            try client_wt.observeCapsule(decoded.capsule);
-        }
-    }
+.webtransport_session_established => |established| {
+    // Pending → established (client: 2xx observed; server: accept
+    // completed). Always precedes replayed buffered-stream events.
+    _ = established.session_id;
+},
+.webtransport_session_closed => |closed| {
+    // The session is GONE by the time you see this: registry state
+    // dropped, live substreams swept with WEBTRANSPORT_SESSION_GONE.
+    // closed.how ∈ { .close_capsule, .fin, .reset, .protocol_violation }
+    // closed.code / closed.reason — the CLOSE capsule payload
+    //   (code non-null only for .close_capsule; reason is owned UTF-8).
+    // closed.wire_error_code — the RESET code (.reset) or the code we
+    //   sent (.protocol_violation).
+},
+.webtransport_session_draining => |draining| {
+    // Peer sent DRAIN_WEBTRANSPORT_SESSION: stop opening new streams;
+    // in-flight streams and datagrams keep flowing.
+    _ = draining.session_id;
+},
+.webtransport_peer_blocked => |blocked| {
+    // Peer reports being stuck at one of OUR advertised limits.
+    // blocked.kind ∈ { .data, .streams_bidi, .streams_uni };
+    // blocked.offered_limit is the limit it is stuck at. Granting more
+    // credit (sendMaxData / sendMaxStreams*) is application policy.
+},
+.webtransport_credit_granted => |credit| {
+    // Peer strictly raised a limit gating OUR sends — the wakeup a
+    // sender blocked on WebTransportFlowControlExceeded /
+    // WebTransportStreamLimitExceeded waits for. Non-increasing
+    // capsules are ignored and emit nothing (monotonic fold).
+    // credit.kind / credit.limit describe the new budget.
+},
+.webtransport_unknown_capsule => |unknown| {
+    // Capsule outside the WT family, byte-exact (owned value bytes).
+    // Applications normally ignore it (RFC 9297 §3.2); intermediaries
+    // forward it.
 },
 ```
 
-`observeCapsule` ignores capsules outside the WebTransport family (so it's
-safe to feed the whole stream). It updates the per-session flow snapshot.
+Flow-control state is also folded into the snapshot (`flowState()`, below)
+before the events are delivered, so reading the snapshot from an event
+handler always sees the post-fold values.
 
-### Forwarding WT capsules
+### Forwarding session events (intermediaries)
 
-Intermediaries can forward WebTransport control / extension capsules without
-becoming the owner of the full stream or datagram datapath:
+Intermediaries re-emit session-scoped events onto the other leg of a proxy
+with `forwardSessionEventTo` (on both `WebTransportClientStream` and
+`WebTransportServerStream`):
 
 ```zig
-var it = http3_zig.capsule.iter(connect_body);
-while (try it.next()) |decoded| {
-    try downstream_wt.forwardCapsuleTo(decoded.capsule, &upstream_wt);
-}
+.webtransport_credit_granted,
+.webtransport_peer_blocked,
+.webtransport_session_draining,
+.webtransport_session_closed,
+.webtransport_unknown_capsule,
+=> {
+    _ = try downstream_wt.forwardSessionEventTo(event, &upstream_wt);
+},
 ```
 
-`forwardCapsuleTo` first calls `observeCapsule` on the receiving handle, then
-writes the same capsule with `sendCapsule` on the paired outbound handle.
-Unknown capsules are forwarded unchanged. `CLOSE_WEBTRANSPORT_SESSION` is not
-special-cased: forwarding the capsule does not finish or reset either CONNECT
-stream, so applications still own FIN/reset and stream-copy policy.
+`forwardSessionEventTo(event, other)` returns `true` when the event belonged
+to this session and was forwarded, `false` otherwise (other sessions'
+events, non-session-scoped variants). The re-emission is byte-equivalent on
+the wire, with per-variant semantics:
 
-For the rest of an intermediary datapath, see
-[`examples/webtransport_proxy.zig`](../examples/webtransport_proxy.zig). It
-models downstream client ↔ proxy ↔ upstream server with two in-process H3
-pairs, forwarding capsules with `forwardCapsuleTo` and forwarding DATAGRAMs,
-WT substream bytes, FIN, and reset through explicit application-owned maps.
+- `webtransport_credit_granted` re-grants through `other`'s send verbs
+  (`sendMaxData` / `sendMaxStreams*`), keeping `other`'s `local_*`
+  bookkeeping in sync with the wire.
+- `webtransport_peer_blocked` re-encodes the matching `WT_*_BLOCKED`
+  capsule as a pure signal, touching neither leg's limits.
+- `webtransport_session_draining` calls `other.sendDrain()`.
+- `webtransport_session_closed` forwards only `how == .close_capsule`
+  (as `other.close(code, reason)`, which also FINs `other`'s CONNECT);
+  FIN/reset/local-violation propagation is application policy and returns
+  `false`.
+- `webtransport_unknown_capsule` re-emits byte-exact so extensions survive
+  the intermediary.
+
+The raw escape hatch is `underlyingWriter().capsule(capsule_type, value)`
+for emitting an arbitrary capsule on a CONNECT stream. Stream-copy,
+datagram, FIN, and reset policy stay application-owned — see
+[`examples/webtransport_proxy.zig`](../examples/webtransport_proxy.zig),
+which models downstream client ↔ proxy ↔ upstream server with two
+in-process H3 pairs, forwarding session events with `forwardSessionEventTo`
+and forwarding DATAGRAMs, WT substream bytes, FIN, and reset through
+explicit application-owned maps.
 
 ### The flow snapshot
 
@@ -485,9 +574,10 @@ is gone.
 
 ### Backpressure
 
-When a local write would exceed the peer's `WT_MAX_DATA`, the library:
+The write gate is all-or-nothing. When a write would push `local_data_sent`
+past the peer's `WT_MAX_DATA`, the library:
 
-1. Writes everything that fits up to the limit.
+1. Writes nothing (the whole write is refused, not split).
 2. Auto-emits a `WT_DATA_BLOCKED` capsule (deduped against the same limit).
 3. Returns `error.WebTransportFlowControlExceeded`.
 
@@ -497,22 +587,43 @@ const stream = try client_wt.openUniStream();
 try stream.write("0123456789ABCDEF"); // 16 bytes — ok
 try std.testing.expectError(
     error.WebTransportFlowControlExceeded,
-    stream.write("x"), // 1 byte over — blocked
+    stream.write("x"), // 1 byte over — refused, WT_DATA_BLOCKED emitted
 );
 ```
 
 Same shape for stream-count limits — `openUniStream` / `openBidiStream`
 return `error.WebTransportStreamLimitExceeded` when the peer's
 `WT_MAX_STREAMS_*` is at or below the local count, and auto-emit the
-matching `WT_STREAMS_BLOCKED_*` capsule. To resume, wait for the peer to
-send a higher `WT_MAX_DATA` / `WT_MAX_STREAMS_*` and feed it via
-`observeCapsule`; the next write will succeed.
+matching `WT_STREAMS_BLOCKED_*` capsule.
+
+To resume, wait for the `webtransport_credit_granted` event — the typed
+wakeup a blocked sender gets when the peer strictly raises the limit — and
+retry the write or open. The fold is monotonic: a peer cannot shrink your
+budget, and non-increasing `WT_MAX_*` capsules are ignored without an
+event.
+
+For the QUIC-side view of the same substream, `WebTransportStream.writable()`
+(Unstable tier) reports the transport send-window headroom — the bytes a
+`write` could hand to the transport as new data right now, or `null` when
+the transport doesn't know the stream. It complements `canBuffer` (H3-side
+buffering cap) and `flowState()` (the WT session-level budget).
 
 ### Receive-side enforcement
 
-The reverse direction is enforced automatically. If the peer overflows your
-advertised `local_max_data` or `local_max_streams_*`, the library resets the
-offending stream and emits a `webtransport_flow_violated` event:
+The reverse direction is enforced automatically — and a violation is
+**session-fatal** (draft-16 §5.6). If the peer overflows your advertised
+`local_max_data` or `local_max_streams_*`, sends a malformed flow-capsule
+value, or advertises a streams limit above 2^60, the library terminates the
+WebTransport session with `WT_FLOW_CONTROL_ERROR` (`0x045d4487`): the
+CONNECT stream is reset with that code, every live substream is swept with
+`WEBTRANSPORT_SESSION_GONE`, and a `webtransport_session_closed` event with
+`how == .protocol_violation` is emitted. The connection deliberately
+survives — the blast radius of a misbehaving peer session is that session,
+never the H3 connection.
+
+For observability, a limit overflow also emits `webtransport_flow_violated`
+(immediately before the session-closed event), still carrying the offending
+stream:
 
 ```zig
 .webtransport_flow_violated => |v| {
@@ -526,8 +637,12 @@ offending stream and emits a `webtransport_flow_violated` event:
 
 ## Closing
 
-There are three ways a session can end. They differ in what shows up on the
-peer.
+There are three ways to end a session locally. On the receive side they all
+funnel into the same typed event — `webtransport_session_closed` — whose
+`how` field tells you which one the peer used. By the time the event is
+delivered the session is already gone: registry state dropped, every live
+substream swept with `WEBTRANSPORT_SESSION_GONE` (STOP_SENDING + best-effort
+RESET), `flowState()` returning `null`.
 
 ### 1. Explicit close: `close(code, reason)`
 
@@ -535,31 +650,37 @@ peer.
 try client_wt.close(0xdeadbeef, "shutdown");
 ```
 
-This:
+Sender side (draft §5.4 obligations, enforced by the facade):
 
-1. Encodes a `CLOSE_WEBTRANSPORT_SESSION` capsule with the application code
-   (32-bit) and reason phrase (UTF-8, ≤ 1024 bytes — `error.CloseReasonTooLarge`
-   otherwise).
-2. Writes it to the CONNECT stream body.
-3. FINs the CONNECT stream.
+1. The reason must be valid UTF-8 — garbage is refused outright with
+   `error.InvalidCloseReason` (shipping it would hand the receiver an
+   `H3_MESSAGE_ERROR`).
+2. An oversized reason (> 1024 bytes) is truncated at a UTF-8 codepoint
+   boundary (`webtransport.truncateCloseReasonUtf8`) — never mid-sequence.
+3. The `CLOSE_WEBTRANSPORT_SESSION` capsule (32-bit application code +
+   reason) is written to the CONNECT stream body, and the CONNECT stream is
+   FIN'd.
 
-The peer observes the capsule on the CONNECT body, then the FIN. Iterate the
-body and call `webtransport.classifyCapsule` to extract the code and reason:
+Receive side: the session ends **the moment the CLOSE capsule arrives** —
+not at the subsequent FIN. The library sweeps the substreams, echo-FINs its
+own send half of the CONNECT stream (the draft's clean-close shape is
+CLOSE, then FIN in both directions), and emits:
 
 ```zig
-var it = http3_zig.capsule.iter(request.body());
-while (try it.next()) |decoded| {
-    const wt_event = try http3_zig.webtransport.classifyCapsule(decoded.capsule);
-    switch (wt_event) {
-        .close_session => |close| {
-            std.debug.print("peer closed: code=0x{x} reason=\"{s}\"\n", .{
-                close.code, close.reason,
-            });
-        },
-        else => {},
+.webtransport_session_closed => |closed| {
+    if (closed.how == .close_capsule) {
+        std.debug.print("peer closed: code=0x{x} reason=\"{s}\"\n", .{
+            closed.code.?, closed.reason,
+        });
     }
-}
+},
 ```
+
+Strictness on the receive side (all message-scoped, draft §5.4/§5.5): a
+malformed CLOSE payload, any capsule after CLOSE, a non-empty DRAIN value,
+or a FIN landing mid-capsule aborts the CONNECT stream with
+`H3_MESSAGE_ERROR` — a message error, never a connection error — and
+surfaces as `webtransport_session_closed` with `how == .protocol_violation`.
 
 ### 2. Implicit close: `finish()`
 
@@ -568,13 +689,9 @@ try server_wt.finish();
 ```
 
 FINs the CONNECT stream **without** a `CLOSE_WEBTRANSPORT_SESSION` capsule
-(draft §5.4 explicitly allows this). The peer treats it as a clean close
-with no code/reason. Local-side flow state disappears immediately
-(`flowState()` returns `null`); the peer observes the FIN and runs its own
-cleanup.
-
-No protocol-level error code is surfaced — there's nothing to classify on
-the receive side beyond the stream-finished signal.
+(draft §5.4 explicitly allows this). Local-side registry state is torn down
+as part of the finish; the peer observes `webtransport_session_closed` with
+`how == .fin` and `code == null` — a clean close with no code/reason.
 
 ### 3. Reset: `reset(error_code)` / `abort()` / `bidiAbort(error_code)`
 
@@ -586,9 +703,15 @@ try wt.bidiAbort(0x42);  // RESET_STREAM + STOP_SENDING (client side)
 
 `reset` aborts the CONNECT stream from the send side with the given
 application error code. Outbound bytes that haven't been sent are dropped;
-the peer sees a `connection_closed` / stream-reset event rather than a
-clean WT close. Use this for catastrophic local errors, not for normal
-shutdowns.
+the peer sees `webtransport_session_closed` with `how == .reset` and the
+RESET's code preserved in `wire_error_code` — not a clean WT close. Use
+this for catastrophic local errors, not for normal shutdowns.
+
+For refusing a session that was never accepted, the server-side
+`rejectWebTransport(request, .alpn_failed | .requirements_not_met |
+.{ .wire_code = … })` is the wire-correct spelling of this shape — it
+aborts the pending CONNECT both directions with the reserved draft §9.5
+code (see [Server: `acceptWebTransport`](#server-acceptwebtransport)).
 
 Reset alone leaves the peer free to keep streaming the other direction, so
 a real-world abort usually needs both halves. On the client,
@@ -618,34 +741,72 @@ try wt.sendDrain();
 ```
 
 Encodes the empty `DRAIN_WEBTRANSPORT_SESSION` capsule (type `0x78ae`) and
-writes it on the CONNECT stream body. The peer's local snapshot's
-`received_drain` bit flips on its next `observeCapsule` call.
+writes it on the CONNECT stream body.
 
 ### Observing a drain
 
-Iterate inbound capsules on the CONNECT body and feed them to
-`observeCapsule`. Watch the snapshot:
+The peer's DRAIN surfaces as a typed event (first DRAIN only — repeats are
+folded silently):
 
 ```zig
-var it = http3_zig.capsule.iter(response.body());
-while (try it.next()) |decoded| {
-    try client_wt.observeCapsule(decoded.capsule);
-}
-if (client_wt.flowState()) |snap| {
-    if (snap.received_drain) {
-        // Peer is draining. Finish in-flight streams; don't open new ones.
-    }
-}
+.webtransport_session_draining => |draining| {
+    // Peer is draining session `draining.session_id`. Finish in-flight
+    // streams; don't open new ones.
+},
 ```
 
-After `received_drain` flips, locally-initiated `openUniStream` /
+The `received_drain` bit on `flowState()` flips at the same moment, for
+code that prefers polling the snapshot.
+
+After the drain arrives, locally-initiated `openUniStream` /
 `openBidiStream` calls return `error.WebTransportSessionDraining`. Existing
 streams (already opened in either direction) continue to flow normally; the
 spec leaves it to the peer to decide when to follow up with
-`CLOSE_WEBTRANSPORT_SESSION`. Datagrams continue to flow as well.
+`CLOSE_WEBTRANSPORT_SESSION`. Datagrams continue to flow as well — after
+DRAIN *and* after an H3 GOAWAY (draft-16).
 
-A typical pattern: peer drains, you finish your in-flight uni/bidi streams,
-then either side calls `close()` to retire the session.
+### The wind-down recipe
+
+A server retiring an endpoint gracefully:
+
+1. **Per-session DRAIN** — `sendDrain()` on every live session, so peers
+   stop opening new WT streams but finish in-flight work.
+2. **GOAWAY** — `Session.sendGoaway(session.gracefulGoawayId())`, refusing
+   new WT CONNECT bootstraps while established sessions keep running (see
+   [GOAWAY and WebTransport](#goaway-and-webtransport)).
+3. **Wait** — pump until sessions retire (each peer's `close()` / FIN, or
+   your own per-session deadline). If the drain window is long and the
+   sessions go traffic-idle, keep the connection alive with
+   `Connection.requestPing()` — `max_idle_timeout` keeps running during
+   the drain.
+4. **Close** — `close(code, reason)` any stragglers, then let the
+   connection shut down.
+
+---
+
+## GOAWAY and WebTransport
+
+Established WebTransport sessions **survive** an H3 GOAWAY (draft-16
+requires it) — including opening new substreams on them — while new WT
+CONNECT bootstraps are refused. The library implements this by deferring
+quic-zig's transport-level graceful shutdown: `sendGoaway` defers the
+transport latch while established WT sessions exist, and the last session's
+end engages it. During the deferral window the H3-layer gates enforce
+GOAWAY (new requests are auto-rejected); the transport keeps granting the
+peer stream credit until the latch drops.
+
+Semantics worth pinning:
+
+- **Datagrams stay legal** after both DRAIN and GOAWAY.
+- **Idle timeout keeps running** during the deferral window. A long, quiet
+  drain needs keepalive: drive `Connection.requestPing()` (or WT-level
+  traffic) if your sessions can go traffic-idle — upstream-confirmed
+  semantics.
+- New `startWebTransport` CONNECTs after GOAWAY are refused; established
+  sessions are untouched until they end by their own lifecycle.
+
+The full behavior is pinned by
+[`tests/integration/webtransport_goaway.zig`](../tests/integration/webtransport_goaway.zig).
 
 ---
 
@@ -665,13 +826,16 @@ you'll actually hit in normal application flow:
 | `error.WebTransportFlowControlExceeded` | `session.Error` | Local write would exceed peer's `WT_MAX_DATA`. |
 | `error.WebTransportStreamLimitExceeded` | `session.Error` | Local open would exceed peer's `WT_MAX_STREAMS_*`. |
 | `error.WebTransportSessionDraining` | `session.Error` | Local open after peer sent `DRAIN_WEBTRANSPORT_SESSION`. |
-| `error.UnknownWebTransportSession` | `session.Error` | Capsule observed for a session not in the established set. |
+| `error.UnknownWebTransportSession` | `session.Error` | WT primitive invoked for a session id the registry no longer knows (never existed, or already torn down). |
 | `error.SessionClosed` | `session.Error` | Send-side method called after `Session.close()` ran. |
-| `error.CloseReasonTooLarge` | `webtransport.Error` | `close()` reason exceeds 1024 bytes. |
+| `error.InvalidCloseReason` | `webtransport.Error` | `close()` reason is not valid UTF-8. (Oversized reasons no longer error — the facade truncates at a codepoint boundary.) |
 
 For receive-side flow violations the library doesn't return an error to the
-caller — those bubble up as `webtransport_flow_violated` events instead, with
-a `WebTransportFlowViolationKind` describing what overflowed.
+caller — those are session-fatal: a `webtransport_flow_violated` event (with
+a `WebTransportFlowViolationKind` describing what overflowed) followed by a
+`webtransport_session_closed` event with `how == .protocol_violation` after
+the session is terminated with `WT_FLOW_CONTROL_ERROR`. The connection
+survives.
 
 ---
 
@@ -728,16 +892,24 @@ a `WebTransportFlowViolationKind` describing what overflowed.
 
 6. **Sending `WT_MAX_DATA` from the wrong side.** `sendMaxData` advertises
    *your* receive limit (i.e. how much you're willing to receive). It
-   updates `local_max_data` on your snapshot, not `peer_max_data`. The peer
-   sees the capsule, calls `observeCapsule`, and *its* `peer_max_data`
-   reflects the new value. Read the snapshot field names carefully when
-   debugging — `peer_*` always means "what the peer told us"; `local_*`
-   always means "what we told the peer."
+   updates `local_max_data` on your snapshot, not `peer_max_data`. The
+   peer's session folds the capsule automatically, and — if the value is a
+   strict increase — *its* `peer_max_data` reflects the new value and a
+   `webtransport_credit_granted` event fires there. Read the snapshot field
+   names carefully when debugging — `peer_*` always means "what the peer
+   told us"; `local_*` always means "what we told the peer."
 
-7. **Treating QUIC-DATAGRAM and capsule-mode datagrams as different
-   events.** Both surface as `.datagram` with the same Session ID. The
-   sender chooses (via `sendDatagram` vs `datagramCapsule`); the receiver
-   doesn't have to branch.
+7. **Parsing the CONNECT stream body yourself.** Don't — there are no more
+   `data` events for a WT CONNECT stream's body. The session consumes it as
+   the capsule protocol natively (including capsules split across DATA
+   frames) and everything it carries reaches you as typed events:
+   flow-control folds as `webtransport_credit_granted` /
+   `webtransport_peer_blocked`, DRAIN as `webtransport_session_draining`,
+   CLOSE as `webtransport_session_closed`, and anything unrecognized as
+   `webtransport_unknown_capsule` (byte-exact, for forwarding). Code that
+   waited for CONNECT-body `data` events to feed `capsule.iter` /
+   `observeCapsule` is obsolete — the manual-observe surface no longer
+   exists.
 
 ---
 
@@ -747,17 +919,24 @@ a `WebTransportFlowViolationKind` describing what overflowed.
   in-process loopback demonstrating the full bootstrap → exchange → close
   flow. Run via `just example-loopback-wt`.
 - [`examples/webtransport_proxy.zig`](../examples/webtransport_proxy.zig) —
-  runnable two-hop intermediary example showing the caller-owned capsule,
-  datagram, WT stream, FIN, and reset forwarding datapath. Run via
-  `just example-webtransport-proxy`.
+  runnable two-hop intermediary example showing session-event forwarding
+  (`forwardSessionEventTo`) plus the caller-owned datagram, WT stream, FIN,
+  and reset forwarding datapath. Run via `just example-webtransport-proxy`.
 - [`tests/integration/webtransport.zig`](../tests/integration/webtransport.zig)
   — exhaustive integration tests covering streams, datagrams, flow control,
   drain, close, buffered policies, subprotocol negotiation, and reset
   propagation.
+- [`tests/integration/webtransport_goaway.zig`](../tests/integration/webtransport_goaway.zig)
+  — GOAWAY × WebTransport lifecycle: session survival, datagrams after
+  DRAIN + GOAWAY, the deferred transport latch, and `requestPing`
+  keepalive.
+- [`tests/integration/webtransport_forwarding.zig`](../tests/integration/webtransport_forwarding.zig)
+  — two-hop session-event forwarding, including credit, BLOCKED, DRAIN,
+  unknown-capsule, and CLOSE behavior.
 - [`src/webtransport.zig`](../src/webtransport.zig) — protocol primitives:
   capsule codecs, error-code mapping, settings predicates, subprotocol
   parsing.
 - [`src/session.zig`](../src/session.zig) — `Event` union with full
   `webtransport_*` family, `WTSessionFlowSnapshot`, buffered-stream policy.
-- [draft-ietf-webtrans-http3](https://datatracker.ietf.org/doc/draft-ietf-webtrans-http3/15/)
+- [draft-ietf-webtrans-http3](https://datatracker.ietf.org/doc/draft-ietf-webtrans-http3/16/)
   — the spec this library tracks.

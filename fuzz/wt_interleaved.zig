@@ -36,14 +36,36 @@
 //! client-initiator vs server-initiator for the operations that have
 //! both flavors (open, send, drain, close, finish, reset).
 //!
+//! Opcode semantics under the native capsule-ingestion model
+//! (draft-ietf-webtrans-http3-16 — the Session consumes the CONNECT
+//! stream's capsule protocol itself and surfaces typed events):
+//!
+//!   - SEND_MAX_DATA / SEND_MAX_STREAMS_*: the receiver folds these
+//!     MONOTONICALLY — a non-increasing value is ignored (no state
+//!     change, no event); only a strict increase applies and emits
+//!     `webtransport_credit_granted`. Corpus-driven regressions in the
+//!     advertised limits are therefore harmless by construction.
+//!   - SEND_DRAIN: the receiver emits `webtransport_session_draining`
+//!     (first DRAIN only) and gates its own new stream opens with
+//!     `error.WebTransportSessionDraining`.
+//!   - SEND_CLOSE: the RECEIVING session ends the moment the CLOSE
+//!     capsule arrives — registry state dropped, live substreams swept
+//!     with WEBTRANSPORT_SESSION_GONE, our send half echo-FIN'd — not
+//!     at the subsequent CONNECT FIN. The reason is sanitized to valid
+//!     UTF-8 before the facade call (see `opSendClose`).
+//!
 //! After the input is exhausted the harness drains to quiescence and
 //! checks invariants:
 //!   - No panic (Zig's fuzz mode catches these).
 //!   - No memory leak (DebugAllocator detects on deinit).
 //!   - No spurious connection close (lastCloseError null unless an op
-//!     deliberately triggered one).
+//!     deliberately triggered one). Session-scoped teardown — including
+//!     a WT_FLOW_CONTROL_ERROR session termination — must never close
+//!     the connection.
 //!   - All deliberately closed sessions ultimately reach .none state on
-//!     both peers.
+//!     both peers. (A received CLOSE takes effect on arrival, so the
+//!     receiver reaches .none without waiting for FIN propagation; the
+//!     sender's registry entry ends when `close()` FINs the CONNECT.)
 
 const std = @import("std");
 const boringssl = @import("boringssl");
@@ -183,6 +205,36 @@ const Cursor = struct {
         return self.bytes[self.pos..][0..have];
     }
 };
+
+/// Copies `raw` into `buf`, replacing every byte that is not part of a
+/// valid UTF-8 sequence with '?' (length-preserving). The facade
+/// `close()` refuses invalid UTF-8 (`InvalidCloseReason`), so the
+/// harness sanitizes corpus-derived reasons instead of letting random
+/// bytes error at the facade — see `opSendClose`.
+fn sanitizeUtf8Reason(buf: []u8, raw: []const u8) []const u8 {
+    var i: usize = 0;
+    while (i < raw.len) {
+        const seq_len = std.unicode.utf8ByteSequenceLength(raw[i]) catch {
+            buf[i] = '?';
+            i += 1;
+            continue;
+        };
+        if (i + seq_len > raw.len) {
+            // Truncated trailing sequence (readSlice may cut a
+            // codepoint at the declared length).
+            @memset(buf[i..raw.len], '?');
+            break;
+        }
+        if (std.unicode.utf8Decode(raw[i .. i + seq_len])) |_| {
+            @memcpy(buf[i .. i + seq_len], raw[i .. i + seq_len]);
+            i += seq_len;
+        } else |_| {
+            buf[i] = '?';
+            i += 1;
+        }
+    }
+    return buf[0..raw.len];
+}
 
 const ClientStream = struct {
     handle: http3_zig.WebTransportClientStream,
@@ -539,7 +591,15 @@ const Harness = struct {
         const sid_idx = c.readU8();
         const session_idx = try self.pickSession(sid_idx, side);
         const code: u32 = @as(u32, c.readU8());
-        const reason = c.readSlice(255);
+        // The facade `close()` refuses invalid UTF-8 outright
+        // (`InvalidCloseReason`) and truncates oversized reasons at a
+        // codepoint boundary itself. Corpus bytes are arbitrary, so
+        // sanitize the derived reason to valid UTF-8 here — otherwise
+        // most random inputs would error at the facade and CLOSE would
+        // stop being exercised. Truncation stays the facade's job (the
+        // 255-byte corpus cap is far below its 1024-byte limit anyway).
+        var reason_buf: [255]u8 = undefined;
+        const reason = sanitizeUtf8Reason(&reason_buf, c.readSlice(255));
         switch (side) {
             .client => {
                 const s = self.clientSessionAt(session_idx) orelse return error.NoSessionAvailable;

@@ -25,8 +25,9 @@ Three operations:
    session: `client.sendDatagram(64 bytes)` → server receives →
    `server.sendDatagram(64 bytes)` → client receives.
 3. **Uni stream RT (1 KiB)** — on the same persistent session:
-   `client.openUniStream()` + `writeStream(1 KiB)` + `finishStream()`
-   → server observes the `webtransport_stream_finished` event.
+   `client.openUniStream()`, then `write(1 KiB)` + `finish()` on the
+   returned `WebTransportStream` handle → server observes the
+   `webtransport_stream_finished` event.
 
 ## Important caveat: in-process loopback, not network
 

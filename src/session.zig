@@ -1951,12 +1951,12 @@ pub const Session = struct {
         //                 the peer has no context for, so surface
         //                 `UnknownWebTransportSession`.
         //   * `.pending` — session is in flight (CONNECT sent, 2xx
-        //                  not yet observed). Flow state hasn't been
-        //                  created yet, so the peer-limit / drain
-        //                  gating below doesn't apply. The open is
-        //                  allowed; bytes get buffered server-side via
-        //                  `BufferedStreamPolicy` until the session
-        //                  is confirmed.
+        //                  not yet observed). Flow state exists from
+        //                  creation with SETTINGS-seeded credit, so the
+        //                  peer-limit / drain gating below applies just
+        //                  like for established sessions; bytes still
+        //                  buffer server-side via `BufferedStreamPolicy`
+        //                  until confirmation.
         //   * `.established` — flow state is present, fall through
         //                      to the limit / drain checks.
         switch (self.webTransportSessionState(session_id)) {
@@ -4865,7 +4865,8 @@ pub const Session = struct {
     ///
     /// On the server, the first set of headers on a request stream that
     /// look like a WebTransport CONNECT request (`:method = CONNECT`,
-    /// `:protocol = webtransport`) marks the stream as a pending WT
+    /// `:protocol` carrying either era's WebTransport token) marks the
+    /// stream as a pending WT
     /// session. `Server.acceptWebTransport` later confirms it.
     ///
     /// On the client, headers received on a stream that's already in the
@@ -4895,7 +4896,8 @@ pub const Session = struct {
                 if (kind != .request) return;
                 if (state.recv_finished) return;
                 if (self.webTransportSessionExists(state.id)) return;
-                // Look for `:method = CONNECT` and `:protocol = webtransport`.
+                // Look for `:method = CONNECT` and a `:protocol` carrying
+                // either era's WebTransport token.
                 // RFC 9114 §4.2 lower-cases all field names; pseudo-headers
                 // sit at the front per §4.3.
                 var has_connect = false;

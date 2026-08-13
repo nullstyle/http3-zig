@@ -821,9 +821,10 @@ fn seedWebTransportSession(io: std.Io, root: std.Io.Dir, buf: []u8) !void {
     }
 
     // 09-close-then-max-data — CLOSE_WEBTRANSPORT_SESSION immediately
-    // followed by WT_MAX_DATA. Spec-compliant receivers drop the
-    // post-close capsule; the parser layer must walk both without
-    // crashing.
+    // followed by WT_MAX_DATA. Capsules MUST NOT follow CLOSE — the
+    // session layer aborts the CONNECT stream with H3_MESSAGE_ERROR on
+    // this shape — but the bare parser layer must still walk both
+    // without crashing.
     {
         var p: usize = 0;
         p += try http3_zig.webtransport.encodeCloseSession(buf[p..], 0, "bye");
@@ -843,10 +844,10 @@ fn seedWebTransportSession(io: std.Io, root: std.Io.Dir, buf: []u8) !void {
 
     // 11-max-data-regression — three WT_MAX_DATA capsules whose values
     // strictly decrease (1 MiB, 512 KiB, 256 KiB). Per
-    // draft-ietf-webtrans-http3-13 §5.6.4 the limit MUST be
-    // monotonically increasing; the codec layer parses all three
-    // successfully and leaves the policy decision to the session
-    // state machine.
+    // draft-ietf-webtrans-http3 §5.6 the limit only ever grows; the
+    // codec layer parses all three successfully and leaves the policy
+    // to the session state machine (which folds monotonically —
+    // non-increasing values are ignored without an event).
     {
         var p: usize = 0;
         p += try http3_zig.webtransport.encodeMaxData(buf[p..], 1 << 20);
