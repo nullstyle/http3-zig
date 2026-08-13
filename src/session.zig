@@ -1447,6 +1447,16 @@ pub const Session = struct {
     peer_qpack_encoder_stream_id: ?u64 = null,
     peer_qpack_decoder_stream_id: ?u64 = null,
     sent_goaway_id: ?u64 = null,
+    /// GOAWAY was sent while established WebTransport sessions were
+    /// live: the transport-level `beginGracefulShutdown()` is DEFERRED
+    /// until the last of them ends, because it refuses new local stream
+    /// opens and draft-16 requires established WT sessions to keep
+    /// working (stream opens included) across an H3 GOAWAY. During the
+    /// deferral window the H3-layer gates alone enforce GOAWAY (the
+    /// transport keeps granting the peer stream credit — quic-zig
+    /// confirms the latch is a pure boolean with exactly two effect
+    /// sites, safe to set at any later point in the connection's life).
+    graceful_shutdown_deferred: bool = false,
     peer_goaway_id: ?u64 = null,
     /// Highest client-initiated bidirectional stream id observed from the
     /// peer (server role only — bumped in `ensureIncomingState` before any
@@ -2117,6 +2127,13 @@ pub const Session = struct {
             if (entry.value.phase == .pending) self.wt_pending_count -= 1;
             entry.value.deinit(self.allocator);
             self.allocator.destroy(entry.value);
+        }
+        // Deferred GOAWAY hand-off: once the last established session is
+        // gone, the transport-level graceful shutdown the H3 GOAWAY
+        // deferred can finally engage (idempotent latch upstream).
+        if (self.graceful_shutdown_deferred and self.webTransportEstablishedCount() == 0) {
+            self.graceful_shutdown_deferred = false;
+            self.quic.beginGracefulShutdown();
         }
     }
 
@@ -3081,7 +3098,21 @@ pub const Session = struct {
         // no GOAWAY frame — this is the intended transport building block a
         // higher layer pairs with its own GOAWAY signal. Existing stream-limit
         // credit is not revoked, so in-flight streams still complete.
-        self.quic.beginGracefulShutdown();
+        //
+        // EXCEPT while established WebTransport sessions are live:
+        // draft-16 requires them to survive GOAWAY — including opening
+        // NEW substreams — so the transport latch is deferred until the
+        // last one ends (`endWebTransportSession` fires it). The H3
+        // request gates enforce GOAWAY on their own during the window.
+        // Long quiet drains are the embedder's keepalive problem:
+        // max_idle_timeout keeps running, so drive
+        // `Connection.requestPing()` (or WT-level traffic) if sessions
+        // can go traffic-idle for minutes.
+        if (self.webTransportEstablishedCount() > 0) {
+            self.graceful_shutdown_deferred = true;
+        } else {
+            self.quic.beginGracefulShutdown();
+        }
         self.trace(.{
             .name = .goaway_sent,
             .role = self.role,

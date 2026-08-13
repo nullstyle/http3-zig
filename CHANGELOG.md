@@ -191,6 +191,16 @@ breaking changes; see notes per release.
   on it) now returns `error.UnknownWebTransportSession` when invoked on a
   stream id that is unknown or carries no WebTransport session
   association, instead of silently writing unmetered bytes.
+- **GOAWAY now coexists with live WebTransport sessions** (draft-16):
+  `sendGoaway` defers the transport-level `beginGracefulShutdown()`
+  while established WT sessions exist — they keep opening substreams
+  and exchanging datagrams across the H3 GOAWAY (datagrams also stay
+  legal after DRAIN, both pinned by tests) — and the latch engages
+  automatically when the last session ends. During the deferral window
+  the H3 request gates alone enforce GOAWAY; embedders whose sessions
+  can go traffic-idle during a long drain should drive
+  `Connection.requestPing()` (max_idle_timeout keeps running —
+  upstream-confirmed semantics).
 - Added the reserved WebTransport error-code wiring
   [draft-ietf-webtrans-http3 §9.5]: `Server.rejectWebTransport(request,
   .alpn_failed | .requirements_not_met | .{ .wire_code = … })` aborts a
