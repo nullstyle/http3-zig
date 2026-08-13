@@ -14,7 +14,7 @@ pub const Opcode = enum(u4) {
     pong = 0xa,
 
     pub fn isControl(self: Opcode) bool {
-        return @intFromEnum(self) >= 0x8;
+        return @backingInt(self) >= 0x8;
     }
 
     pub fn isData(self: Opcode) bool {
@@ -100,7 +100,7 @@ pub fn encode(dst: []u8, frame: Frame, options: EncodeOptions) Error!usize {
 
     var pos: usize = 0;
     dst[pos] = if (frame.fin) 0x80 else 0;
-    dst[pos] |= @intFromEnum(frame.opcode);
+    dst[pos] |= @backingInt(frame.opcode);
     pos += 1;
 
     const mask_bit: u8 = if (options.mask) 0x80 else 0;
