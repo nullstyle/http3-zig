@@ -191,6 +191,27 @@ breaking changes; see notes per release.
   on it) now returns `error.UnknownWebTransportSession` when invoked on a
   stream id that is unknown or carries no WebTransport session
   association, instead of silently writing unmetered bytes.
+- **Added the WebTransport browser-era negotiation layer.** One endpoint
+  can now speak the modern draft AND the browser eras concurrently:
+  `webtransport.WtDraft`/`resolveDraft` pick the newest era both peers
+  advertise (the draft-07 §6 rule), resolved once per connection when
+  SETTINGS arrive (`Session.webTransportNegotiatedDraft`) and inherited
+  by every session (mixed-era sessions are impossible by construction;
+  the flow snapshot reports the era). Legacy codepoints: draft-02
+  `SETTINGS_ENABLE_WEBTRANSPORT = 0x2b603742` — what shipped Chrome AND
+  Firefox negotiate today — and draft-07
+  `SETTINGS_WEBTRANSPORT_MAX_SESSIONS = 0xc671706a`. On a legacy
+  session, session-level flow control is inert by construction (no
+  credit seeding, modern flow capsules surface as unknown types, the
+  modern send verbs refuse with the new
+  `Error.WebTransportEraUnsupported`); CLOSE/DRAIN/datagrams/streams are
+  era-stable and unchanged. `SessionProductionOptions.enable_webtransport_draft02`
+  (default off — the default wire surface stays modern-only) advertises
+  the browser era and auto-enables the prerequisites; per-era
+  establishment profiles (`webtransport.eraProfile`) carry the
+  research-verified token/header table. Local-config validation now
+  accepts any enabled era, and the facade bootstrap gates are
+  era-aware (local misconfig errors first, then the intersection gate).
 - **GOAWAY now coexists with live WebTransport sessions** (draft-16):
   `sendGoaway` defers the transport-level `beginGracefulShutdown()`
   while established WT sessions exist — they keep opening substreams

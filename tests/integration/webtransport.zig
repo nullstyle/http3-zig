@@ -25,16 +25,22 @@ test "WebTransport request/response classification" {
 }
 
 test "WebTransport helper rejects peers that don't advertise WebTransport" {
-    // With the eager peer-SETTINGS check at the top of
-    // `Client.startWebTransport`, a peer whose SETTINGS lack
-    // `SETTINGS_WT_ENABLED` (and the prerequisite
-    // `ENABLE_CONNECT_PROTOCOL` + `H3_DATAGRAM`) trips
-    // `PeerDidNotEnableWebTransport` before the request goes on
-    // the wire — see draft-ietf-webtrans-http3 §9.2.
+    // With the eager peer-SETTINGS check in `Client.startWebTransport`,
+    // a peer whose SETTINGS lack `SETTINGS_WT_ENABLED` (and the
+    // prerequisite `ENABLE_CONNECT_PROTOCOL` + `H3_DATAGRAM`) trips
+    // `PeerDidNotEnableWebTransport` before the request goes on the
+    // wire — see draft-ietf-webtrans-http3 §9.2. The CLIENT side is
+    // fully WT-capable here so the LOCAL gate (which runs first, with
+    // its own error) passes.
     const allocator = std.testing.allocator;
+    const wt_client: http3_zig.Settings = .{
+        .enable_connect_protocol = true,
+        .h3_datagram = true,
+        .wt_enabled = true,
+    };
 
     var pair: H3Pair = undefined;
-    try pair.initStarted(allocator, .{}, .{});
+    try pair.initStarted(allocator, .{ .settings = wt_client }, .{});
     defer pair.deinit();
 
     try exchangePairSettings(allocator, &pair);
@@ -82,8 +88,8 @@ test "WebTransport helper rejects a client whose own settings lack WebTransport"
     // Both endpoints MUST advertise `SETTINGS_WT_ENABLED`
     // (draft-ietf-webtrans-http3 §3.1) — a peer that advertises WT does
     // not excuse a local config that doesn't. The local-settings gate
-    // sits AFTER the eager peer checks, so the peer-side errors keep
-    // their established priority; with a WT-capable peer and a default
+    // runs FIRST (the actionable error when our own config can't do
+    // WebTransport at all): with a WT-capable peer and a default
     // (non-WT) local config, `startWebTransport` must refuse with
     // `WebTransportSettingsMissing` before anything goes on the wire.
     const allocator = std.testing.allocator;

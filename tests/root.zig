@@ -16,6 +16,7 @@ test {
     _ = @import("integration/webtransport_multiplexing.zig");
     _ = @import("integration/webtransport_races.zig");
     _ = @import("integration/webtransport_goaway.zig");
+    _ = @import("integration/webtransport_eras.zig");
     _ = @import("integration/webtransport_forwarding.zig");
     _ = @import("integration/push.zig");
     _ = @import("integration/session_errors.zig");

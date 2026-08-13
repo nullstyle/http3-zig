@@ -154,6 +154,12 @@ pub const Error = quic.conn.state.Error ||
         /// count past `Config.max_pending_wt_sessions` (server). The
         /// session closes the connection with H3_EXCESSIVE_LOAD.
         ExcessivePendingWebTransportSessions,
+        /// A modern-era WebTransport verb (`sendMaxData`,
+        /// `sendMaxStreams*`) was invoked on a session whose resolved
+        /// draft era predates session-level flow control. The browser
+        /// eras have no flow-control capsules; the send is refused
+        /// rather than emitting bytes the peer never defined.
+        WebTransportEraUnsupported,
         /// Locally-initiated WebTransport stream open after the peer
         /// has sent `DRAIN_WEBTRANSPORT_SESSION`
         /// (draft-ietf-webtrans-http3 §5.5). Existing streams may
@@ -238,6 +244,14 @@ pub const ProductionOptions = struct {
     /// peer is now expected to use stream/transport flow control rather
     /// than a SETTINGS-advertised session count.
     enable_webtransport: bool = false,
+    /// Additionally advertise the draft-02 browser-era bootstrap
+    /// (`SETTINGS_ENABLE_WEBTRANSPORT`) — what shipped Chrome and
+    /// shipped Firefox speak. Default off so the default wire surface
+    /// stays modern-only; flip it for browser-facing deployments. The
+    /// draft-07 era knob arrives with the session-cap work (its
+    /// SETTINGS value IS a session cap, and advertisement must equal
+    /// enforcement).
+    enable_webtransport_draft02: bool = false,
     /// Initial per-session WebTransport flow-control credit this endpoint
     /// advertises via the draft-15 §9.2 SETTINGS
     /// (`SETTINGS_WT_INITIAL_MAX_DATA` / `_STREAMS_UNI` / `_STREAMS_BIDI`).
@@ -390,8 +404,10 @@ pub const Config = struct {
         // Datagrams. The production preset auto-enables them whenever
         // `enable_webtransport` is set so callers don't have to remember
         // the prerequisites.
-        const enable_connect_protocol = options.enable_connect_protocol or options.enable_webtransport;
-        const enable_datagram = options.enable_datagram or options.enable_webtransport;
+        const enable_connect_protocol = options.enable_connect_protocol or
+            options.enable_webtransport or options.enable_webtransport_draft02;
+        const enable_datagram = options.enable_datagram or
+            options.enable_webtransport or options.enable_webtransport_draft02;
 
         return .{
             .settings = .{
@@ -401,6 +417,7 @@ pub const Config = struct {
                 .enable_connect_protocol = enable_connect_protocol,
                 .h3_datagram = enable_datagram,
                 .wt_enabled = options.enable_webtransport,
+                .wt_draft02 = options.enable_webtransport_draft02,
                 .wt_initial_max_data = options.wt_initial_max_data,
                 .wt_initial_max_streams_uni = options.wt_initial_max_streams_uni,
                 .wt_initial_max_streams_bidi = options.wt_initial_max_streams_bidi,
@@ -1308,6 +1325,11 @@ const DrainBudget = struct {
 /// sessions are gated and counted like established ones.
 const WTSessionState = struct {
     phase: enum { pending, established },
+    /// Era inherited from the connection at creation (draft16 for
+    /// direct-confirm unit fixtures that never exchanged SETTINGS).
+    /// Gates flow-control seeding, capsule folding, and the modern
+    /// capsule send verbs.
+    draft: webtransport_mod.WtDraft = .draft16,
     flow: WTSessionFlowState,
     /// Per-session incremental capsule reassembly across DATA-frame
     /// boundaries (a capsule may legally span frames). Fed by the
@@ -1385,6 +1407,9 @@ const WTSessionFlowState = struct {
 /// `WebTransportServerStream.flowState()`. Borrows nothing from the
 /// session — safe to copy and inspect outside any pump.
 pub const WTSessionFlowSnapshot = struct {
+    /// Draft era the session resolved to (see `WtDraft`); browser-era
+    /// sessions report null limits everywhere below by construction.
+    draft: webtransport_mod.WtDraft = .draft16,
     session_id: u64,
     peer_max_data: ?u64,
     peer_max_streams_bidi: ?u64,
@@ -1431,6 +1456,14 @@ pub const Session = struct {
     config: Config = .{},
     local_settings: settings_mod.Settings = .{},
     peer_settings: ?settings_mod.Settings = null,
+    /// WebTransport draft era resolved from the SETTINGS intersection
+    /// (newest common era; null until peer SETTINGS arrive or when the
+    /// sets don't intersect). Resolved ONCE — HTTP/3 SETTINGS arrive
+    /// exactly once — and NEVER from remembered 0-RTT settings
+    /// (extended CONNECT is denied in early data). Sessions inherit
+    /// this at creation: mixed-era sessions on one connection are
+    /// impossible by construction.
+    wt_negotiated_draft: ?webtransport_mod.WtDraft = null,
     /// RFC 9114 §7.2.4.2: settings remembered from the ticket-issuing
     /// connection, installed via `rememberPeerSettings`. Consulted only by
     /// the datagram gates until the real SETTINGS arrive; validated (when
@@ -2040,6 +2073,12 @@ pub const Session = struct {
     /// clobbering anything a capsule already granted. When a side
     /// advertised nothing the limit stays null (no enforcement).
     fn seedWebTransportFlowCredit(self: *const Session, flow: *WTSessionFlowState) void {
+        // Session-level flow control exists only in the modern era: on a
+        // legacy-resolved connection every limit stays null, which the
+        // gate sites already treat as "no enforcement" — a legacy
+        // session can never block on credit Chrome will never grant,
+        // and the auto-BLOCKED emission paths stay unreachable.
+        if ((self.wt_negotiated_draft orelse .draft16) != .draft16) return;
         if (flow.local_max_data == null) flow.local_max_data = self.local_settings.wt_initial_max_data;
         if (flow.local_max_streams_uni == null) flow.local_max_streams_uni = self.local_settings.wt_initial_max_streams_uni;
         if (flow.local_max_streams_bidi == null) flow.local_max_streams_bidi = self.local_settings.wt_initial_max_streams_bidi;
@@ -2057,7 +2096,11 @@ pub const Session = struct {
     ) Error!*WTSessionState {
         const sess = try self.allocator.create(WTSessionState);
         errdefer self.allocator.destroy(sess);
-        sess.* = .{ .phase = phase, .flow = .{ .session_id = stream_id } };
+        sess.* = .{
+            .phase = phase,
+            .draft = self.wt_negotiated_draft orelse .draft16,
+            .flow = .{ .session_id = stream_id },
+        };
         // Bound a single reassembled capsule's declared value length by
         // the same knob that caps outbound capsule values; null keeps
         // the reassembler unbounded (dev default; production() caps it).
@@ -2353,6 +2396,12 @@ pub const Session = struct {
         budget: *DrainBudget,
     ) Error!WTFoldOutcome {
         const session_id = sess.flow.session_id;
+        // Browser-era sessions predate session-level flow control: the
+        // six WT_MAX_*/BLOCKED types are just unknown capsules to them
+        // (CLOSE and DRAIN are era-stable — Chrome sends DRAIN even in
+        // draft-02 mode). Routing them below keeps every modern-era
+        // capsule MUST from firing against a legacy peer.
+        const flow_capsules_active = sess.draft == .draft16;
         switch (capsule.capsule_type) {
             webtransport_mod.CapsuleType.close_session => {
                 const close_info = webtransport_mod.decodeCloseSessionValue(capsule.value) catch {
@@ -2403,6 +2452,7 @@ pub const Session = struct {
                 return .continue_folding;
             },
             webtransport_mod.CapsuleType.max_data => {
+                if (!flow_capsules_active) return self.foldUnknownWebTransportCapsule(sess, state, capsule, events, budget);
                 const value = webtransport_mod.decodeMaxDataValue(capsule.value) catch {
                     try self.terminateWebTransportSessionWithCode(
                         session_id,
@@ -2429,6 +2479,7 @@ pub const Session = struct {
                 return .continue_folding;
             },
             webtransport_mod.CapsuleType.max_streams_bidi => {
+                if (!flow_capsules_active) return self.foldUnknownWebTransportCapsule(sess, state, capsule, events, budget);
                 const value = webtransport_mod.decodeMaxStreamsBidiValue(capsule.value) catch {
                     try self.terminateWebTransportSessionWithCode(
                         session_id,
@@ -2465,6 +2516,7 @@ pub const Session = struct {
                 return .continue_folding;
             },
             webtransport_mod.CapsuleType.max_streams_uni => {
+                if (!flow_capsules_active) return self.foldUnknownWebTransportCapsule(sess, state, capsule, events, budget);
                 const value = webtransport_mod.decodeMaxStreamsUniValue(capsule.value) catch {
                     try self.terminateWebTransportSessionWithCode(
                         session_id,
@@ -2501,6 +2553,7 @@ pub const Session = struct {
                 return .continue_folding;
             },
             webtransport_mod.CapsuleType.data_blocked => {
+                if (!flow_capsules_active) return self.foldUnknownWebTransportCapsule(sess, state, capsule, events, budget);
                 const value = webtransport_mod.decodeDataBlockedValue(capsule.value) catch {
                     try self.terminateWebTransportSessionWithCode(
                         session_id,
@@ -2521,6 +2574,7 @@ pub const Session = struct {
                 return .continue_folding;
             },
             webtransport_mod.CapsuleType.streams_blocked_bidi => {
+                if (!flow_capsules_active) return self.foldUnknownWebTransportCapsule(sess, state, capsule, events, budget);
                 const value = webtransport_mod.decodeStreamsBlockedBidiValue(capsule.value) catch {
                     try self.terminateWebTransportSessionWithCode(
                         session_id,
@@ -2553,6 +2607,7 @@ pub const Session = struct {
                 return .continue_folding;
             },
             webtransport_mod.CapsuleType.streams_blocked_uni => {
+                if (!flow_capsules_active) return self.foldUnknownWebTransportCapsule(sess, state, capsule, events, budget);
                 const value = webtransport_mod.decodeStreamsBlockedUniValue(capsule.value) catch {
                     try self.terminateWebTransportSessionWithCode(
                         session_id,
@@ -2584,22 +2639,34 @@ pub const Session = struct {
                 });
                 return .continue_folding;
             },
-            else => {
-                // Unknown capsule types MUST be ignored (RFC 9297 §3.2)
-                // — surfaced byte-exact so intermediaries can forward.
-                try budget.reserve(capsule.value.len);
-                const owned = try self.allocator.dupe(u8, capsule.value);
-                errdefer self.allocator.free(owned);
-                try self.appendReservedEvent(events, .{
-                    .webtransport_unknown_capsule = .{
-                        .session_id = session_id,
-                        .capsule_type = capsule.capsule_type,
-                        .value = owned,
-                    },
-                });
-                return .continue_folding;
-            },
+            else => return self.foldUnknownWebTransportCapsule(sess, state, capsule, events, budget),
         }
+    }
+
+    /// Unknown capsule types MUST be ignored (RFC 9297 §3.2) — surfaced
+    /// byte-exact so intermediaries can forward. Also the destination
+    /// for modern flow-control capsules arriving on a browser-era
+    /// session, where those types are not defined.
+    fn foldUnknownWebTransportCapsule(
+        self: *Session,
+        sess: *WTSessionState,
+        state: *StreamState,
+        capsule: capsule_mod.Capsule,
+        events: *std.ArrayList(Event),
+        budget: *DrainBudget,
+    ) Error!WTFoldOutcome {
+        _ = state;
+        try budget.reserve(capsule.value.len);
+        const owned = try self.allocator.dupe(u8, capsule.value);
+        errdefer self.allocator.free(owned);
+        try self.appendReservedEvent(events, .{
+            .webtransport_unknown_capsule = .{
+                .session_id = sess.flow.session_id,
+                .capsule_type = capsule.capsule_type,
+                .value = owned,
+            },
+        });
+        return .continue_folding;
     }
 
     /// Drain-top pass: emits pending `webtransport_session_established`
@@ -2655,6 +2722,13 @@ pub const Session = struct {
         return self.wt_sessions.count() - self.wt_pending_count;
     }
 
+    /// The draft era WebTransport resolved to on this connection, or
+    /// null before peer SETTINGS arrive / when no era intersects. Every
+    /// session on the connection carries this era.
+    pub fn webTransportNegotiatedDraft(self: *const Session) ?webtransport_mod.WtDraft {
+        return self.wt_negotiated_draft;
+    }
+
     pub fn webTransportBufferedByteCount(self: *const Session) usize {
         return self.bufferedWebTransportBytes();
     }
@@ -2677,7 +2751,9 @@ pub const Session = struct {
         // detail until it settles).
         const sess = self.wt_sessions.get(session_id) orelse return null;
         if (sess.phase != .established) return null;
-        return WTSessionFlowSnapshot.fromState(&sess.flow);
+        var snapshot = WTSessionFlowSnapshot.fromState(&sess.flow);
+        snapshot.draft = sess.draft;
+        return snapshot;
     }
 
     /// Mutable flow state for BOTH phases: pending sessions carry seeded
@@ -2695,7 +2771,9 @@ pub const Session = struct {
     /// value is allowed (the peer ignores it per draft §5.6.4) but
     /// uncommon.
     pub fn sendWebTransportMaxData(self: *Session, session_id: u64, value: u64) Error!void {
-        const flow = self.webTransportFlowMut(session_id) orelse return Error.UnknownWebTransportSession;
+        const sess = self.wt_sessions.get(session_id) orelse return Error.UnknownWebTransportSession;
+        if (sess.draft != .draft16) return Error.WebTransportEraUnsupported;
+        const flow = &sess.flow;
         var buf: [24]u8 = undefined;
         const n = try encodeFlowControlCapsule(&buf, webtransport_mod.CapsuleType.max_data, value);
         try self.writeCapsulePayloadOnStream(session_id, buf[0..n]);
@@ -2710,7 +2788,12 @@ pub const Session = struct {
         direction: WebTransportStreamKind,
         value: u64,
     ) Error!void {
-        const flow = self.webTransportFlowMut(session_id) orelse return Error.UnknownWebTransportSession;
+        const sess = self.wt_sessions.get(session_id) orelse return Error.UnknownWebTransportSession;
+        // The flow-control capsules don't exist in the browser eras —
+        // an intermediary must not emit modern capsules at a legacy
+        // peer even though unknown-capsule tolerance would swallow them.
+        if (sess.draft != .draft16) return Error.WebTransportEraUnsupported;
+        const flow = &sess.flow;
         var buf: [24]u8 = undefined;
         const capsule_type: u64 = switch (direction) {
             .bidi => webtransport_mod.CapsuleType.max_streams_bidi,
@@ -4399,6 +4482,10 @@ pub const Session = struct {
                         }
                     }
                     self.peer_settings = peer;
+                    self.wt_negotiated_draft = webtransport_mod.resolveDraft(
+                        webtransport_mod.localEras(self.local_settings),
+                        peer,
+                    );
                     self.qpack_encoder_state.max_blocked_streams = peer.qpack_blocked_streams;
                     try self.appendReservedEvent(events, .{ .peer_settings = peer });
                 },

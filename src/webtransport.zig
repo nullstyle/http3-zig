@@ -267,7 +267,10 @@ pub fn peerEnabled(s: settings_mod.Settings) bool {
 /// §3.1, both endpoints MUST send `SETTINGS_WT_ENABLED > 0`.)
 pub fn validateLocalSettings(role: protocol.Role, s: settings_mod.Settings) Error!void {
     if (!s.h3_datagram) return error.WebTransportSettingsMissing;
-    if (!s.wt_enabled) return error.WebTransportSettingsMissing;
+    // ANY enabled era satisfies the advertisement minimum — a
+    // browser-facing legacy-only config is legal.
+    const eras = localEras(s);
+    if (!(eras.draft16 or eras.draft07 or eras.draft02)) return error.WebTransportSettingsMissing;
     switch (role) {
         .client => {},
         .server => {

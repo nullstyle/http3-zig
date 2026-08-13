@@ -1875,8 +1875,13 @@ pub const Client = struct {
         options: WebTransportConnectOptions,
     ) (session_mod.Error || webtransport_mod.Error)!WebTransportClientStream {
         const peer = self.session.peer_settings orelse return webtransport_mod.Error.PeerSettingsNotReceived;
-        if (!webtransport_mod.peerEnabled(peer)) return webtransport_mod.Error.PeerDidNotEnableWebTransport;
+        // Local config first (the actionable error when OUR side can't
+        // do WebTransport at all), then the era-intersection peer gate.
         try webtransport_mod.validateLocalSettings(.client, self.session.local_settings);
+        if (!webtransport_mod.peerEnabledFor(
+            peer,
+            webtransport_mod.localEras(self.session.local_settings),
+        )) return webtransport_mod.Error.PeerDidNotEnableWebTransport;
 
         var writer: RequestWriter = undefined;
         if (options.subprotocols.len == 0) {
