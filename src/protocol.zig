@@ -40,30 +40,30 @@ pub const StreamType = struct {
 };
 
 /// HTTP/3 SETTINGS IDs (RFC 9114 §7.2.4, RFC 9204 §5, RFC 9220 §3, RFC 9297 §2.1,
-/// draft-ietf-webtrans-http3-15 §9.2).
+/// draft-ietf-webtrans-http3 §9.2).
 pub const SettingId = struct {
     pub const qpack_max_table_capacity: u64 = 0x01;
     pub const max_field_section_size: u64 = 0x06;
     pub const qpack_blocked_streams: u64 = 0x07;
     pub const enable_connect_protocol: u64 = 0x08;
     pub const h3_datagram: u64 = 0x33;
-    /// `SETTINGS_WT_ENABLED` from draft-ietf-webtrans-http3-15 §9.2.
+    /// `SETTINGS_WT_ENABLED` from draft-ietf-webtrans-http3 §9.2.
     /// Boolean (0 or 1): both client and server MUST send this with a
     /// value greater than 0 to advertise support for WebTransport over
     /// HTTP/3. The codepoint is draft-revision-specific by design — each
     /// draft revision gets its own codepoint so peers can negotiate
     /// which version they support.
     pub const wt_enabled: u64 = 0x2c7cf000;
-    /// `SETTINGS_WT_INITIAL_MAX_DATA` from draft-ietf-webtrans-http3-15 §9.2.
+    /// `SETTINGS_WT_INITIAL_MAX_DATA` from draft-ietf-webtrans-http3 §9.2.
     /// Initial value (in bytes) for `WT_MAX_DATA` — saves the round-trip of
     /// an explicit capsule when the peer's first session opens.
     pub const wt_initial_max_data: u64 = 0x2b61;
-    /// `SETTINGS_WT_INITIAL_MAX_STREAMS_UNI` from draft-ietf-webtrans-http3-15
+    /// `SETTINGS_WT_INITIAL_MAX_STREAMS_UNI` from draft-ietf-webtrans-http3
     /// §9.2. Initial limit for peer-initiated unidirectional WebTransport
     /// streams; same purpose as `WT_MAX_STREAMS_UNI` capsule but at session
     /// bootstrap.
     pub const wt_initial_max_streams_uni: u64 = 0x2b64;
-    /// `SETTINGS_WT_INITIAL_MAX_STREAMS_BIDI` from draft-ietf-webtrans-http3-15
+    /// `SETTINGS_WT_INITIAL_MAX_STREAMS_BIDI` from draft-ietf-webtrans-http3
     /// §9.2. Initial limit for peer-initiated bidirectional WebTransport
     /// streams.
     pub const wt_initial_max_streams_bidi: u64 = 0x2b65;

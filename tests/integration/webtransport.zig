@@ -30,7 +30,7 @@ test "WebTransport helper rejects peers that don't advertise WebTransport" {
     // `SETTINGS_WT_ENABLED` (and the prerequisite
     // `ENABLE_CONNECT_PROTOCOL` + `H3_DATAGRAM`) trips
     // `PeerDidNotEnableWebTransport` before the request goes on
-    // the wire — see draft-ietf-webtrans-http3-15 §9.2.
+    // the wire — see draft-ietf-webtrans-http3 §9.2.
     const allocator = std.testing.allocator;
 
     var pair: H3Pair = undefined;
@@ -1127,7 +1127,7 @@ test "acceptWebTransport rejects subprotocols the client did not offer" {
     }
 }
 
-// Note: draft-ietf-webtrans-http3-15 §9.2 replaced the numeric
+// Note: draft-ietf-webtrans-http3 §9.2 replaced the numeric
 // `SETTINGS_WT_MAX_SESSIONS` codepoint with the boolean
 // `SETTINGS_WT_ENABLED`. There is no longer a session-count limit
 // advertised in SETTINGS, so the previous "N+1 rejection" enforcement
@@ -2971,7 +2971,7 @@ test "WebTransport: peer FINs uni stream after type byte but before Session ID e
 }
 
 test "WebTransport: peer DRAIN gates further openUniStream / openBidiStream calls" {
-    // draft-ietf-webtrans-http3-15 §5.5: after receiving DRAIN, an
+    // draft-ietf-webtrans-http3 §5.5: after receiving DRAIN, an
     // endpoint MUST NOT open new streams. The session marks
     // `received_drain` on the per-session flow state when
     // `observeWebTransportCapsule` sees the DRAIN capsule, and
@@ -3074,7 +3074,7 @@ test "WebTransport: peer DRAIN gates further openUniStream / openBidiStream call
 }
 
 test "WebTransport: .buffer policy rejects stream that exceeds wt_max_buffered_bytes_per_stream" {
-    // Per-stream byte cap (draft-ietf-webtrans-http3-15 §4.5):
+    // Per-stream byte cap (draft-ietf-webtrans-http3 §4.5):
     // a peer that opens a uni stream and floods bytes before the
     // server confirms the session must be dropped, not held
     // forever. With wt_max_buffered_bytes_per_stream = 1 KiB, the
@@ -3177,7 +3177,7 @@ test "WebTransport: .buffer policy rejects stream that exceeds wt_max_buffered_b
 }
 
 test "WebTransport: .buffer policy enforces wt_max_total_buffered_bytes" {
-    // Aggregate byte cap (draft-ietf-webtrans-http3-15 §4.5):
+    // Aggregate byte cap (draft-ietf-webtrans-http3 §4.5):
     // several individually-small peer-opened WT streams can otherwise
     // add up to a large pre-confirmation buffer. The stream that pushes
     // the aggregate over the configured cap is rejected while earlier
@@ -3389,7 +3389,7 @@ test "WebTransport: .buffer replay under tight budget surfaces opened+data+finis
 }
 
 test "WebTransport: peer FINs CONNECT control stream without CLOSE_WEBTRANSPORT_SESSION cleanly closes session" {
-    // draft-ietf-webtrans-http3-15 §5.4: an endpoint MAY end a session by
+    // draft-ietf-webtrans-http3 §5.4: an endpoint MAY end a session by
     // FINing the CONNECT stream without first sending CLOSE_WEBTRANSPORT_SESSION.
     // Both peers MUST treat this as a clean close — local-side cleanup
     // runs in `finishStream` (mirroring the receive-side `observeFin` →

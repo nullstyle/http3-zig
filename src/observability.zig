@@ -82,7 +82,7 @@ pub const TraceEventName = enum {
     webtransport_stream_data_received,
     webtransport_stream_finished,
     webtransport_stream_reset_received,
-    /// Peer sent `WT_DATA_BLOCKED` (draft-ietf-webtrans-http3-15
+    /// Peer sent `WT_DATA_BLOCKED` (draft-ietf-webtrans-http3
     /// §5.6.5). The application should consider raising
     /// `local_max_data` via `Session.sendWebTransportMaxData`.
     webtransport_peer_data_blocked,

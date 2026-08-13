@@ -150,6 +150,25 @@ breaking changes; see notes per release.
 
 ### Changed
 
+- **WebTransport wire pin bumped draft-ietf-webtrans-http3-15 → -16** (zero
+  codepoint changes — a behavioral revision; the API_STABILITY dual-codepath
+  sunset window is waived and the waiver recorded in the conformance
+  header). Behavior adopted so far: `SETTINGS_WT_ENABLED` is strictly
+  boolean — a decoded value greater than 1 is now an `H3_SETTINGS_ERROR`
+  connection error instead of being clamped to "enabled"
+  [draft-ietf-webtrans-http3 §3.1 ¶1]; and the extended-CONNECT
+  `:protocol` token we SEND is now `webtransport-h3` as the draft has
+  mandated since -15 (the old `webtransport` value was a conformance gap
+  against our own pin). Servers accept BOTH tokens — every shipping
+  browser still sends the legacy `webtransport` token, and the upcoming
+  era-negotiation layer will validate the token against the resolved
+  draft era. Remaining -16 behavioral MUSTs land with the capsule-native
+  session rework and are tracked as Visible debt in the conformance
+  header.
+- `Session.writeWebTransportStream` (and the facade/handle writers built
+  on it) now returns `error.UnknownWebTransportSession` when invoked on a
+  stream id that is unknown or carries no WebTransport session
+  association, instead of silently writing unmetered bytes.
 - Blessed the session-bound `Session.clearEvents` as the recommended
   event-cleanup call (it binds the session allocator implicitly, closing
   the mismatched-allocator trap in the free-standing helpers) and

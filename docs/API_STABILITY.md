@@ -60,7 +60,7 @@ but changes will be deliberate, called out in `CHANGELOG.md`, and kept minimal.
   1-RTT replay of rejected flights protocol-valid. Expect ergonomic
   movement (not wire changes) as real embedders use it.
 - **Evolving extensions.** WebTransport over HTTP/3 (Track-to-RFC, pinned to
-  `draft-ietf-webtrans-http3-15`) and the MASQUE CONNECT-UDP surface
+  `draft-ietf-webtrans-http3-16`) and the MASQUE CONNECT-UDP surface
   (`Masque*`, `ConnectUdp*` — Experimental / Unstable-with-SLA: RFC 9298 +
   RFC 9297 on the wire, but framing primitives rather than a full proxy and an
   API that is still settling). Their per-extension dispositions and the
@@ -179,7 +179,7 @@ kind of change to expect:
 
 | Extension | Wire anchor | Disposition |
 | --- | --- | --- |
-| WebTransport over HTTP/3 | `draft-ietf-webtrans-http3-15` | Track-to-RFC |
+| WebTransport over HTTP/3 | `draft-ietf-webtrans-http3-16` | Track-to-RFC |
 | MASQUE CONNECT-UDP (`Masque*`, `ConnectUdp*`) | RFC 9298 + RFC 9297 (published) | Experimental (Unstable-with-SLA) — API still settling; see [masque-caveats.md](masque-caveats.md) |
 | qlog / trace observability | qlog event schema | Stable **API** (callback signatures), draft-tracked **schema** (emitted field shape follows the qlog draft) |
 
@@ -196,6 +196,12 @@ When a tracked draft moves to a new revision or its RFC publishes:
 3. If a wire format changes incompatibly, the new format is introduced under a
    new namespaced entry rather than silently altering the existing one, so a
    deployment can migrate deliberately.
+
+When a revision bump changes **no wire codepoints** (as with
+webtrans-http3 -15 → -16, a purely behavioral revision), step 2's
+one-release dual-codepath window is waived: there is no superseded wire
+format to keep. The waiver is recorded in the conformance suite's header
+for the affected draft.
 
 ## Relationship to quic-zig
 

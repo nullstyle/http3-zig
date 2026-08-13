@@ -574,7 +574,7 @@ pub const WebTransportClientStream = struct {
     }
 
     /// Sends a QUIC FIN on the CONNECT control stream's send side —
-    /// implicit close per draft-ietf-webtrans-http3-15 §5.4. After this
+    /// implicit close per draft-ietf-webtrans-http3 §5.4. After this
     /// returns, the local WT registry entry is also torn down (see
     /// `Session.finishStream`). For an explicit close with code +
     /// reason, prefer `close(code, reason)`.
@@ -1463,7 +1463,7 @@ pub const Client = struct {
         ///   - `wt_max_buffered_bytes_per_stream = 16 KiB`
         ///       Bounds bytes a single peer-opened WebTransport stream
         ///       may buffer while waiting for its session
-        ///       (draft-ietf-webtrans-http3-15 §4.5).
+        ///       (draft-ietf-webtrans-http3 §4.5).
         ///   - `wt_max_total_buffered_bytes = 4 MiB`
         ///       Bounds aggregate bytes held across all buffered
         ///       pre-confirmation WebTransport streams.
@@ -1786,7 +1786,7 @@ pub const Client = struct {
         };
     }
 
-    /// Bootstraps a WebTransport session (draft-ietf-webtrans-http3-15 §3.2)
+    /// Bootstraps a WebTransport session (draft-ietf-webtrans-http3 §3.2)
     /// over an Extended CONNECT request. The peer MUST advertise all three
     /// of `SETTINGS_WT_ENABLED`, `H3_DATAGRAM`, and
     /// `ENABLE_CONNECT_PROTOCOL` per draft-15 §9.2; this method enforces

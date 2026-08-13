@@ -5,7 +5,7 @@
 //! H3Pair extensively. Multi-session-per-connection is the case we're
 //! least confident about, because that's where the dispatch must route
 //! peer-opened streams to the correct session via:
-//!   - the Session ID varint prefix on uni streams (draft-ietf-webtrans-http3-15 §4.1),
+//!   - the Session ID varint prefix on uni streams (draft-ietf-webtrans-http3 §4.1),
 //!   - the parent CONNECT-stream relationship for bidi streams (§4.2),
 //!   - the Quarter Stream ID in datagrams (§4.3 / RFC 9297),
 //! and per-session flow / DRAIN state must not bleed across sessions.

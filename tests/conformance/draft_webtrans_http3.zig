@@ -1,24 +1,40 @@
-//! draft-ietf-webtrans-http3-15 — WebTransport over HTTP/3 (July 2025 revision).
+//! draft-ietf-webtrans-http3-16 — WebTransport over HTTP/3 (July 2026
+//! revision, in WG Last Call).
 //!
 //! This is a working-group draft, not an RFC. The citation grammar in this
 //! file deliberately uses `[draft-ietf-webtrans-http3 §X.Y]` rather than the
 //! `[RFC#### §X.Y]` form so an auditor can tell a draft requirement from a
-//! standardized one. When the draft becomes an RFC, rename the file and
-//! update the citations.
+//! standardized one; unsuffixed citations refer to the pinned revision
+//! above. When the draft becomes an RFC, rename the file and update the
+//! citations.
 //!
-//! Wire-format pin: this implementation tracks revision -15. The most
-//! visible drift from earlier revisions is the SETTINGS bootstrap: -13
-//! used a numeric `SETTINGS_WT_MAX_SESSIONS = 0x14e9cd29`, but -15
-//! collapsed it to a boolean `SETTINGS_WT_ENABLED = 0x2c7cf000`. Each
-//! revision gets its own codepoint by design so two peers never agree
-//! by accident across revisions.
+//! Wire-format pin history:
+//!   -13 → -15: the SETTINGS bootstrap changed — -13 used a numeric
+//!   `SETTINGS_WT_MAX_SESSIONS = 0x14e9cd29`; -15 collapsed it to the
+//!   boolean `SETTINGS_WT_ENABLED = 0x2c7cf000`. Each revision gets its
+//!   own codepoint by design so two peers never agree by accident.
+//!   -15 → -16: ZERO codepoint changes — the bump is purely behavioral
+//!   (strictly-boolean WT_ENABLED [§3.1 ¶1], corrected flow-control error
+//!   codes, non-increasing-capsule rejection, UTF-8-boundary close-reason
+//!   truncation). Because the codepoints are identical there is no
+//!   superseded wire format to keep, so the one-release dual-codepath
+//!   window from docs/API_STABILITY.md's sunset mechanics is waived for
+//!   this bump (recorded here deliberately).
+//!
+//! Documented deviation: `webtransport.isProtocolToken` accepts the
+//! browser-era legacy `:protocol` token `webtransport` alongside the
+//! draft-16 `webtransport-h3` [§3.2 ¶2] — every shipping browser still
+//! sends the legacy token and the data path is revision-identical. The
+//! era-negotiation layer validates the token against the connection's
+//! resolved draft era; unit-tested in src/webtransport.zig.
 //!
 //! ## Coverage
 //!
 //! Covered:
-//!   draft-ietf-webtrans-http3-15 §9.2 ¶?  MUST     peer advertises support via SETTINGS_WT_ENABLED with value > 0
-//!   draft-ietf-webtrans-http3-15 §9.2 ¶?  MUST     SETTINGS_WT_ENABLED round-trips through the SETTINGS codec
-//!   draft-ietf-webtrans-http3 §3.2 ¶?  MUST     bootstrap request uses :method = CONNECT, :protocol = "webtransport"
+//!   draft-ietf-webtrans-http3 §9.2 ¶?  MUST     peer advertises support via SETTINGS_WT_ENABLED = 1
+//!   draft-ietf-webtrans-http3 §9.2 ¶?  MUST     SETTINGS_WT_ENABLED round-trips through the SETTINGS codec
+//!   draft-ietf-webtrans-http3 §3.1 ¶1  MUST     SETTINGS_WT_ENABLED greater than 1 is a connection error (H3_SETTINGS_ERROR)
+//!   draft-ietf-webtrans-http3 §3.2 ¶2  MUST     bootstrap request uses :method = CONNECT, :protocol = "webtransport-h3"
 //!   draft-ietf-webtrans-http3 §3.3 ¶?  MUST     a 2xx response accepts the WebTransport session
 //!   draft-ietf-webtrans-http3 §3.3 ¶?  MUST NOT a non-2xx response is treated as accepted
 //!   draft-ietf-webtrans-http3 §4.1 ¶?  MUST     unidirectional WebTransport stream prefix is varint 0x54 + Session ID
@@ -41,9 +57,13 @@
 //!   draft-ietf-webtrans-http3 §5.6.3 ¶? MUST    WT_STREAMS_BLOCKED_UNI capsule type is 0x190b4d44, value is a single varint
 //!   draft-ietf-webtrans-http3 §5.6   ¶? MUST    flow-control capsule values MUST contain exactly one QUIC varint
 //!
-//! Visible debt:
-//!   none — every draft-15 claim testable against the codec/session surface
-//!   here has a test; lifecycle claims are integration-tested (see below).
+//! Visible debt (burning down across the 2026-08 capsule-native rework;
+//! each row is deleted by the commit that lands the behavior):
+//!   draft-ietf-webtrans-http3 §5.6 ¶?   MUST  malformed flow-capsule values are a session error of type WT_FLOW_CONTROL_ERROR (lands with native ingestion)
+//!   draft-ietf-webtrans-http3 §5.6 ¶?   MUST  WT_MAX_DATA / WT_MAX_STREAMS that do not increase the limit are not applied
+//!   draft-ietf-webtrans-http3 §5.6 ¶?   MUST  WT_STREAMS_BLOCKED / WT_MAX_STREAMS above 2^60 close the session with WT_FLOW_CONTROL_ERROR
+//!   draft-ietf-webtrans-http3 §5.4 ¶?   MUST  sender truncates close reasons at a UTF-8 boundary; receiver treats a malformed CLOSE as H3_MESSAGE_ERROR
+//!   draft-ietf-webtrans-http3 §5.4/§5.5 MUST  received CLOSE / DRAIN fold into session state and surface as typed events
 //!
 //! Out of scope (covered elsewhere):
 //!   draft-ietf-webtrans-http3 §3       handshake/bootstrapping interplay,
@@ -67,7 +87,7 @@ const http3_zig = @import("http3_zig");
 const wt = http3_zig.webtransport;
 const capsule = http3_zig.capsule;
 
-test "MUST: peer SETTINGS with WT_ENABLED set advertises WebTransport [draft-ietf-webtrans-http3-15 §9.2]" {
+test "MUST: peer SETTINGS with WT_ENABLED set advertises WebTransport [draft-ietf-webtrans-http3 §9.2]" {
     try std.testing.expect(wt.peerEnabled(.{
         .enable_connect_protocol = true,
         .h3_datagram = true,
@@ -75,7 +95,7 @@ test "MUST: peer SETTINGS with WT_ENABLED set advertises WebTransport [draft-iet
     }));
 }
 
-test "MUST NOT: peer without WT_ENABLED advertises WebTransport [draft-ietf-webtrans-http3-15 §9.2]" {
+test "MUST NOT: peer without WT_ENABLED advertises WebTransport [draft-ietf-webtrans-http3 §9.2]" {
     try std.testing.expect(!wt.peerEnabled(.{
         .enable_connect_protocol = true,
         .h3_datagram = true,
@@ -83,7 +103,7 @@ test "MUST NOT: peer without WT_ENABLED advertises WebTransport [draft-ietf-webt
     }));
 }
 
-test "MUST NOT: peer without enable_connect_protocol advertises WebTransport [draft-ietf-webtrans-http3-15 §9.2]" {
+test "MUST NOT: peer without enable_connect_protocol advertises WebTransport [draft-ietf-webtrans-http3 §9.2]" {
     // Even if WT_ENABLED is set, Extended CONNECT (RFC 9220) must also
     // be advertised — the bootstrap is a CONNECT request and would be
     // rejected without this setting.
@@ -94,7 +114,7 @@ test "MUST NOT: peer without enable_connect_protocol advertises WebTransport [dr
     }));
 }
 
-test "MUST NOT: peer without h3_datagram advertises WebTransport [draft-ietf-webtrans-http3-15 §9.2]" {
+test "MUST NOT: peer without h3_datagram advertises WebTransport [draft-ietf-webtrans-http3 §9.2]" {
     // RFC 9297 datagrams are a hard prerequisite — datagram-mode
     // WebTransport sends ride on H3_DATAGRAM and the spec requires
     // both peers to enable it.
@@ -105,7 +125,7 @@ test "MUST NOT: peer without h3_datagram advertises WebTransport [draft-ietf-web
     }));
 }
 
-test "MUST: SETTINGS_WT_ENABLED round-trips through the SETTINGS codec [draft-ietf-webtrans-http3-15 §9.2]" {
+test "MUST: SETTINGS_WT_ENABLED round-trips through the SETTINGS codec [draft-ietf-webtrans-http3 §9.2]" {
     const original: http3_zig.Settings = .{
         .enable_connect_protocol = true,
         .h3_datagram = true,
@@ -117,7 +137,26 @@ test "MUST: SETTINGS_WT_ENABLED round-trips through the SETTINGS codec [draft-ie
     try std.testing.expect(decoded.wt_enabled);
 }
 
-test "MUST: SETTINGS_WT_ENABLED uses the draft-15 codepoint 0x2c7cf000 [draft-ietf-webtrans-http3-15 §9.2]" {
+test "MUST: SETTINGS_WT_ENABLED value 1 advertises support and 0 is the default [draft-ietf-webtrans-http3 §3.1 ¶1]" {
+    // Raw SETTINGS payload: id 0x2c7cf000 as a 4-byte varint (0xac7cf000)
+    // followed by a 1-byte varint value.
+    const enabled = [_]u8{ 0xac, 0x7c, 0xf0, 0x00, 0x01 };
+    try std.testing.expect((try http3_zig.Settings.decode(&enabled)).wt_enabled);
+    const disabled = [_]u8{ 0xac, 0x7c, 0xf0, 0x00, 0x00 };
+    try std.testing.expect(!(try http3_zig.Settings.decode(&disabled)).wt_enabled);
+}
+
+test "MUST: SETTINGS_WT_ENABLED greater than 1 is a connection error of type H3_SETTINGS_ERROR [draft-ietf-webtrans-http3 §3.1 ¶1]" {
+    // "Clients MUST treat values greater than '1' as a connection error
+    // of type H3_SETTINGS_ERROR." Enforced symmetrically for both roles
+    // at decode; Session maps the decode failure to an H3_SETTINGS_ERROR
+    // connection close (that shared plumbing is exercised in
+    // rfc9114_settings.zig).
+    const raw = [_]u8{ 0xac, 0x7c, 0xf0, 0x00, 0x02 };
+    try std.testing.expectError(error.InvalidSettingValue, http3_zig.Settings.decode(&raw));
+}
+
+test "MUST: SETTINGS_WT_ENABLED uses codepoint 0x2c7cf000 [draft-ietf-webtrans-http3 §9.2]" {
     // The codepoint is draft-revision-specific by design. Pinning the
     // numeric value here makes accidental regressions across revisions
     // very loud — peers from a different draft revision will never
@@ -125,7 +164,7 @@ test "MUST: SETTINGS_WT_ENABLED uses the draft-15 codepoint 0x2c7cf000 [draft-ie
     try std.testing.expectEqual(@as(u64, 0x2c7cf000), http3_zig.protocol.SettingId.wt_enabled);
 }
 
-test "MUST: WT initial flow-control SETTINGS use the draft-15 codepoints [draft-ietf-webtrans-http3-15 §9.2]" {
+test "MUST: WT initial flow-control SETTINGS use the draft-15 codepoints [draft-ietf-webtrans-http3 §9.2]" {
     // Draft-revision-specific codepoints for the initial per-session
     // flow-control limits. Pinned numerically so a revision drift is loud.
     try std.testing.expectEqual(@as(u64, 0x2b61), http3_zig.protocol.SettingId.wt_initial_max_data);
@@ -133,7 +172,7 @@ test "MUST: WT initial flow-control SETTINGS use the draft-15 codepoints [draft-
     try std.testing.expectEqual(@as(u64, 0x2b65), http3_zig.protocol.SettingId.wt_initial_max_streams_bidi);
 }
 
-test "MUST: WT initial flow-control SETTINGS round-trip through the SETTINGS codec [draft-ietf-webtrans-http3-15 §9.2]" {
+test "MUST: WT initial flow-control SETTINGS round-trip through the SETTINGS codec [draft-ietf-webtrans-http3 §9.2]" {
     const original: http3_zig.Settings = .{
         .enable_connect_protocol = true,
         .h3_datagram = true,
@@ -150,7 +189,7 @@ test "MUST: WT initial flow-control SETTINGS round-trip through the SETTINGS cod
     try std.testing.expectEqual(@as(?u64, 8), decoded.wt_initial_max_streams_bidi);
 }
 
-test "MUST: bootstrap request uses :method = CONNECT and :protocol = webtransport [draft-ietf-webtrans-http3 §3.2]" {
+test "MUST: bootstrap request uses :method = CONNECT and :protocol = webtransport-h3 [draft-ietf-webtrans-http3 §3.2 ¶2]" {
     const request = [_]http3_zig.FieldLine{
         .{ .name = ":method", .value = "CONNECT" },
         .{ .name = ":scheme", .value = "https" },
@@ -159,7 +198,9 @@ test "MUST: bootstrap request uses :method = CONNECT and :protocol = webtranspor
         .{ .name = ":protocol", .value = wt.protocol_token },
     };
     try std.testing.expect(wt.isRequest(&request));
-    try std.testing.expectEqualStrings("webtransport", wt.protocol_token);
+    // "The :protocol pseudo-header field ([RFC8441]) MUST be set to
+    // webtransport-h3."
+    try std.testing.expectEqualStrings("webtransport-h3", wt.protocol_token);
 }
 
 test "MUST: a 2xx response accepts the WebTransport session [draft-ietf-webtrans-http3 §3.3]" {
@@ -363,7 +404,7 @@ test "MUST: isOfferedProtocol matches member tokens [draft-ietf-webtrans-http3 �
     try std.testing.expect(!wt.isOfferedProtocol("", "echo-v1"));
 }
 
-test "MUST: production() preset emits SETTINGS_WT_ENABLED when WebTransport is enabled [draft-ietf-webtrans-http3-15 §9.2]" {
+test "MUST: production() preset emits SETTINGS_WT_ENABLED when WebTransport is enabled [draft-ietf-webtrans-http3 §9.2]" {
     const config = http3_zig.SessionConfig.production(.{
         .enable_webtransport = true,
     });
@@ -372,7 +413,7 @@ test "MUST: production() preset emits SETTINGS_WT_ENABLED when WebTransport is e
     try std.testing.expect(config.settings.h3_datagram);
 }
 
-test "MUST NOT: production() preset emits SETTINGS_WT_ENABLED when WebTransport is not enabled [draft-ietf-webtrans-http3-15 §9.2]" {
+test "MUST NOT: production() preset emits SETTINGS_WT_ENABLED when WebTransport is not enabled [draft-ietf-webtrans-http3 §9.2]" {
     const config = http3_zig.SessionConfig.production(.{
         .enable_webtransport = false,
     });
@@ -380,13 +421,14 @@ test "MUST NOT: production() preset emits SETTINGS_WT_ENABLED when WebTransport 
 }
 
 // ---------------------------------------------------------------------------
-// Flow-control capsules (draft-ietf-webtrans-http3-13 §5.6)
+// Flow-control capsules (draft-ietf-webtrans-http3 §5.6)
 //
-// The wire codepoints here are pinned to draft-ietf-webtrans-http3-13's
-// IANA "Capsule Types" table (§9.6). If the next published revision shifts
-// any of them, update both these constants and the matching constants in
-// `src/webtransport.zig` together. The values were verified against
-// https://datatracker.ietf.org/doc/html/draft-ietf-webtrans-http3-13.
+// The wire codepoints are pinned to the IANA "Capsule Types" table (§9.6);
+// they first appeared in revision -13 and are UNCHANGED through the pinned
+// revision -16 (re-verified against
+// https://www.ietf.org/archive/id/draft-ietf-webtrans-http3-16.txt on
+// 2026-08-13). If a future revision shifts any of them, update both these
+// constants and the matching constants in `src/webtransport.zig` together.
 // ---------------------------------------------------------------------------
 
 test "MUST: WT_MAX_DATA capsule type is 0x190b4d3d [draft-ietf-webtrans-http3 §5.6.4]" {

@@ -2,7 +2,7 @@
 
 A walkthrough of `http3-zig`'s WebTransport-over-HTTP/3 surface for application
 authors. The library tracks
-[`draft-ietf-webtrans-http3-15`](https://datatracker.ietf.org/doc/draft-ietf-webtrans-http3/15/)
+[`draft-ietf-webtrans-http3`](https://datatracker.ietf.org/doc/draft-ietf-webtrans-http3/15/)
 (July 2025), pinned in [`README.md`](../README.md). Datagrams use RFC 9297
 HTTP/3 Datagrams; capsules use the RFC 9297 Capsule Protocol.
 
@@ -759,5 +759,5 @@ a `WebTransportFlowViolationKind` describing what overflowed.
   parsing.
 - [`src/session.zig`](../src/session.zig) — `Event` union with full
   `webtransport_*` family, `WTSessionFlowSnapshot`, buffered-stream policy.
-- [draft-ietf-webtrans-http3-15](https://datatracker.ietf.org/doc/draft-ietf-webtrans-http3/15/)
+- [draft-ietf-webtrans-http3](https://datatracker.ietf.org/doc/draft-ietf-webtrans-http3/15/)
   — the spec this library tracks.

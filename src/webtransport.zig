@@ -1,4 +1,9 @@
-//! WebTransport-over-HTTP/3 helpers (draft-ietf-webtrans-http3-15).
+//! WebTransport-over-HTTP/3 helpers.
+//!
+//! Wire-format pin: draft-ietf-webtrans-http3-16. Citations elsewhere in
+//! the tree use the unsuffixed `draft-ietf-webtrans-http3 §X.Y` form and
+//! refer to this pinned revision; the conformance suite header at
+//! `tests/conformance/draft_webtrans_http3.zig` records the pin history.
 //!
 //! This module covers the protocol primitives that sit on top of the
 //! existing Extended CONNECT, HTTP/3 Datagrams, and Capsule Protocol
@@ -28,7 +33,17 @@ const settings_mod = @import("settings.zig");
 
 const varint = quic.wire.varint;
 
-pub const protocol_token = "webtransport";
+/// The extended-CONNECT `:protocol` value: "The :protocol pseudo-header
+/// field ([RFC8441]) MUST be set to webtransport-h3."
+/// [draft-ietf-webtrans-http3 §3.2 ¶2]. Revisions before -15 (and every
+/// shipping browser today) use `legacy_protocol_token` instead.
+pub const protocol_token = "webtransport-h3";
+
+/// The pre--15 (browser-era) `:protocol` value. Chrome and Firefox both
+/// send this token; servers accept it alongside `protocol_token` (see
+/// `isProtocolToken`) so browser-era peers keep bootstrapping while the
+/// modern token satisfies draft-16 peers.
+pub const legacy_protocol_token = "webtransport";
 
 /// HTTP field name (lowercased per RFC 9114 §4.2) for the client-offered
 /// list of WebTransport subprotocols. Per draft-ietf-webtrans-http3 §3.4
@@ -62,20 +77,20 @@ pub const buffered_stream_rejected_code: u64 = 0x3994bd84;
 /// exists with this code (draft-ietf-webtrans-http3 §4.6).
 pub const session_gone_code: u64 = 0x170d7b68;
 
-/// `WT_FLOW_CONTROL_ERROR` from draft-ietf-webtrans-http3-15 §9.5.
+/// `WT_FLOW_CONTROL_ERROR` from draft-ietf-webtrans-http3 §9.5.
 /// Sent by an endpoint that detects a flow-control violation in the
 /// session (peer sent more bytes than `local_max_data`, or opened more
 /// streams than `local_max_streams_*`). Maps to a WebTransport
 /// application error code via `appErrorToHttp3`.
 pub const flow_control_error_code: u64 = 0x045d4487;
 
-/// `WT_ALPN_ERROR` from draft-ietf-webtrans-http3-15 §9.5.
+/// `WT_ALPN_ERROR` from draft-ietf-webtrans-http3 §9.5.
 /// Sent on the CONNECT stream's RESET when application-protocol
 /// negotiation (the `wt-available-protocols` / `wt-protocol` exchange)
 /// fails — e.g. the server can't honor any client-offered subprotocol.
 pub const alpn_error_code: u64 = 0x0817b3dd;
 
-/// `WT_REQUIREMENTS_NOT_MET` from draft-ietf-webtrans-http3-15 §9.5.
+/// `WT_REQUIREMENTS_NOT_MET` from draft-ietf-webtrans-http3 §9.5.
 /// Sent when the peer's SETTINGS or transport parameters fail to meet
 /// a requirement the application needed (e.g. a WT extension setting
 /// the peer didn't advertise). The session-bootstrap path returns
@@ -145,7 +160,7 @@ pub const Error = error{
     /// The peer's SETTINGS do not advertise WebTransport support
     /// (`SETTINGS_WT_ENABLED`, `H3_DATAGRAM`, and
     /// `ENABLE_CONNECT_PROTOCOL` are all required per
-    /// draft-ietf-webtrans-http3-15 §9.2). Returned eagerly from
+    /// draft-ietf-webtrans-http3 §9.2). Returned eagerly from
     /// `Client.startWebTransport` and `Server.acceptWebTransport`
     /// so the application doesn't commit to a session the peer
     /// cannot drive.
@@ -153,7 +168,7 @@ pub const Error = error{
     /// The peer's SETTINGS frame has not yet arrived. WebTransport
     /// bootstrap is gated on having received the peer's SETTINGS
     /// (so we can inspect `peerEnabled`), per RFC 9114 §7.2.4 and
-    /// draft-ietf-webtrans-http3-15 §9.2. Caller should pump the
+    /// draft-ietf-webtrans-http3 §9.2. Caller should pump the
     /// session loop until `Session.peer_settings != null` and retry.
     PeerSettingsNotReceived,
 };
@@ -181,8 +196,15 @@ pub const AcceptOptions = struct {
     subprotocol: ?[]const u8 = null,
 };
 
+/// Accepts BOTH the draft-16 token (`webtransport-h3`) and the browser-era
+/// legacy token (`webtransport`): the data path is identical across
+/// revisions, and every shipping browser still sends the legacy token.
+/// The era-negotiation layer validates the received token against the
+/// connection's resolved draft era; this predicate only answers "is this
+/// a WebTransport CONNECT at all".
 pub fn isProtocolToken(value: []const u8) bool {
-    return std.mem.eql(u8, value, protocol_token);
+    return std.mem.eql(u8, value, protocol_token) or
+        std.mem.eql(u8, value, legacy_protocol_token);
 }
 
 pub fn requestProtocol(fields: []const qpack.FieldLine) ?[]const u8 {
@@ -212,7 +234,7 @@ pub fn responseAccepted(fields: []const qpack.FieldLine) bool {
 }
 
 /// Returns true if the peer's SETTINGS advertise WebTransport per
-/// draft-ietf-webtrans-http3-15 §3.1: extended CONNECT enabled, HTTP/3
+/// draft-ietf-webtrans-http3 §3.1: extended CONNECT enabled, HTTP/3
 /// datagrams enabled, and the draft-15 `SETTINGS_WT_ENABLED` codepoint
 /// (`0x2c7cf000`) sent with a non-zero value.
 pub fn peerEnabled(s: settings_mod.Settings) bool {
@@ -224,7 +246,7 @@ pub fn peerEnabled(s: settings_mod.Settings) bool {
 /// Validates that the given local settings are sufficient to bootstrap a
 /// WebTransport session. The client and server both need
 /// `H3_DATAGRAM` and `SETTINGS_WT_ENABLED`; the server additionally
-/// needs `ENABLE_CONNECT_PROTOCOL`. (Per draft-ietf-webtrans-http3-15
+/// needs `ENABLE_CONNECT_PROTOCOL`. (Per draft-ietf-webtrans-http3
 /// §3.1, both endpoints MUST send `SETTINGS_WT_ENABLED > 0`.)
 pub fn validateLocalSettings(role: protocol.Role, s: settings_mod.Settings) Error!void {
     if (!s.h3_datagram) return error.WebTransportSettingsMissing;
@@ -827,6 +849,17 @@ test "WebTransport request classification" {
     try std.testing.expect(isAcceptedStatus("204"));
     try std.testing.expect(!isAcceptedStatus("101"));
     try std.testing.expect(!isAcceptedStatus("404"));
+}
+
+test "protocol token: draft-16 token pinned, browser-era legacy token accepted" {
+    try std.testing.expectEqualStrings("webtransport-h3", protocol_token);
+    try std.testing.expectEqualStrings("webtransport", legacy_protocol_token);
+    try std.testing.expect(isProtocolToken(protocol_token));
+    try std.testing.expect(isProtocolToken(legacy_protocol_token));
+    try std.testing.expect(!isProtocolToken("WebTransport"));
+    try std.testing.expect(!isProtocolToken("webtransport-h2"));
+    try std.testing.expect(!isProtocolToken("webtransport-h3 "));
+    try std.testing.expect(!isProtocolToken(""));
 }
 
 test "peerEnabled requires datagrams, extended CONNECT, and SETTINGS_WT_ENABLED" {

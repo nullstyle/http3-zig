@@ -156,7 +156,7 @@ pub const Error = quic.conn.state.Error ||
         ExcessivePendingWebTransportSessions,
         /// Locally-initiated WebTransport stream open after the peer
         /// has sent `DRAIN_WEBTRANSPORT_SESSION`
-        /// (draft-ietf-webtrans-http3-15 §5.5). Existing streams may
+        /// (draft-ietf-webtrans-http3 §5.5). Existing streams may
         /// still flow; new opens are forbidden.
         WebTransportSessionDraining,
         /// A send-side method was called after `Session.close()` ran
@@ -229,7 +229,7 @@ pub const ProductionOptions = struct {
     enable_connect_protocol: bool = false,
     enable_datagram: bool = false,
     /// Advertise WebTransport via `SETTINGS_WT_ENABLED`
-    /// (draft-ietf-webtrans-http3-15 §9.2). Both client and server MUST
+    /// (draft-ietf-webtrans-http3 §9.2). Both client and server MUST
     /// send the setting with a non-zero value to bootstrap a session.
     /// WebTransport additionally requires
     /// `enable_connect_protocol = true` and `enable_datagram = true`;
@@ -368,13 +368,13 @@ pub const Config = struct {
     /// may buffer while waiting for its session under
     /// `BufferedStreamPolicy.buffer`. Null preserves the legacy
     /// unbounded behavior; `production()` defaults to 64 KiB.
-    /// (draft-ietf-webtrans-http3-15 §4.5)
+    /// (draft-ietf-webtrans-http3 §4.5)
     wt_max_buffered_bytes_per_stream: ?usize = null,
     /// Optional aggregate cap on bytes held across all peer-opened
     /// WebTransport streams waiting for session confirmation under
     /// `BufferedStreamPolicy.buffer`. Null preserves the legacy behavior;
     /// `production()` defaults to 4 MiB.
-    /// (draft-ietf-webtrans-http3-15 §4.5)
+    /// (draft-ietf-webtrans-http3 §4.5)
     wt_max_total_buffered_bytes: ?usize = null,
     /// Optional typed HTTP/3 trace callback. Metrics are always tracked; the
     /// callback lets embedders translate events into logs or qlog JSON.
@@ -1221,7 +1221,7 @@ const WTSessionFlowState = struct {
     // ---------- Drain state ----------
 
     /// True once we've received `DRAIN_WEBTRANSPORT_SESSION` from the
-    /// peer (draft-ietf-webtrans-http3-15 §5.5). After this point new
+    /// peer (draft-ietf-webtrans-http3 §5.5). After this point new
     /// stream opens are gated and the session is in a draining state
     /// — the peer expects existing streams to finish but no new ones
     /// to start. Local-side opens return
@@ -1248,7 +1248,7 @@ pub const WTSessionFlowSnapshot = struct {
     peer_streams_opened_bidi: u64,
     peer_streams_opened_uni: u64,
     /// True once the peer has sent `DRAIN_WEBTRANSPORT_SESSION`
-    /// (draft-ietf-webtrans-http3-15 §5.5). Locally-initiated stream
+    /// (draft-ietf-webtrans-http3 §5.5). Locally-initiated stream
     /// opens after this point will fail with
     /// `error.WebTransportSessionDraining`.
     received_drain: bool,
@@ -1703,7 +1703,7 @@ pub const Session = struct {
             .established => {},
         }
         const flow = self.webTransportFlowMut(session_id) orelse return;
-        // draft-ietf-webtrans-http3-15 §5.5: after receiving DRAIN,
+        // draft-ietf-webtrans-http3 §5.5: after receiving DRAIN,
         // an endpoint MUST NOT open new WebTransport streams. The
         // application gets a structured error so it can wind down
         // its outbound traffic gracefully.
@@ -1723,8 +1723,14 @@ pub const Session = struct {
     }
 
     fn gateWebTransportSendBytes(self: *Session, stream_id: u64, byte_count: usize) Error!void {
-        const state = self.streams.get(stream_id) orelse return;
-        const session_id = state.wt_session_id orelse return;
+        // A WT write primitive invoked on an unknown or non-WT stream is
+        // caller misuse — surface it instead of letting the write proceed
+        // unmetered. (A live substream whose session has already reached
+        // `.none` still tolerates the race below: the flow state is gone,
+        // there is nothing left to meter, and stream-level errors handle
+        // the rest.)
+        const state = self.streams.get(stream_id) orelse return Error.UnknownWebTransportSession;
+        const session_id = state.wt_session_id orelse return Error.UnknownWebTransportSession;
         const flow = self.webTransportFlowMut(session_id) orelse return;
         const limit = flow.peer_max_data orelse return;
         const next = flow.local_data_sent + @as(u64, byte_count);
@@ -2013,7 +2019,7 @@ pub const Session = struct {
                 flow.sent_streams_blocked_uni_for = null;
             },
             webtransport_mod.CapsuleType.drain_session => {
-                // draft-ietf-webtrans-http3-15 §5.5: peer is asking us
+                // draft-ietf-webtrans-http3 §5.5: peer is asking us
                 // to stop opening new streams; existing ones may still
                 // run to completion. Mark the session-level state so
                 // `gateWebTransportStreamOpen` rejects further opens.
@@ -2307,7 +2313,7 @@ pub const Session = struct {
     ///
     /// If `stream_id` is the CONNECT control stream of a known WebTransport
     /// session, the local registry is also torn down — local FIN
-    /// implicitly ends the session per draft-ietf-webtrans-http3-15 §5.4,
+    /// implicitly ends the session per draft-ietf-webtrans-http3 §5.4,
     /// mirroring what `observeFin` already does on the receive side. After
     /// this returns, peer-opened WT streams targeting this session id are
     /// routed through the buffered-stream policy instead of dispatched
@@ -3185,7 +3191,7 @@ pub const Session = struct {
                 self.closeForError(err);
                 return err;
             };
-            // draft-ietf-webtrans-http3-15 §4.1 / §4.2: the Session ID
+            // draft-ietf-webtrans-http3 §4.1 / §4.2: the Session ID
             // MUST equal the request stream id of the corresponding
             // CONNECT stream, which is by construction a
             // client-initiated bidirectional QUIC stream id (low two
@@ -3253,7 +3259,7 @@ pub const Session = struct {
             // until the replay path picks them up at the start of
             // the next drain after `confirmWebTransportSession`.
             //
-            // Per-stream byte cap (draft-ietf-webtrans-http3-15 §4.5):
+            // Per-stream byte cap (draft-ietf-webtrans-http3 §4.5):
             // a hostile or malfunctioning peer can fill state.rx
             // before the application gets around to confirming the
             // session. Once we exceed the configured cap, drop the
@@ -4049,7 +4055,7 @@ pub const Session = struct {
                     if (std.mem.eql(u8, field.name, ":method")) {
                         has_connect = std.mem.eql(u8, field.value, "CONNECT");
                     } else if (std.mem.eql(u8, field.name, ":protocol")) {
-                        has_wt = std.mem.eql(u8, field.value, webtransport_mod.protocol_token);
+                        has_wt = webtransport_mod.isProtocolToken(field.value);
                     }
                 }
                 if (!(has_connect and has_wt)) return;

@@ -17,13 +17,13 @@ pub const Settings = struct {
     max_field_section_size: ?u64 = null,
     enable_connect_protocol: bool = false,
     h3_datagram: bool = false,
-    /// `SETTINGS_WT_ENABLED` from draft-ietf-webtrans-http3-15 §9.2.
+    /// `SETTINGS_WT_ENABLED` from draft-ietf-webtrans-http3 §9.2.
     /// Boolean: when true, the endpoint advertises support for
     /// WebTransport over HTTP/3 with the codepoint specific to the
     /// draft revision this implementation pins to (`0x2c7cf000`).
     /// Both peers MUST send this for a session to bootstrap.
     wt_enabled: bool = false,
-    /// `SETTINGS_WT_INITIAL_MAX_DATA` (draft-ietf-webtrans-http3-15 §9.2):
+    /// `SETTINGS_WT_INITIAL_MAX_DATA` (draft-ietf-webtrans-http3 §9.2):
     /// the initial session-level `WT_MAX_DATA` this endpoint grants on
     /// every WebTransport session, so the peer may send that many bytes
     /// before an explicit `WT_MAX_DATA` capsule arrives — saving the
@@ -164,13 +164,17 @@ pub const Settings = struct {
                 },
                 protocol.SettingId.wt_enabled => {
                     if (seen_wt_enabled) return Error.DuplicateSetting;
-                    // Draft-15 §3.2 ¶? defines this as a boolean: any
-                    // value > 0 advertises support. We keep the >1
-                    // bytes legal so peers can pin to the same
-                    // codepoint with future-tagged values without us
-                    // failing the connection.
+                    // The only defined values are 0 (default; not
+                    // enabled) and 1 (webtransport-h3 supported):
+                    // "Clients MUST treat values greater than '1' as a
+                    // connection error of type H3_SETTINGS_ERROR"
+                    // [draft-ietf-webtrans-http3 §3.1 ¶1]. Enforced
+                    // symmetrically at decode for both roles; Session
+                    // maps the decode error to an H3_SETTINGS_ERROR
+                    // connection close.
+                    if (value > 1) return Error.InvalidSettingValue;
                     seen_wt_enabled = true;
-                    out.wt_enabled = value >= 1;
+                    out.wt_enabled = value == 1;
                 },
                 protocol.SettingId.wt_initial_max_data => {
                     if (seen_wt_initial_max_data) return Error.DuplicateSetting;
@@ -231,6 +235,16 @@ test "SETTINGS round-trip" {
     try std.testing.expectEqual(@as(?u64, 262144), got.wt_initial_max_data);
     try std.testing.expectEqual(@as(?u64, 16), got.wt_initial_max_streams_uni);
     try std.testing.expectEqual(@as(?u64, 8), got.wt_initial_max_streams_bidi);
+}
+
+test "SETTINGS_WT_ENABLED above 1 is rejected at decode" {
+    const std = @import("std");
+    // [draft-ietf-webtrans-http3 §3.1 ¶1] — values greater than 1 are a
+    // connection error; Session maps InvalidSettingValue to an
+    // H3_SETTINGS_ERROR close.
+    var buf: [16]u8 = undefined;
+    const n = try put(&buf, protocol.SettingId.wt_enabled, 2);
+    try std.testing.expectError(Error.InvalidSettingValue, Settings.decode(buf[0..n]));
 }
 
 test "SETTINGS omits unset WT initial flow-control values" {
