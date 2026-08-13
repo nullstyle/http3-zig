@@ -1817,6 +1817,198 @@ test "WebTransport session-established event precedes replayed buffered streams"
     }
 }
 
+test "WebTransport oversized and malformed flow capsules terminate the session, not the connection" {
+    // [draft-ietf-webtrans-http3 §5.6]: a WT_MAX_STREAMS above 2^60 and
+    // a malformed flow-capsule value are SESSION errors — the session is
+    // terminated with WT_FLOW_CONTROL_ERROR while the H3 connection
+    // stays fully usable (a second WebTransport session establishes on
+    // the same connection afterwards).
+    const allocator = std.testing.allocator;
+    const h3_settings: http3_zig.Settings = .{
+        .enable_connect_protocol = true,
+        .h3_datagram = true,
+        .wt_enabled = true,
+    };
+    var pair: H3Pair = undefined;
+    try pair.initStarted(allocator, .{ .settings = h3_settings }, .{ .settings = h3_settings });
+    defer pair.deinit();
+    try exchangePairSettings(allocator, &pair);
+
+    var h3_client = http3_zig.Client.init(&pair.client_h3);
+    var h3_server = http3_zig.Server.init(&pair.server_h3);
+    var client_runner = http3_zig.ClientRunner.init(allocator);
+    defer client_runner.deinit();
+    var server_runner = http3_zig.ServerRunner.init(allocator);
+    defer server_runner.deinit();
+    var client_events: std.ArrayList(http3_zig.session.Event) = .empty;
+    defer {
+        clearSessionEvents(allocator, &client_events);
+        client_events.deinit(allocator);
+    }
+    var server_events: std.ArrayList(http3_zig.session.Event) = .empty;
+    defer {
+        clearSessionEvents(allocator, &server_events);
+        server_events.deinit(allocator);
+    }
+
+    // Phase 1: oversized WT_MAX_STREAMS_UNI (2^60 + 1).
+    var client_wt = try h3_client.startWebTransport(allocator, .{
+        .authority = "localhost",
+        .path = "/wt",
+    });
+    const first_session_id = client_wt.sessionId();
+
+    var server_wt: ?http3_zig.WebTransportServerStream = null;
+    var oversized_sent = false;
+    var first_terminated = false;
+
+    var now_us: u64 = 1_000_000;
+    var iters: u32 = 0;
+    while (!first_terminated) : (iters += 1) {
+        try std.testing.expect(iters < 20_000);
+        try pumpH3(
+            &pair.client,
+            &pair.server,
+            &pair.client_h3,
+            &pair.server_h3,
+            &client_events,
+            &server_events,
+            &now_us,
+        );
+
+        for (server_events.items) |event| {
+            switch (event) {
+                .webtransport_session_closed => |closed| {
+                    try std.testing.expectEqual(first_session_id, closed.session_id);
+                    try std.testing.expectEqual(
+                        http3_zig.session.WebTransportSessionClosedHow.protocol_violation,
+                        closed.how,
+                    );
+                    try std.testing.expectEqual(
+                        @as(?u64, http3_zig.webtransport.flow_control_error_code),
+                        closed.wire_error_code,
+                    );
+                    first_terminated = true;
+                },
+                else => {},
+            }
+            switch (try server_runner.observe(event)) {
+                .request_updated, .request_complete => |request_state| {
+                    const request = request_state.reader();
+                    if (server_wt == null and request.headers().len > 0 and request.isWebTransport()) {
+                        server_wt = try h3_server.acceptWebTransport(allocator, request, .{});
+                    }
+                },
+                else => {},
+            }
+        }
+        clearSessionEvents(allocator, &server_events);
+
+        for (client_events.items) |event| {
+            switch (try client_runner.observe(event)) {
+                .response_updated, .response_complete => |response_state| {
+                    const response = response_state.reader();
+                    if (!oversized_sent and response.headers().len > 0 and response.webTransportAccepted()) {
+                        var buf: [24]u8 = undefined;
+                        const n = try http3_zig.webtransport.encodeMaxStreamsUni(
+                            &buf,
+                            (@as(u64, 1) << 60) + 1,
+                        );
+                        try client_wt.writer.write(buf[0..n]);
+                        oversized_sent = true;
+                    }
+                },
+                else => {},
+            }
+        }
+        clearSessionEvents(allocator, &client_events);
+    }
+    try std.testing.expect(
+        pair.server_h3.webTransportSessionState(first_session_id) == .none,
+    );
+
+    // Phase 2: the CONNECTION survived — a fresh session establishes,
+    // and a malformed (empty-value) WT_MAX_DATA terminates it the same
+    // session-scoped way.
+    var client_wt2 = try h3_client.startWebTransport(allocator, .{
+        .authority = "localhost",
+        .path = "/wt2",
+    });
+    const second_session_id = client_wt2.sessionId();
+
+    var server_wt2: ?http3_zig.WebTransportServerStream = null;
+    var malformed_sent = false;
+    var second_terminated = false;
+    iters = 0;
+    while (!second_terminated) : (iters += 1) {
+        try std.testing.expect(iters < 20_000);
+        try pumpH3(
+            &pair.client,
+            &pair.server,
+            &pair.client_h3,
+            &pair.server_h3,
+            &client_events,
+            &server_events,
+            &now_us,
+        );
+
+        for (server_events.items) |event| {
+            switch (event) {
+                .webtransport_session_closed => |closed| {
+                    if (closed.session_id == second_session_id) {
+                        try std.testing.expectEqual(
+                            http3_zig.session.WebTransportSessionClosedHow.protocol_violation,
+                            closed.how,
+                        );
+                        try std.testing.expectEqual(
+                            @as(?u64, http3_zig.webtransport.flow_control_error_code),
+                            closed.wire_error_code,
+                        );
+                        second_terminated = true;
+                    }
+                },
+                else => {},
+            }
+            switch (try server_runner.observe(event)) {
+                .request_updated, .request_complete => |request_state| {
+                    const request = request_state.reader();
+                    if (server_wt2 == null and request.headers().len > 0 and
+                        request.isWebTransport() and request.streamId() == second_session_id)
+                    {
+                        server_wt2 = try h3_server.acceptWebTransport(allocator, request, .{});
+                    }
+                },
+                else => {},
+            }
+        }
+        clearSessionEvents(allocator, &server_events);
+
+        for (client_events.items) |event| {
+            switch (try client_runner.observe(event)) {
+                .response_updated, .response_complete => |response_state| {
+                    const response = response_state.reader();
+                    if (!malformed_sent and response.streamId() == second_session_id and
+                        response.headers().len > 0 and response.webTransportAccepted())
+                    {
+                        // A flow capsule's value MUST be exactly one
+                        // varint; empty is malformed.
+                        try client_wt2.writer.capsule(
+                            http3_zig.webtransport.CapsuleType.max_data,
+                            "",
+                        );
+                        malformed_sent = true;
+                    }
+                },
+                else => {},
+            }
+        }
+        clearSessionEvents(allocator, &client_events);
+    }
+    try std.testing.expect(
+        pair.server_h3.webTransportSessionState(second_session_id) == .none,
+    );
+}
+
 test "Buffered streams: .reject policy never surfaces stream events for the held bytes" {
     const allocator = std.testing.allocator;
     const h3_settings: http3_zig.Settings = .{
@@ -3232,9 +3424,10 @@ test "WebTransport: receive-side WT_MAX_DATA enforcement fires webtransport_flow
     const recv_limit: u64 = 4;
     var saw_violation = false;
 
+    var client_saw_session_reset = false;
     var now_us: u64 = 1_000_000;
     var iters: u32 = 0;
-    while (!saw_violation) : (iters += 1) {
+    while (!(saw_violation and client_saw_session_reset)) : (iters += 1) {
         try std.testing.expect(iters < 20_000);
         try pumpH3(
             &pair.client,
@@ -3278,6 +3471,23 @@ test "WebTransport: receive-side WT_MAX_DATA enforcement fires webtransport_flow
         clearSessionEvents(allocator, &server_events);
 
         for (client_events.items) |event| {
+            switch (event) {
+                .webtransport_session_closed => |closed| {
+                    // Session-fatal per draft-16: the server terminated
+                    // the whole session with WT_FLOW_CONTROL_ERROR; the
+                    // client observes the CONNECT reset.
+                    try std.testing.expectEqual(
+                        http3_zig.session.WebTransportSessionClosedHow.reset,
+                        closed.how,
+                    );
+                    try std.testing.expectEqual(
+                        @as(?u64, http3_zig.webtransport.flow_control_error_code),
+                        closed.wire_error_code,
+                    );
+                    client_saw_session_reset = true;
+                },
+                else => {},
+            }
             switch (try client_runner.observe(event)) {
                 .response_updated, .response_complete => |response_state| {
                     const response = response_state.reader();
@@ -3306,6 +3516,11 @@ test "WebTransport: receive-side WT_MAX_DATA enforcement fires webtransport_flow
     }
 
     try std.testing.expect(saw_violation);
+    // The violation terminated the SESSION (not the connection): the
+    // server's registry entry is gone.
+    try std.testing.expect(
+        pair.server_h3.webTransportSessionState(client_wt.sessionId()) == .none,
+    );
 }
 
 test "WebTransport: receive-side WT_MAX_STREAMS_UNI enforcement fires webtransport_flow_violated" {

@@ -59,11 +59,7 @@
 //!
 //! Visible debt (burning down across the 2026-08 capsule-native rework;
 //! each row is deleted by the commit that lands the behavior):
-//!   draft-ietf-webtrans-http3 §5.6 ¶?   MUST  malformed flow-capsule values are a session error of type WT_FLOW_CONTROL_ERROR (lands with native ingestion)
-//!   draft-ietf-webtrans-http3 §5.6 ¶?   MUST  WT_MAX_DATA / WT_MAX_STREAMS that do not increase the limit are not applied
-//!   draft-ietf-webtrans-http3 §5.6 ¶?   MUST  WT_STREAMS_BLOCKED / WT_MAX_STREAMS above 2^60 close the session with WT_FLOW_CONTROL_ERROR
-//!   draft-ietf-webtrans-http3 §5.4 ¶?   MUST  sender truncates close reasons at a UTF-8 boundary; receiver treats a malformed CLOSE as H3_MESSAGE_ERROR
-//!   draft-ietf-webtrans-http3 §5.4/§5.5 MUST  received CLOSE / DRAIN fold into session state and surface as typed events
+//!   draft-ietf-webtrans-http3 §5.4 ¶?   MUST  sender truncates close reasons at a UTF-8 boundary
 //!
 //! Out of scope (covered elsewhere):
 //!   draft-ietf-webtrans-http3 §3       handshake/bootstrapping interplay,
@@ -78,7 +74,22 @@
 //!                                      (gating sends on peer MAX_DATA /
 //!                                      MAX_STREAMS, auto-emitting
 //!                                      WT_DATA_BLOCKED / WT_STREAMS_BLOCKED,
-//!                                      receive-side limit enforcement) →
+//!                                      receive-side limit enforcement;
+//!                                      violations, malformed values, and
+//!                                      limits above 2^60 terminate the
+//!                                      SESSION with WT_FLOW_CONTROL_ERROR
+//!                                      while the connection survives;
+//!                                      non-increasing MAX_* are never
+//!                                      applied — monotonic fold) →
+//!                                      tests/integration/webtransport.zig
+//!   draft-ietf-webtrans-http3 §5.4,
+//!     §5.5                             native CLOSE / DRAIN ingestion:
+//!                                      typed session_closed / draining
+//!                                      events, SESSION_GONE substream
+//!                                      sweep, echo-FIN, message-scoped
+//!                                      H3_MESSAGE_ERROR for malformed
+//!                                      CLOSE / capsules-after-CLOSE /
+//!                                      FIN-mid-capsule →
 //!                                      tests/integration/webtransport.zig
 
 const std = @import("std");
@@ -574,9 +585,11 @@ test "MUST NOT: flow-control capsule values carry trailing bytes after the varin
 test "NORMATIVE: WT_MAX_STREAMS Maximum Streams cannot exceed 2^60 [draft-ietf-webtrans-http3 §5.6.2]" {
     // The varint codec already caps values at 2^62 - 1 (RFC 9000 §16); we
     // encode/decode the §5.6.2 cap of 2^60 to confirm legal Maximum
-    // Streams values round-trip cleanly. Higher-level enforcement of the
-    // 2^60 ceiling is application policy; the codec MUST faithfully
-    // round-trip values up to that bound.
+    // Streams values round-trip cleanly at the codec level — the codec
+    // MUST faithfully round-trip values up to the 2^60 bound. Session-
+    // level enforcement (values above the ceiling close the session with
+    // WT_FLOW_CONTROL_ERROR) is mandatory as of -16 and integration-
+    // tested in tests/integration/webtransport.zig.
     const cap: u64 = @as(u64, 1) << 60;
     var buf: [32]u8 = undefined;
 

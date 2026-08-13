@@ -2158,20 +2158,42 @@ pub const Session = struct {
         events: *std.ArrayList(Event),
         budget: *DrainBudget,
     ) Error!void {
-        self.quic.streamStopSending(state.id, protocol.ErrorCode.message_error) catch {};
-        self.quic.streamReset(state.id, protocol.ErrorCode.message_error) catch {};
-        state.locally_rejected = true;
-        state.recv_finished = true;
-        state.wt_close_observed = true;
-        if (self.wt_sessions.contains(state.id)) {
+        try self.terminateWebTransportSessionWithCode(
+            state.id,
+            protocol.ErrorCode.message_error,
+            events,
+            budget,
+        );
+    }
+
+    /// Session error [draft-ietf-webtrans-http3 §5.6]: terminate the WT
+    /// session for a protocol violation — abort the CONNECT stream both
+    /// directions with `wire_code`, sweep substreams, drop registry
+    /// state, and emit a `.protocol_violation` close event. The
+    /// CONNECTION stays up; this is deliberately session-scoped.
+    fn terminateWebTransportSessionWithCode(
+        self: *Session,
+        session_id: u64,
+        wire_code: u64,
+        events: *std.ArrayList(Event),
+        budget: *DrainBudget,
+    ) Error!void {
+        self.quic.streamStopSending(session_id, wire_code) catch {};
+        self.quic.streamReset(session_id, wire_code) catch {};
+        if (self.streams.get(session_id)) |cstate| {
+            cstate.locally_rejected = true;
+            cstate.recv_finished = true;
+            cstate.wt_close_observed = true;
+        }
+        if (self.wt_sessions.contains(session_id)) {
             try self.closeWebTransportSessionWithEvent(
-                state.id,
+                session_id,
                 events,
                 budget,
                 .protocol_violation,
                 null,
                 "",
-                protocol.ErrorCode.message_error,
+                wire_code,
             );
         }
     }
@@ -2219,6 +2241,9 @@ pub const Session = struct {
     /// exact size and may still surface the normal oversized-payload
     /// budget errors, matching oversized `data` events.
     const wt_session_event_budget_headroom: usize = 1280;
+
+    /// Streams limits cap at 2^60 [draft-ietf-webtrans-http3 §5.6].
+    const webtransport_max_streams_ceiling: u64 = 1 << 60;
 
     fn drainBudgetHasRoom(budget: *const DrainBudget, owned_payload_bytes: usize) bool {
         if (budget.max_events) |max| {
@@ -2328,7 +2353,15 @@ pub const Session = struct {
                 return .continue_folding;
             },
             webtransport_mod.CapsuleType.max_data => {
-                const value = webtransport_mod.decodeMaxDataValue(capsule.value) catch return .continue_folding;
+                const value = webtransport_mod.decodeMaxDataValue(capsule.value) catch {
+                    try self.terminateWebTransportSessionWithCode(
+                        session_id,
+                        webtransport_mod.flow_control_error_code,
+                        events,
+                        budget,
+                    );
+                    return .session_ended;
+                };
                 if (sess.flow.peer_max_data == null or value > sess.flow.peer_max_data.?) {
                     sess.flow.peer_max_data = value;
                     sess.flow.sent_data_blocked_for = null;
@@ -2346,7 +2379,27 @@ pub const Session = struct {
                 return .continue_folding;
             },
             webtransport_mod.CapsuleType.max_streams_bidi => {
-                const value = webtransport_mod.decodeMaxStreamsBidiValue(capsule.value) catch return .continue_folding;
+                const value = webtransport_mod.decodeMaxStreamsBidiValue(capsule.value) catch {
+                    try self.terminateWebTransportSessionWithCode(
+                        session_id,
+                        webtransport_mod.flow_control_error_code,
+                        events,
+                        budget,
+                    );
+                    return .session_ended;
+                };
+                if (value > webtransport_max_streams_ceiling) {
+                    // Streams limits cap at 2^60
+                    // [draft-ietf-webtrans-http3 §5.6]: an oversized
+                    // value closes the session with WT_FLOW_CONTROL_ERROR.
+                    try self.terminateWebTransportSessionWithCode(
+                        session_id,
+                        webtransport_mod.flow_control_error_code,
+                        events,
+                        budget,
+                    );
+                    return .session_ended;
+                }
                 if (sess.flow.peer_max_streams_bidi == null or value > sess.flow.peer_max_streams_bidi.?) {
                     sess.flow.peer_max_streams_bidi = value;
                     sess.flow.sent_streams_blocked_bidi_for = null;
@@ -2362,7 +2415,27 @@ pub const Session = struct {
                 return .continue_folding;
             },
             webtransport_mod.CapsuleType.max_streams_uni => {
-                const value = webtransport_mod.decodeMaxStreamsUniValue(capsule.value) catch return .continue_folding;
+                const value = webtransport_mod.decodeMaxStreamsUniValue(capsule.value) catch {
+                    try self.terminateWebTransportSessionWithCode(
+                        session_id,
+                        webtransport_mod.flow_control_error_code,
+                        events,
+                        budget,
+                    );
+                    return .session_ended;
+                };
+                if (value > webtransport_max_streams_ceiling) {
+                    // Streams limits cap at 2^60
+                    // [draft-ietf-webtrans-http3 §5.6]: an oversized
+                    // value closes the session with WT_FLOW_CONTROL_ERROR.
+                    try self.terminateWebTransportSessionWithCode(
+                        session_id,
+                        webtransport_mod.flow_control_error_code,
+                        events,
+                        budget,
+                    );
+                    return .session_ended;
+                }
                 if (sess.flow.peer_max_streams_uni == null or value > sess.flow.peer_max_streams_uni.?) {
                     sess.flow.peer_max_streams_uni = value;
                     sess.flow.sent_streams_blocked_uni_for = null;
@@ -2378,7 +2451,15 @@ pub const Session = struct {
                 return .continue_folding;
             },
             webtransport_mod.CapsuleType.data_blocked => {
-                const value = webtransport_mod.decodeDataBlockedValue(capsule.value) catch return .continue_folding;
+                const value = webtransport_mod.decodeDataBlockedValue(capsule.value) catch {
+                    try self.terminateWebTransportSessionWithCode(
+                        session_id,
+                        webtransport_mod.flow_control_error_code,
+                        events,
+                        budget,
+                    );
+                    return .session_ended;
+                };
                 try budget.reserve(0);
                 try self.appendReservedEvent(events, .{
                     .webtransport_peer_blocked = .{
@@ -2390,7 +2471,27 @@ pub const Session = struct {
                 return .continue_folding;
             },
             webtransport_mod.CapsuleType.streams_blocked_bidi => {
-                const value = webtransport_mod.decodeStreamsBlockedBidiValue(capsule.value) catch return .continue_folding;
+                const value = webtransport_mod.decodeStreamsBlockedBidiValue(capsule.value) catch {
+                    try self.terminateWebTransportSessionWithCode(
+                        session_id,
+                        webtransport_mod.flow_control_error_code,
+                        events,
+                        budget,
+                    );
+                    return .session_ended;
+                };
+                if (value > webtransport_max_streams_ceiling) {
+                    // Streams limits cap at 2^60
+                    // [draft-ietf-webtrans-http3 §5.6]: an oversized
+                    // value closes the session with WT_FLOW_CONTROL_ERROR.
+                    try self.terminateWebTransportSessionWithCode(
+                        session_id,
+                        webtransport_mod.flow_control_error_code,
+                        events,
+                        budget,
+                    );
+                    return .session_ended;
+                }
                 try budget.reserve(0);
                 try self.appendReservedEvent(events, .{
                     .webtransport_peer_blocked = .{
@@ -2402,7 +2503,27 @@ pub const Session = struct {
                 return .continue_folding;
             },
             webtransport_mod.CapsuleType.streams_blocked_uni => {
-                const value = webtransport_mod.decodeStreamsBlockedUniValue(capsule.value) catch return .continue_folding;
+                const value = webtransport_mod.decodeStreamsBlockedUniValue(capsule.value) catch {
+                    try self.terminateWebTransportSessionWithCode(
+                        session_id,
+                        webtransport_mod.flow_control_error_code,
+                        events,
+                        budget,
+                    );
+                    return .session_ended;
+                };
+                if (value > webtransport_max_streams_ceiling) {
+                    // Streams limits cap at 2^60
+                    // [draft-ietf-webtrans-http3 §5.6]: an oversized
+                    // value closes the session with WT_FLOW_CONTROL_ERROR.
+                    try self.terminateWebTransportSessionWithCode(
+                        session_id,
+                        webtransport_mod.flow_control_error_code,
+                        events,
+                        budget,
+                    );
+                    return .session_ended;
+                }
                 try budget.reserve(0);
                 try self.appendReservedEvent(events, .{
                     .webtransport_peer_blocked = .{
@@ -3983,12 +4104,12 @@ pub const Session = struct {
 
     /// Handles a peer flow-control violation (peer sent more bytes
     /// than our `local_max_data` allows, or opened more streams than
-    /// our `local_max_streams_*` allows). The offending stream is
-    /// reset with the reserved `WEBTRANSPORT_SESSION_GONE` wire code,
-    /// the application is notified via a
-    /// `webtransport_flow_violated` event, and the rx buffer is
-    /// drained so further bytes on the same stream don't keep
-    /// triggering the same violation.
+    /// our `local_max_streams_*` allows). Per draft-16 the violation is
+    /// SESSION-fatal: after the `webtransport_flow_violated` event
+    /// (kept for observability, still carrying the offending stream),
+    /// the whole session is terminated with `WT_FLOW_CONTROL_ERROR` —
+    /// CONNECT reset, substream sweep, `.protocol_violation` close
+    /// event. The connection stays up.
     fn handleWebTransportFlowViolation(
         self: *Session,
         state: *StreamState,
@@ -3997,18 +4118,12 @@ pub const Session = struct {
         events: *std.ArrayList(Event),
         budget: *DrainBudget,
     ) Error!void {
+        const session_id = flow.session_id;
         const limit = switch (kind) {
             .data_overflow => flow.local_max_data orelse 0,
             .streams_bidi_overflow => flow.local_max_streams_bidi orelse 0,
             .streams_uni_overflow => flow.local_max_streams_uni orelse 0,
         };
-        // STOP_SENDING is the universally-safe rejection. For bidi
-        // streams we can also reset our own send side; do that best-
-        // effort (non-fatal if quic-zig doesn't accept).
-        self.quic.streamStopSending(state.id, webtransport_mod.session_gone_code) catch {};
-        if (!stream_mod.isUnidirectional(state.id)) {
-            self.quic.streamReset(state.id, webtransport_mod.session_gone_code) catch {};
-        }
         state.locally_rejected = true;
         state.recv_finished = true;
         state.rx.clearRetainingCapacity();
@@ -4017,11 +4132,19 @@ pub const Session = struct {
         try self.appendReservedEvent(events, .{
             .webtransport_flow_violated = .{
                 .stream_id = state.id,
-                .session_id = flow.session_id,
+                .session_id = session_id,
                 .kind = kind,
                 .limit = limit,
             },
         });
+        // `flow` is destroyed with the session — do not touch it after
+        // this call.
+        try self.terminateWebTransportSessionWithCode(
+            session_id,
+            webtransport_mod.flow_control_error_code,
+            events,
+            budget,
+        );
     }
 
     /// Remove the given stream id from `wt_buffered_streams` if
