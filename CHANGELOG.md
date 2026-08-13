@@ -116,6 +116,37 @@ breaking changes; see notes per release.
   legal null-poll-while-pacing-gated state, the
   never-switch-exhaustively forward-compat rule, and `fillGsoBatch` for
   foreign loops doing their own `sendmsg`.
+- Added `Server.send103EarlyHints` and `Server.sendInformational` —
+  first-class 1xx interim responses over the mechanism that already
+  worked but was undiscoverable; the encoder now also rejects any
+  HEADERS after the final response (previously an interim could slip
+  out post-final).
+- Added QPACK `Duplicate` emission (RFC 9204 §2.1.1.1): the dynamic
+  encoder duplicates a matched entry sitting in the draining region
+  (quarter-capacity threshold) instead of pinning it against eviction;
+  PUSH_PROMISE field sections now route through the dynamic-capable
+  encoder path (byte-identical under the static default, test-pinned);
+  a five-test opt-in posture matrix plus a production-limits "Dynamic
+  QPACK Posture" section land the story — defaults unchanged
+  (static_only remains both the bare and `production()` posture).
+- Added `QuicConnectionStats` (`Session.transportStats` /
+  `TransportEndpoint.transportStats`) — quic's transport-reality
+  snapshot beside the H3-layer `Metrics`, filed Unstable with the
+  upstream-fields-may-move carve-out; demonstrated in the udp-client
+  iteration log and the observability example.
+- Added qlog file output to both udp examples (`--qlog <dir>`,
+  qvis-loadable `.sqlog`, one trace per connection server-side) and a
+  `setQlogPacketEvents` passthrough on Session/Client/Server; noted
+  quic 0.12's install-time `connection_started` emission.
+- Added transport-tuning visibility: annotated at-default config lines
+  in both udp examples (congestion_control incl. opt-in BBRv3,
+  enable_pacing, enable_hystart, and the RunUdpOptions batching knobs)
+  plus a "Transport Tuning" embedding-guide section; udp_server's
+  shutdown line surfaces `egress_local_faults` with a loud nonzero
+  warning.
+- Added `Client.startConnect` — the classic CONNECT tunnel facade
+  (RFC 9114 §4.4); the returned `RequestWriter` is the tunnel's send
+  half, peer bytes arrive as raw `data` events.
 
 ### Changed
 
@@ -184,6 +215,11 @@ breaking changes; see notes per release.
   ConnectionRefused, MessageOversize) as fatal; they now route through
   quic's classifyReceiveError/classifySendError policy, matching the
   bundled transport loops.
+- Fixed the missing RFC 9114 §4.3.1 `:authority`/Host cross-check —
+  requests carrying both with differing values are now malformed
+  (case-insensitive host comparison); TE §4.2 ¶4 enforcement already
+  existed and its stale "no public surface" conformance note was
+  corrected.
 - Fixed the drain loop resurrecting streams that `gcClosedStreams` had
   already reclaimed: quic-zig keeps yielding a finished stream until its
   own stream GC reaps it, and the recreated blank `StreamState` emitted a

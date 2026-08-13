@@ -1,6 +1,8 @@
 name: h3-interop
 
 on:
+  push:
+    branches: [main]
   schedule:
     # Sunday 07:30 UTC, after the WT matrix cadence but before nightly fuzz.
     - cron: "30 7 * * 0"
@@ -11,16 +13,24 @@ on:
         required: false
         default: "30000"
 
-# Advisory third-party HTTP/3 interop. The hard per-push real-socket gate is
-# h3-interop-self-test.yml, which keeps the peer in-tree. This workflow adds
-# foreign servers (pinned quic-go/http3 and aioquic) without making release
-# train health depend on third-party setup flake.
+# Third-party HTTP/3 interop. The quic-go leg is a HARD per-push gate,
+# promoted 2026-08-13 after the post-GREASE soak criterion (two consecutive
+# green dispatched runs: 31667803157, 31668176311) - it is the most
+# deterministic foreign peer (pinned quic-go/http3 module, cached Go
+# toolchain, one automatic retry on the matrix step). The aioquic leg stays
+# weekly-advisory (Python environment variance); the in-tree per-push gate
+# remains h3-interop-self-test.yml.
+#
+# DEMOTION RULE (pre-agreed, not a debate): if the quic-go leg fails twice
+# within a week for causes not attributable to http3-zig (peer build
+# breakage, runner infrastructure), demote it by restoring
+# `continue-on-error: true` on the job in a one-line commit that names the
+# cause; re-promote with the same soak criterion once the cause clears.
 jobs:
   quic-go:
     name: H3 interop (http3-zig client vs quic-go server)
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    continue-on-error: true
     env:
       TIMEOUT_MS: ${{ github.event.inputs.timeout_ms || '30000' }}
       KEEP_WORK_DIR: "1"
@@ -71,13 +81,17 @@ jobs:
           go mod download
           go build -o "${{ runner.temp }}/h3-quic-go-server" .
 
-      - name: Run the advisory H3 matrix
+      - name: Run the H3 matrix (gating; one automatic retry)
         env:
           CLIENT_TIMEOUT_MS: ${{ env.TIMEOUT_MS }}
           WORK_DIR: ${{ runner.temp }}/external-h3
           QUIC_GO_READY_PATTERN: "^READY "
           QUIC_GO_H3_SERVER_CMD: ${{ runner.temp }}/h3-quic-go-server --listen "$H3_ADDR" --cert "$H3_CERT" --key "$H3_KEY" --root "$H3_ROOT" --max-requests 1 --max-lifetime-ms 60000
-        run: bash interop/external_h3/run_matrix.sh quic-go
+        run: |
+          if bash interop/external_h3/run_matrix.sh quic-go; then exit 0; fi
+          echo "first attempt failed; retrying once after 10s"
+          sleep 10
+          bash interop/external_h3/run_matrix.sh quic-go
 
       - name: Upload H3 interop logs
         if: always()
@@ -89,6 +103,8 @@ jobs:
           retention-days: 14
 
   aioquic:
+    # Weekly-advisory only: does not run on push (Python env variance).
+    if: github.event_name != 'push'
     name: H3 interop (http3-zig client vs aioquic server)
     runs-on: ubuntu-latest
     timeout-minutes: 30
