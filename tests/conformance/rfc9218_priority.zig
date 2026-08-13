@@ -68,12 +68,14 @@
 //!   RFC9218 §4   ¶5      NORMATIVE priorityForRequest returns null when no Priority signal has been seen
 //!   RFC9218 §7   ¶4      NORMATIVE PRIORITY_UPDATE received before the stream opens is buffered
 //!   RFC9218 §7   ¶3      NORMATIVE empty PRIORITY_UPDATE Priority Field Value applies parameter defaults
+//!   RFC9218 §5   ¶1      NORMATIVE request-time priority header is applied to the transport send scheduler
+//!   RFC9218 §5   ¶1      NORMATIVE Client RequestOptions.priority emits the priority field end-to-end
+//!   RFC9218 §7   ¶4      NORMATIVE buffered PRIORITY_UPDATE supersedes the request-time priority header
 //!
 //! Visible debt:
-//!   request-time `priority` header scheduling — `fromFieldLines` parses it
-//!   and the read-only accessors expose it, but nothing feeds it to the
-//!   transport scheduler yet (only the PRIORITY_UPDATE frame path does).
-//!   Wiring plus tests are queued in the current sprint.
+//!   none — the request-time `priority` header now feeds the transport
+//!   send scheduler (with buffered-PRIORITY_UPDATE precedence), exercised
+//!   in the §5 section below.
 //!
 //! Out of scope here (covered elsewhere or by design):
 //!   RFC9218 §7.2 wire layout (frame-type ID, Prioritized Element ID
@@ -1010,4 +1012,92 @@ test "NORMATIVE empty PRIORITY_UPDATE Priority Field Value applies the parameter
     const stored = pair.server_h3.priorityForRequest(request_stream_id) orelse return error.MissingPriority;
     try std.testing.expectEqual(@as(u3, 3), stored.urgency);
     try std.testing.expect(!stored.incremental);
+}
+
+// ---------------------------------------------------------------- §5 — request-time header scheduling
+
+test "NORMATIVE request-time priority header is applied to the transport send scheduler [RFC9218 §5 ¶1]" {
+    // §5 ¶1: the Priority header field is the client's request-time
+    // urgency signal. The server feeds it to the same transport scheduler
+    // hook the PRIORITY_UPDATE path uses (`quic.streamSetPriority`); the
+    // transport exposes the applied value via `streamPriority`.
+    const allocator = std.testing.allocator;
+
+    var pair: fixture.H3Pair = undefined;
+    try pair.initStarted(allocator, .{}, .{});
+    defer pair.deinit();
+    try fixture.exchangePairSettings(allocator, &pair);
+
+    const stream_id = try pair.client_h3.openRequest(&.{
+        .{ .name = ":method", .value = "GET" },
+        .{ .name = ":scheme", .value = "https" },
+        .{ .name = ":path", .value = "/" },
+        .{ .name = ":authority", .value = "example.com" },
+        .{ .name = "priority", .value = "u=1, i" },
+    });
+    try fixture.pumpQuiet(allocator, &pair, 64);
+
+    const applied = pair.server.streamPriority(stream_id) orelse
+        return error.MissingPriority;
+    try std.testing.expectEqual(@as(u3, 1), applied.urgency);
+    try std.testing.expect(applied.incremental);
+}
+
+test "NORMATIVE buffered PRIORITY_UPDATE supersedes the request-time priority header [RFC9218 §7 ¶4]" {
+    // §7 ¶4: a PRIORITY_UPDATE that races ahead of its request stream is
+    // buffered by the server. The frame is the later signal by
+    // construction (the client sent it to reprioritize the request), so
+    // when the request headers finally arrive their `priority` field must
+    // not clobber it — the buffered value is what reaches the scheduler.
+    const allocator = std.testing.allocator;
+
+    var pair: fixture.H3Pair = undefined;
+    try pair.initStarted(allocator, .{}, .{});
+    defer pair.deinit();
+    try fixture.exchangePairSettings(allocator, &pair);
+
+    try pair.client_h3.sendPriorityUpdateForRequest(0, .{ .urgency = 2 });
+    try fixture.pumpQuiet(allocator, &pair, 64);
+
+    const stream_id = try pair.client_h3.openRequest(&.{
+        .{ .name = ":method", .value = "GET" },
+        .{ .name = ":scheme", .value = "https" },
+        .{ .name = ":path", .value = "/" },
+        .{ .name = ":authority", .value = "example.com" },
+        .{ .name = "priority", .value = "u=6" },
+    });
+    try std.testing.expectEqual(@as(u64, 0), stream_id);
+    try fixture.pumpQuiet(allocator, &pair, 64);
+
+    const applied = pair.server.streamPriority(stream_id) orelse
+        return error.MissingPriority;
+    try std.testing.expectEqual(@as(u3, 2), applied.urgency);
+    try std.testing.expect(!applied.incremental);
+}
+
+test "NORMATIVE Client RequestOptions.priority emits the priority field end-to-end [RFC9218 §5 ¶1]" {
+    // §5 ¶1: clients SHOULD send the Priority header field at request
+    // time. `RequestOptions.priority` is the facade spelling; end-to-end
+    // it must arrive as a parseable `priority` field and reach the
+    // transport scheduler on the server.
+    const allocator = std.testing.allocator;
+
+    var pair: fixture.H3Pair = undefined;
+    try pair.initStarted(allocator, .{}, .{});
+    defer pair.deinit();
+    try fixture.exchangePairSettings(allocator, &pair);
+
+    var client = http3_zig.Client.init(&pair.client_h3);
+    const request = try client.request(allocator, .{
+        .authority = "example.com",
+        .path = "/",
+        .priority = .{ .urgency = 0, .incremental = true },
+        .end_stream = false,
+    });
+    try fixture.pumpQuiet(allocator, &pair, 64);
+
+    const applied = pair.server.streamPriority(request.stream_id) orelse
+        return error.MissingPriority;
+    try std.testing.expectEqual(@as(u3, 0), applied.urgency);
+    try std.testing.expect(applied.incremental);
 }

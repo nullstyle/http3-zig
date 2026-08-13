@@ -41,6 +41,11 @@ pub const Priority = struct {
     }
 };
 
+/// Longest value `Priority.encode` can produce ("u=7, i" — 7 bytes), with a
+/// byte of slack. Callers can stack-allocate `[max_field_value_len]u8` and
+/// treat `encode` into it as infallible.
+pub const max_field_value_len = 8;
+
 pub fn fromFieldLines(fields: []const qpack.FieldLine) Error!?Priority {
     var out: Priority = .{};
     var found = false;

@@ -110,6 +110,11 @@ pub const RequestOptions = struct {
     authority: []const u8 = "",
     path: []const u8 = "/",
     connect_protocol: ?[]const u8 = null,
+    /// RFC 9218 §5 request-time priority signal, emitted as the `priority`
+    /// field. Later reprioritization goes through
+    /// `RequestWriter.updatePriority`. Don't also hand-build a `priority`
+    /// header in `headers` — both would be emitted.
+    priority: ?priority_mod.Priority = null,
     headers: []const qpack.FieldLine = &.{},
     body: ?[]const u8 = null,
     trailers: []const qpack.FieldLine = &.{},
@@ -122,6 +127,8 @@ pub const RequestHeadOptions = struct {
     authority: []const u8 = "",
     path: []const u8 = "/",
     connect_protocol: ?[]const u8 = null,
+    /// See `RequestOptions.priority`.
+    priority: ?priority_mod.Priority = null,
     headers: []const qpack.FieldLine = &.{},
 };
 
@@ -1652,6 +1659,7 @@ pub const Client = struct {
             .authority = options.authority,
             .path = options.path,
             .connect_protocol = options.connect_protocol,
+            .priority = options.priority,
             .headers = options.headers,
         });
 
@@ -1669,7 +1677,8 @@ pub const Client = struct {
         allocator: std.mem.Allocator,
         options: RequestHeadOptions,
     ) session_mod.Error!RequestWriter {
-        const fields = try buildRequestFields(allocator, options);
+        var priority_value_buf: [priority_mod.max_field_value_len]u8 = undefined;
+        const fields = try buildRequestFields(allocator, options, &priority_value_buf);
         defer allocator.free(fields);
         return .{
             .client = self,
@@ -1805,6 +1814,7 @@ pub const Client = struct {
 fn buildRequestFields(
     allocator: std.mem.Allocator,
     options: RequestHeadOptions,
+    priority_value_buf: *[priority_mod.max_field_value_len]u8,
 ) session_mod.Error![]qpack.FieldLine {
     // RFC 9114 §4.4 ¶3: classic CONNECT (`:method = "CONNECT"`,
     // no `:protocol`) MUST omit `:scheme` and `:path`. Extended
@@ -1816,7 +1826,11 @@ fn buildRequestFields(
         options.connect_protocol == null;
     const pseudo_count: usize = if (is_classic_connect) 2 else 4;
     const protocol_len: usize = if (options.connect_protocol != null) 1 else 0;
-    const fields = try allocator.alloc(qpack.FieldLine, pseudo_count + protocol_len + options.headers.len);
+    const priority_len: usize = if (options.priority != null) 1 else 0;
+    const fields = try allocator.alloc(
+        qpack.FieldLine,
+        pseudo_count + protocol_len + priority_len + options.headers.len,
+    );
     fields[0] = .{ .name = ":method", .value = options.method };
     var pos: usize = 1;
     if (!is_classic_connect) {
@@ -1829,6 +1843,12 @@ fn buildRequestFields(
     pos += 1;
     if (options.connect_protocol) |connect_protocol| {
         fields[pos] = .{ .name = ":protocol", .value = connect_protocol };
+        pos += 1;
+    }
+    if (options.priority) |p| {
+        // Infallible: the caller's buffer is sized for the longest encoding.
+        const len = p.encode(priority_value_buf) catch unreachable;
+        fields[pos] = .{ .name = "priority", .value = priority_value_buf[0..len] };
         pos += 1;
     }
     for (options.headers, 0..) |header, i| fields[pos + i] = header;

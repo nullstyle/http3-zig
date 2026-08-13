@@ -4082,11 +4082,15 @@ pub const Session = struct {
         event: message_mod.Event,
     ) Error!void {
         const out: Event = switch (event) {
-            .headers => |fields| .{ .headers = .{
-                .stream_id = stream_id,
-                .kind = kind,
-                .fields = try cloneFields(self.allocator, fields),
-            } },
+            .headers => |fields| blk: {
+                if (self.role == .server and kind == .request)
+                    self.applyRequestPriorityOnHeaders(stream_id, fields);
+                break :blk .{ .headers = .{
+                    .stream_id = stream_id,
+                    .kind = kind,
+                    .fields = try cloneFields(self.allocator, fields),
+                } };
+            },
             .interim_headers => |fields| .{ .interim_headers = .{
                 .stream_id = stream_id,
                 .kind = kind,
@@ -5034,6 +5038,32 @@ pub const Session = struct {
             .priority = priority,
             .priority_field_value = owned,
         };
+    }
+
+    /// RFC 9218 §5: the `priority` request header is the client's
+    /// request-time urgency signal; feed it to the transport send scheduler
+    /// exactly like the PRIORITY_UPDATE path does. Runs when a request's
+    /// header section completes server-side — the first moment the stream
+    /// exists on the transport, so it also applies a PRIORITY_UPDATE that
+    /// arrived (and was buffered in `request_priorities`) before the stream
+    /// opened; that buffered frame supersedes the header (RFC 9218 §7: the
+    /// frame is the later signal by construction). Best-effort and advisory:
+    /// an unparseable Priority field is treated as absent (§4 ¶7) and a
+    /// reaped stream has nothing to schedule.
+    fn applyRequestPriorityOnHeaders(
+        self: *Session,
+        stream_id: u64,
+        fields: []const qpack.FieldLine,
+    ) void {
+        const effective: priority_mod.Priority =
+            self.request_priorities.get(stream_id) orelse blk: {
+                const parsed = priority_mod.fromFieldLines(fields) catch return;
+                break :blk parsed orelse return;
+            };
+        self.quic.streamSetPriority(stream_id, .{
+            .urgency = effective.urgency,
+            .incremental = effective.incremental,
+        }) catch {};
     }
 
     fn validatePriorityPushId(self: *const Session, push_id: u64) Error!void {
