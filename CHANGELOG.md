@@ -169,6 +169,16 @@ breaking changes; see notes per release.
   on it) now returns `error.UnknownWebTransportSession` when invoked on a
   stream id that is unknown or carries no WebTransport session
   association, instead of silently writing unmetered bytes.
+- **WebTransport pending sessions are now flow-controlled.** The two
+  internal session registries were unified into one, and per-session
+  flow state now exists from the moment a session is marked pending —
+  seeded from the SETTINGS credit [draft-ietf-webtrans-http3 §9.2] —
+  so stream opens, send metering, receive-side accounting, the DRAIN
+  open-gate, and capsule folding all apply BEFORE the 2xx confirmation.
+  Previously, opens against an unconfirmed session bypassed every limit,
+  and capsules arriving pre-confirmation were silently dropped. Public
+  accessors are unchanged (`webTransportFlowSnapshot` still reports
+  established sessions only).
 - Blessed the session-bound `Session.clearEvents` as the recommended
   event-cleanup call (it binds the session allocator implicitly, closing
   the mismatched-allocator trap in the free-standing helpers) and

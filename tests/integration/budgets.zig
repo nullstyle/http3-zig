@@ -416,6 +416,6 @@ test "session caps pending WebTransport sessions and closes on a WT CONNECT floo
     try std.testing.expect(opened >= 5);
 
     try expectPairH3Error(allocator, &pair, error.ExcessivePendingWebTransportSessions);
-    try std.testing.expect(pair.server_h3.wt_pending_sessions.count() <= 4);
+    try std.testing.expect(pair.server_h3.webTransportPendingCount() <= 4);
     try expectLastCloseCode(&pair.server_h3, http3_zig.protocol.ErrorCode.excess_load);
 }

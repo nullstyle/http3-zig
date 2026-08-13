@@ -1136,6 +1136,143 @@ test "acceptWebTransport rejects subprotocols the client did not offer" {
 // own counters (`Session.webTransportPendingCount` /
 // `webTransportEstablishedCount` are still public for that purpose).
 
+test "WebTransport pending-session opens are gated by SETTINGS credit" {
+    // Registry-unification behavior: flow-control state exists from the
+    // moment a session is marked pending, seeded from the SETTINGS
+    // credit [draft-ietf-webtrans-http3 §9.2] — so stream opens BEFORE
+    // the 2xx confirmation count against the peer's advertised limits.
+    // (They used to bypass flow control entirely until confirmation.)
+    const allocator = std.testing.allocator;
+    const client_settings: http3_zig.Settings = .{
+        .enable_connect_protocol = true,
+        .h3_datagram = true,
+        .wt_enabled = true,
+    };
+    var server_settings = client_settings;
+    server_settings.wt_initial_max_streams_uni = 1;
+
+    var pair: H3Pair = undefined;
+    try pair.initStarted(
+        allocator,
+        .{ .settings = client_settings },
+        .{ .settings = server_settings },
+    );
+    defer pair.deinit();
+    try exchangePairSettings(allocator, &pair);
+
+    var h3_client = http3_zig.Client.init(&pair.client_h3);
+    var client_wt = try h3_client.startWebTransport(allocator, .{
+        .authority = "localhost",
+        .path = "/wt",
+    });
+    // No server-side accept ever happens: the client session stays
+    // pending for the whole test.
+    try std.testing.expect(
+        pair.client_h3.webTransportSessionState(client_wt.sessionId()) == .pending,
+    );
+
+    // The first open fits the peer's advertised credit of 1 stream...
+    _ = try client_wt.openUniStream();
+    // ...and the second exceeds it — before any confirmation happened.
+    try std.testing.expectError(
+        error.WebTransportStreamLimitExceeded,
+        client_wt.openUniStream(),
+    );
+    try std.testing.expect(
+        pair.client_h3.webTransportSessionState(client_wt.sessionId()) == .pending,
+    );
+}
+
+test "WebTransport DRAIN observed before confirmation gates pending-session opens" {
+    // Pending sessions carry live flow state, so a DRAIN capsule that
+    // arrives on the CONNECT request body BEFORE the server accepts the
+    // session already forbids new local opens
+    // [draft-ietf-webtrans-http3 §5.5]. (Previously the capsule's value
+    // was silently lost for unconfirmed sessions.)
+    const allocator = std.testing.allocator;
+    const h3_settings: http3_zig.Settings = .{
+        .enable_connect_protocol = true,
+        .h3_datagram = true,
+        .wt_enabled = true,
+    };
+
+    var pair: H3Pair = undefined;
+    try pair.initStarted(allocator, .{ .settings = h3_settings }, .{ .settings = h3_settings });
+    defer pair.deinit();
+    try exchangePairSettings(allocator, &pair);
+
+    var h3_client = http3_zig.Client.init(&pair.client_h3);
+    var client_wt = try h3_client.startWebTransport(allocator, .{
+        .authority = "localhost",
+        .path = "/wt",
+    });
+    try client_wt.sendDrain();
+
+    var server_runner = http3_zig.ServerRunner.init(allocator);
+    defer server_runner.deinit();
+
+    var client_events: std.ArrayList(http3_zig.session.Event) = .empty;
+    defer {
+        clearSessionEvents(allocator, &client_events);
+        client_events.deinit(allocator);
+    }
+    var server_events: std.ArrayList(http3_zig.session.Event) = .empty;
+    defer {
+        clearSessionEvents(allocator, &server_events);
+        server_events.deinit(allocator);
+    }
+
+    var drain_observed = false;
+    var now_us: u64 = 1_000_000;
+    var iters: u32 = 0;
+    while (!drain_observed) : (iters += 1) {
+        try std.testing.expect(iters < 20_000);
+        try pumpH3(
+            &pair.client,
+            &pair.server,
+            &pair.client_h3,
+            &pair.server_h3,
+            &client_events,
+            &server_events,
+            &now_us,
+        );
+
+        for (server_events.items) |event| {
+            switch (try server_runner.observe(event)) {
+                .request_updated, .request_complete => |request_state| {
+                    const request = request_state.reader();
+                    if (drain_observed or request.body().len == 0) continue;
+                    // The session was auto-marked pending on the CONNECT
+                    // headers; the DRAIN capsule sits in the request body
+                    // before any accept.
+                    try std.testing.expect(
+                        pair.server_h3.webTransportSessionState(request.streamId()) == .pending,
+                    );
+                    var it = http3_zig.capsule.iter(request.body());
+                    while (try it.next()) |decoded| {
+                        try pair.server_h3.observeWebTransportCapsule(
+                            request.streamId(),
+                            decoded.capsule,
+                        );
+                    }
+                    // The drain latch is live on the pending session:
+                    // server-local opens are refused before the session
+                    // was ever accepted.
+                    try std.testing.expectError(
+                        error.WebTransportSessionDraining,
+                        pair.server_h3.openWebTransportUniStream(request.streamId()),
+                    );
+                    try std.testing.expect(
+                        pair.server_h3.webTransportSessionState(request.streamId()) == .pending,
+                    );
+                    drain_observed = true;
+                },
+                else => {},
+            }
+        }
+    }
+}
+
 test "Buffered streams: .reject policy never surfaces stream events for the held bytes" {
     const allocator = std.testing.allocator;
     const h3_settings: http3_zig.Settings = .{

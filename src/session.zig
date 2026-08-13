@@ -136,9 +136,9 @@ pub const Error = quic.conn.state.Error ||
         /// auto-emits the matching WT_STREAMS_BLOCKED capsule before
         /// returning this error.
         WebTransportStreamLimitExceeded,
-        /// `setLocalWebTransportLimit` / `observeWebTransportCapsule`
-        /// was called with a session id that has no confirmed
-        /// WebTransport state (not in `wt_established_sessions`).
+        /// A WebTransport primitive was invoked with a session or
+        /// stream id that has no known WebTransport state (not in
+        /// `wt_sessions`, or a stream with no session association).
         UnknownWebTransportSession,
         /// A peer-opened stream would push the session's tracked
         /// stream count past `Config.max_concurrent_peer_streams`.
@@ -150,9 +150,9 @@ pub const Error = quic.conn.state.Error ||
         /// `Config.max_tracked_push_promises` (client). The session closes
         /// the connection with H3_EXCESSIVE_LOAD.
         ExcessivePushPromises,
-        /// A new WebTransport CONNECT would push `wt_pending_sessions`
-        /// past `Config.max_pending_wt_sessions` (server). The session
-        /// closes the connection with H3_EXCESSIVE_LOAD.
+        /// A new WebTransport CONNECT would push the pending-session
+        /// count past `Config.max_pending_wt_sessions` (server). The
+        /// session closes the connection with H3_EXCESSIVE_LOAD.
         ExcessivePendingWebTransportSessions,
         /// Locally-initiated WebTransport stream open after the peer
         /// has sent `DRAIN_WEBTRANSPORT_SESSION`
@@ -357,7 +357,7 @@ pub const Config = struct {
     /// by MAX_PUSH_ID); `production()` defaults to 256.
     max_tracked_push_promises: ?usize = null,
     /// Optional cap on unconfirmed pending WebTransport sessions
-    /// (`wt_pending_sessions`, server only) — CONNECT streams that began a
+    /// (pending entries in `wt_sessions`, server only) — CONNECT streams that began a
     /// WT handshake but have not been accepted or torn down. A peer opening
     /// many WT CONNECTs without completing them otherwise grows this up to
     /// MAX_STREAMS_BIDI. A new pending session beyond the cap closes the
@@ -1173,6 +1173,26 @@ const DrainBudget = struct {
 /// the session's accounting (peer_data_received, BLOCKED bookkeeping,
 /// drain bit) — the wrapping `Session` updates these fields under the
 /// invariants documented at each call site.
+/// Unified per-session WebTransport state, heap-boxed in
+/// `Session.wt_sessions` so pointers into it stay stable across map
+/// growth. Created `.pending` when the CONNECT handshake starts and
+/// flipped to `.established` at confirmation. Flow-control credit is
+/// seeded at CREATION (draft-ietf-webtrans-http3 §9.2), so pending
+/// sessions are gated and counted like established ones.
+const WTSessionState = struct {
+    phase: enum { pending, established },
+    flow: WTSessionFlowState,
+    /// Per-session incremental capsule reassembly across DATA-frame
+    /// boundaries (a capsule may legally span frames). Reserved for the
+    /// capsule-native ingestion rework, which allocates into and drains
+    /// it; until then it stays empty and `deinit` is a no-op.
+    reassembler: capsule_mod.Reassembler = .{},
+
+    fn deinit(self: *WTSessionState, allocator: std.mem.Allocator) void {
+        self.reassembler.deinit(allocator);
+    }
+};
+
 const WTSessionFlowState = struct {
     session_id: u64,
 
@@ -1326,20 +1346,24 @@ pub const Session = struct {
     request_priorities: std.AutoHashMapUnmanaged(u64, priority_mod.Priority) = .empty,
     push_priorities: std.AutoHashMapUnmanaged(u64, priority_mod.Priority) = .empty,
 
-    /// CONNECT stream IDs that started a WebTransport handshake but
-    /// haven't been confirmed yet (server: request received, response
-    /// not sent; client: request sent, 2xx not yet observed). Stays
-    /// disjoint from `wt_established_sessions`.
-    wt_pending_sessions: std.AutoHashMapUnmanaged(u64, void) = .empty,
-    /// CONNECT stream IDs whose WebTransport session has been
-    /// confirmed (server: 2xx response sent; client: 2xx response
-    /// received). Streams referencing a `session_id` in this set are
-    /// dispatched immediately; everything else is governed by
-    /// `Config.buffered_stream_policy`. The value carries the
-    /// per-session flow-control state
-    /// (`WTSessionFlowState`) — peer-advertised limits, our usage
-    /// counters, and BLOCKED-emission bookkeeping.
-    wt_established_sessions: std.AutoHashMapUnmanaged(u64, *WTSessionFlowState) = .empty,
+    /// Unified WebTransport session registry keyed by CONNECT stream id
+    /// (see `WTSessionState`). `.pending`: handshake started (server:
+    /// request received, response not sent; client: request sent, 2xx
+    /// not yet observed). `.established`: confirmed (server: 2xx sent;
+    /// client: 2xx observed) — streams referencing an established
+    /// `session_id` dispatch immediately; everything else is governed
+    /// by `Config.buffered_stream_policy`. The per-session flow-control
+    /// state (`WTSessionFlowState` — peer-advertised limits, our usage
+    /// counters, BLOCKED-emission bookkeeping) exists for BOTH phases:
+    /// §9.2 SETTINGS credit is seeded at creation, so opens and
+    /// receive-side accounting against a not-yet-confirmed session are
+    /// gated and counted instead of bypassing limits.
+    wt_sessions: std.AutoHashMapUnmanaged(u64, *WTSessionState) = .empty,
+    /// Count of `.pending` entries in `wt_sessions`, kept alongside so
+    /// the `max_pending_wt_sessions` DoS gate and
+    /// `webTransportPendingCount` stay O(1). Maintained exclusively by
+    /// the mark/confirm/end transitions.
+    wt_pending_count: usize = 0,
     /// Stream ids of WebTransport streams currently held by the
     /// `.buffer` policy, recorded in the order they entered the
     /// buffered state. The replay path walks this list (not the
@@ -1391,10 +1415,12 @@ pub const Session = struct {
         self.received_push_promises.deinit(self.allocator);
         self.request_priorities.deinit(self.allocator);
         self.push_priorities.deinit(self.allocator);
-        self.wt_pending_sessions.deinit(self.allocator);
-        var wt_it = self.wt_established_sessions.valueIterator();
-        while (wt_it.next()) |flow_ptr| self.allocator.destroy(flow_ptr.*);
-        self.wt_established_sessions.deinit(self.allocator);
+        var wt_it = self.wt_sessions.valueIterator();
+        while (wt_it.next()) |sess_ptr| {
+            sess_ptr.*.deinit(self.allocator);
+            self.allocator.destroy(sess_ptr.*);
+        }
+        self.wt_sessions.deinit(self.allocator);
         self.wt_buffered_streams.deinit(self.allocator);
         self.qpack_encoder_table.deinit();
         self.qpack_decoder_table.deinit();
@@ -1699,8 +1725,11 @@ pub const Session = struct {
         //                      to the limit / drain checks.
         switch (self.webTransportSessionState(session_id)) {
             .none => return Error.UnknownWebTransportSession,
-            .pending => return,
-            .established => {},
+            // Pending sessions are gated too: §9.2 SETTINGS credit is
+            // seeded when the session is created, so opens before
+            // confirmation count against the same limits. (They used to
+            // bypass flow control entirely until the 2xx landed.)
+            .pending, .established => {},
         }
         const flow = self.webTransportFlowMut(session_id) orelse return;
         // draft-ietf-webtrans-http3 §5.5: after receiving DRAIN,
@@ -1838,19 +1867,52 @@ pub const Session = struct {
 
     pub const WebTransportSessionState = enum { none, pending, established };
 
+    /// Seeds draft §9.2 initial flow-control credit from the SETTINGS
+    /// exchange into `flow`, filling only limits that are still null:
+    /// the values we advertised become the receive-side limits we
+    /// enforce on the peer; the values the peer advertised gate our own
+    /// sends. Fill-if-null makes the helper safe to call twice — the
+    /// server marks a session pending when the CONNECT arrives, which
+    /// may legally precede the client's SETTINGS, so confirmation
+    /// re-runs the seed to pick up late-arriving peer credit without
+    /// clobbering anything a capsule already granted. When a side
+    /// advertised nothing the limit stays null (no enforcement).
+    fn seedWebTransportFlowCredit(self: *const Session, flow: *WTSessionFlowState) void {
+        if (flow.local_max_data == null) flow.local_max_data = self.local_settings.wt_initial_max_data;
+        if (flow.local_max_streams_uni == null) flow.local_max_streams_uni = self.local_settings.wt_initial_max_streams_uni;
+        if (flow.local_max_streams_bidi == null) flow.local_max_streams_bidi = self.local_settings.wt_initial_max_streams_bidi;
+        if (self.peer_settings) |ps| {
+            if (flow.peer_max_data == null) flow.peer_max_data = ps.wt_initial_max_data;
+            if (flow.peer_max_streams_uni == null) flow.peer_max_streams_uni = ps.wt_initial_max_streams_uni;
+            if (flow.peer_max_streams_bidi == null) flow.peer_max_streams_bidi = ps.wt_initial_max_streams_bidi;
+        }
+    }
+
+    fn createWebTransportSession(
+        self: *Session,
+        stream_id: u64,
+        phase: @FieldType(WTSessionState, "phase"),
+    ) Error!*WTSessionState {
+        const sess = try self.allocator.create(WTSessionState);
+        errdefer self.allocator.destroy(sess);
+        sess.* = .{ .phase = phase, .flow = .{ .session_id = stream_id } };
+        self.seedWebTransportFlowCredit(&sess.flow);
+        try self.wt_sessions.put(self.allocator, stream_id, sess);
+        if (phase == .pending) self.wt_pending_count += 1;
+        return sess;
+    }
+
     pub fn markWebTransportSessionPending(self: *Session, stream_id: u64) Error!void {
-        if (self.wt_established_sessions.contains(stream_id)) return;
+        if (self.wt_sessions.contains(stream_id)) return;
         // Cap unconfirmed pending sessions so a peer can't open many WT
         // CONNECTs without completing them and grow the map up to
         // MAX_STREAMS_BIDI. Only a genuinely new stream id can grow it.
-        if (!self.wt_pending_sessions.contains(stream_id)) {
-            if (self.config.max_pending_wt_sessions) |limit| {
-                if (self.wt_pending_sessions.count() >= limit) {
-                    return Error.ExcessivePendingWebTransportSessions;
-                }
+        if (self.config.max_pending_wt_sessions) |limit| {
+            if (self.wt_pending_count >= limit) {
+                return Error.ExcessivePendingWebTransportSessions;
             }
         }
-        try self.wt_pending_sessions.put(self.allocator, stream_id, {});
+        _ = try self.createWebTransportSession(stream_id, .pending);
     }
 
     pub fn confirmWebTransportSession(self: *Session, stream_id: u64) Error!void {
@@ -1864,54 +1926,55 @@ pub const Session = struct {
         // up cleanly.
         if (self.streams.get(stream_id)) |state| {
             if (state.recv_finished or state.recv_reset_seen) {
-                _ = self.wt_pending_sessions.remove(stream_id);
+                if (self.wt_sessions.get(stream_id)) |sess| {
+                    if (sess.phase == .pending) {
+                        _ = self.wt_sessions.remove(stream_id);
+                        self.wt_pending_count -= 1;
+                        sess.deinit(self.allocator);
+                        self.allocator.destroy(sess);
+                    }
+                }
                 return Error.SessionClosed;
             }
         }
 
-        _ = self.wt_pending_sessions.remove(stream_id);
-        if (self.wt_established_sessions.contains(stream_id)) return;
-
-        const flow = try self.allocator.create(WTSessionFlowState);
-        errdefer self.allocator.destroy(flow);
-        flow.* = .{ .session_id = stream_id };
-        // Seed draft-15 §9.2 initial flow-control credit from the SETTINGS
-        // exchange, so a session opens with limits already in force instead
-        // of waiting for the first WT_MAX_DATA / WT_MAX_STREAMS capsule. The
-        // values we advertised become the receive-side limits we enforce on
-        // the peer; the values the peer advertised gate our own sends. When
-        // a side advertised nothing the limit stays null (no enforcement),
-        // preserving the prior capsule-only behavior.
-        flow.local_max_data = self.local_settings.wt_initial_max_data;
-        flow.local_max_streams_uni = self.local_settings.wt_initial_max_streams_uni;
-        flow.local_max_streams_bidi = self.local_settings.wt_initial_max_streams_bidi;
-        if (self.peer_settings) |ps| {
-            flow.peer_max_data = ps.wt_initial_max_data;
-            flow.peer_max_streams_uni = ps.wt_initial_max_streams_uni;
-            flow.peer_max_streams_bidi = ps.wt_initial_max_streams_bidi;
+        if (self.wt_sessions.get(stream_id)) |sess| {
+            if (sess.phase == .established) return;
+            sess.phase = .established;
+            self.wt_pending_count -= 1;
+            // Late seed: the server may have marked this session pending
+            // before the client's SETTINGS landed — fill any still-null
+            // peer credit now (fill-if-null; capsule-granted values win).
+            self.seedWebTransportFlowCredit(&sess.flow);
+            return;
         }
-        try self.wt_established_sessions.put(self.allocator, stream_id, flow);
+        // Direct confirmation without a prior pending mark (primitive
+        // users / unit fixtures) keeps working.
+        _ = try self.createWebTransportSession(stream_id, .established);
     }
 
     fn endWebTransportSession(self: *Session, stream_id: u64) void {
-        _ = self.wt_pending_sessions.remove(stream_id);
-        if (self.wt_established_sessions.fetchRemove(stream_id)) |entry| {
+        if (self.wt_sessions.fetchRemove(stream_id)) |entry| {
+            if (entry.value.phase == .pending) self.wt_pending_count -= 1;
+            entry.value.deinit(self.allocator);
             self.allocator.destroy(entry.value);
         }
     }
 
     pub fn webTransportSessionState(self: *const Session, stream_id: u64) WebTransportSessionState {
-        if (self.wt_established_sessions.contains(stream_id)) return .established;
-        if (self.wt_pending_sessions.contains(stream_id)) return .pending;
-        return .none;
+        const sess = self.wt_sessions.get(stream_id) orelse return .none;
+        return switch (sess.phase) {
+            .pending => .pending,
+            .established => .established,
+        };
     }
 
     pub fn webTransportPendingCount(self: *const Session) usize {
-        return self.wt_pending_sessions.count();
+        return self.wt_pending_count;
     }
 
     pub fn webTransportEstablishedCount(self: *const Session) usize {
-        return self.wt_established_sessions.count();
+        return self.wt_sessions.count() - self.wt_pending_count;
     }
 
     pub fn webTransportBufferedByteCount(self: *const Session) usize {
@@ -1931,12 +1994,19 @@ pub const Session = struct {
     /// not yet confirmed. The snapshot is a value-typed copy and is
     /// safe to inspect outside any drain.
     pub fn webTransportFlowSnapshot(self: *const Session, session_id: u64) ?WTSessionFlowSnapshot {
-        const flow = self.wt_established_sessions.get(session_id) orelse return null;
-        return WTSessionFlowSnapshot.fromState(flow);
+        // Public contract unchanged: snapshots are for ESTABLISHED
+        // sessions only (pending flow state is an internal gating
+        // detail until it settles).
+        const sess = self.wt_sessions.get(session_id) orelse return null;
+        if (sess.phase != .established) return null;
+        return WTSessionFlowSnapshot.fromState(&sess.flow);
     }
 
+    /// Mutable flow state for BOTH phases: pending sessions carry seeded
+    /// §9.2 credit and are gated/counted exactly like established ones.
     fn webTransportFlowMut(self: *Session, session_id: u64) ?*WTSessionFlowState {
-        return self.wt_established_sessions.get(session_id);
+        const sess = self.wt_sessions.get(session_id) orelse return null;
+        return &sess.flow;
     }
 
     /// Updates the locally-advertised `WT_MAX_DATA` limit and emits a
@@ -3282,7 +3352,7 @@ pub const Session = struct {
         // tear the whole session down here — surfacing the violation
         // via an explicit `webtransport_flow_violated` event lets the
         // application choose between retry, escalation, or reuse.
-        if (self.wt_established_sessions.get(state.wt_session_id.?)) |flow| {
+        if (self.webTransportFlowMut(state.wt_session_id.?)) |flow| {
             if (flow.local_max_data) |limit| {
                 // Saturating addition: a peer-controlled `rx.items.len`
                 // plus a long-running counter could in principle
@@ -3320,7 +3390,7 @@ pub const Session = struct {
         // can't wrap the counter and trip the receive-side gate
         // below; once we've reached u64 max the gate has long since
         // fired anyway.
-        if (self.wt_established_sessions.get(state.wt_session_id.?)) |flow| {
+        if (self.webTransportFlowMut(state.wt_session_id.?)) |flow| {
             flow.peer_data_received = std.math.add(u64, flow.peer_data_received, @as(u64, data_len)) catch std.math.maxInt(u64);
         }
     }
@@ -3339,7 +3409,7 @@ pub const Session = struct {
         // the WT session; we surface it as an event so the
         // application can decide between session-close and per-
         // stream rejection).
-        if (self.wt_established_sessions.get(state.wt_session_id.?)) |flow| {
+        if (self.webTransportFlowMut(state.wt_session_id.?)) |flow| {
             const limit = switch (kind) {
                 .bidi => flow.local_max_streams_bidi,
                 .uni => flow.local_max_streams_uni,
@@ -3371,7 +3441,7 @@ pub const Session = struct {
         // reserve keeps a retried open from double-counting toward the peer
         // stream-count limit.
         try budget.reserve(0);
-        if (self.wt_established_sessions.get(state.wt_session_id.?)) |flow| {
+        if (self.webTransportFlowMut(state.wt_session_id.?)) |flow| {
             switch (kind) {
                 .bidi => flow.peer_streams_opened_bidi += 1,
                 .uni => flow.peer_streams_opened_uni += 1,
@@ -4548,8 +4618,7 @@ pub const Session = struct {
     /// in the otherwise-forbidden direction (per RFC 9114 §6.1 ¶3) get
     /// the WebTransport carve-out treatment in `processBidiState`.
     fn webTransportEndpointActive(self: *const Session) bool {
-        return self.wt_pending_sessions.count() > 0 or
-            self.wt_established_sessions.count() > 0;
+        return self.wt_sessions.count() > 0;
     }
 
     fn ensureMessageState(
