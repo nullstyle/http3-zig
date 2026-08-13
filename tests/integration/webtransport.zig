@@ -133,7 +133,7 @@ test "WebTransport over HTTP/3 establishes session, exchanges datagrams, and clo
 
     var now_us: u64 = 1_000_000;
     var iters: u32 = 0;
-    var client_wt_uni_stream: ?u64 = null;
+    var client_wt_uni_stream: ?http3_zig.WebTransportStream = null;
     while (!server_saw_close) : (iters += 1) {
         try std.testing.expect(iters < 20_000);
         try pumpH3(
@@ -223,10 +223,10 @@ test "WebTransport over HTTP/3 establishes session, exchanges datagrams, and clo
                         // and close it.
                         try client_wt.sendDatagram(datagram_to_server);
 
-                        const uni_id = try client_wt.openUniStream();
-                        client_wt_uni_stream = uni_id;
-                        try client_wt.writeStream(uni_id, "hello");
-                        try client_wt.finishStream(uni_id);
+                        const uni = try client_wt.openUniStream();
+                        client_wt_uni_stream = uni;
+                        try uni.write("hello");
+                        try uni.finish();
 
                         try client_wt.sendDrain();
                         try client_wt.close(close_code, close_reason);
@@ -251,8 +251,8 @@ test "WebTransport over HTTP/3 establishes session, exchanges datagrams, and clo
 
     // The unidirectional stream should be a client-initiated unidirectional
     // QUIC stream — id mod 4 == 2 per RFC 9000 §2.1.
-    if (client_wt_uni_stream) |uni_id| {
-        try std.testing.expectEqual(@as(u64, 2), uni_id & 0b11);
+    if (client_wt_uni_stream) |uni| {
+        try std.testing.expectEqual(@as(u64, 2), uni.stream_id & 0b11);
     }
 }
 
@@ -398,8 +398,8 @@ test "WebTransport unidirectional streams flow through the inbound dispatch path
     }
 
     var server_wt: ?http3_zig.WebTransportServerStream = null;
-    var client_uni_stream_id: ?u64 = null;
-    var server_uni_stream_id: ?u64 = null;
+    var client_uni_stream_id: ?http3_zig.WebTransportStream = null;
+    var server_uni_stream_id: ?http3_zig.WebTransportStream = null;
     const client_payload = "hello-from-client";
     const server_payload = "hello-from-server";
 
@@ -438,8 +438,8 @@ test "WebTransport unidirectional streams flow through the inbound dispatch path
                         // parallel.
                         const uni = try accepted.openUniStream();
                         server_uni_stream_id = uni;
-                        try accepted.writeStream(uni, server_payload);
-                        try accepted.finishStream(uni);
+                        try uni.write(server_payload);
+                        try uni.finish();
                         server_wt = accepted;
                     }
                 },
@@ -470,8 +470,8 @@ test "WebTransport unidirectional streams flow through the inbound dispatch path
                     if (client_uni_stream_id == null and response.headers().len > 0 and response.webTransportAccepted()) {
                         const uni = try client_wt.openUniStream();
                         client_uni_stream_id = uni;
-                        try client_wt.writeStream(uni, client_payload);
-                        try client_wt.finishStream(uni);
+                        try uni.write(client_payload);
+                        try uni.finish();
                     }
                 },
                 .webtransport_stream_opened => |opened| {
@@ -552,7 +552,7 @@ test "WebTransport server-initiated bidirectional stream reaches the client (dra
     }
 
     var server_wt: ?http3_zig.WebTransportServerStream = null;
-    var server_bidi_id: ?u64 = null;
+    var server_bidi_id: ?http3_zig.WebTransportStream = null;
     const bidi_payload = "server-bidi-hello";
 
     var client_saw_open = false;
@@ -586,8 +586,8 @@ test "WebTransport server-initiated bidirectional stream reaches the client (dra
                         // role-deferred dispatch.
                         const bidi = try accepted.openBidiStream();
                         server_bidi_id = bidi;
-                        try accepted.writeStream(bidi, bidi_payload);
-                        try accepted.finishStream(bidi);
+                        try bidi.write(bidi_payload);
+                        try bidi.finish();
                         server_wt = accepted;
                     }
                 },
@@ -665,7 +665,7 @@ test "WebTransport client-initiated bidirectional stream is dispatched as WT, no
     }
 
     var server_wt: ?http3_zig.WebTransportServerStream = null;
-    var bidi_stream_id: ?u64 = null;
+    var bidi_stream_id: ?http3_zig.WebTransportStream = null;
     const bidi_payload = "client-bidi-payload";
 
     var server_saw_bidi_opened = false;
@@ -720,8 +720,8 @@ test "WebTransport client-initiated bidirectional stream is dispatched as WT, no
                     if (bidi_stream_id == null and response.headers().len > 0 and response.webTransportAccepted()) {
                         const bidi = try client_wt.openBidiStream();
                         bidi_stream_id = bidi;
-                        try client_wt.writeStream(bidi, bidi_payload);
-                        try client_wt.finishStream(bidi);
+                        try bidi.write(bidi_payload);
+                        try bidi.finish();
                     }
                 },
                 else => {},
@@ -773,7 +773,7 @@ test "WebTransport stream RESET propagates the application error code" {
     }
 
     var server_wt: ?http3_zig.WebTransportServerStream = null;
-    var uni_stream_id: ?u64 = null;
+    var uni_stream_id: ?http3_zig.WebTransportStream = null;
     var server_saw_open = false;
     var sent_reset = false;
     const app_error_code: u32 = 0xabad1dea;
@@ -825,7 +825,7 @@ test "WebTransport stream RESET propagates the application error code" {
                     if (uni_stream_id == null and response.headers().len > 0 and response.webTransportAccepted()) {
                         const uni = try client_wt.openUniStream();
                         uni_stream_id = uni;
-                        try client_wt.writeStream(uni, "before-reset");
+                        try uni.write("before-reset");
                     }
                 },
                 else => {},
@@ -840,7 +840,7 @@ test "WebTransport stream RESET propagates the application error code" {
         // and would fall back to the generic stream_reset event.
         if (server_saw_open and !sent_reset) {
             if (uni_stream_id) |uni| {
-                try client_wt.resetStream(uni, app_error_code);
+                try uni.reset(app_error_code);
                 sent_reset = true;
             }
         }
@@ -1136,8 +1136,8 @@ test "Buffered streams: .reject policy never surfaces stream events for the held
     // discard this stream rather than emit any
     // `webtransport_stream_*` event for it.
     const uni = try client_wt.openUniStream();
-    try client_wt.writeStream(uni, "early bird");
-    try client_wt.finishStream(uni);
+    try uni.write("early bird");
+    try uni.finish();
 
     var server_runner = http3_zig.ServerRunner.init(allocator);
     defer server_runner.deinit();
@@ -1231,8 +1231,8 @@ test "Buffered streams: .buffer policy holds bytes until the session is confirme
 
     // Open the uni WT stream first, before the server has accepted.
     const uni = try client_wt.openUniStream();
-    try client_wt.writeStream(uni, "buffered hello");
-    try client_wt.finishStream(uni);
+    try uni.write("buffered hello");
+    try uni.finish();
 
     var client_runner = http3_zig.ClientRunner.init(allocator);
     defer client_runner.deinit();
@@ -1425,11 +1425,11 @@ test "WebTransport: 16 concurrent uni streams round-trip" {
                     else => return err,
                 };
                 const idx = streams_opened;
-                try stream_index_by_id.put(allocator, uni, idx);
+                try stream_index_by_id.put(allocator, uni.stream_id, idx);
                 var payload_buf: [32]u8 = undefined;
                 const payload = try std.fmt.bufPrint(&payload_buf, "stream-{d}-payload", .{idx});
-                try client_wt.writeStream(uni, payload);
-                try client_wt.finishStream(uni);
+                try uni.write(payload);
+                try uni.finish();
                 streams_opened += 1;
                 streams_finished_on_client += 1;
             }
@@ -1496,7 +1496,7 @@ test "WebTransport: large uni stream payload reassembled across writes" {
 
     var server_wt: ?http3_zig.WebTransportServerStream = null;
     var client_saw_response = false;
-    var uni_id: ?u64 = null;
+    var uni_id: ?http3_zig.WebTransportStream = null;
     var bytes_written: usize = 0;
     var server_received: std.ArrayList(u8) = .empty;
     defer server_received.deinit(allocator);
@@ -1562,10 +1562,10 @@ test "WebTransport: large uni stream payload reassembled across writes" {
             if (bytes_written < total_bytes) {
                 const remaining = total_bytes - bytes_written;
                 const take = @min(chunk_size, remaining);
-                try client_wt.writeStream(id, expected[bytes_written .. bytes_written + take]);
+                try id.write(expected[bytes_written .. bytes_written + take]);
                 bytes_written += take;
                 if (bytes_written == total_bytes) {
-                    try client_wt.finishStream(id);
+                    try id.finish();
                 }
             }
         }
@@ -1740,12 +1740,12 @@ test "WebTransport: 8 buffered uni streams replay open + data + finish in client
     var open_order: [num_streams]u64 = undefined;
     for (0..num_streams) |i| {
         const uni = try client_wt.openUniStream();
-        open_order[i] = uni;
-        try stream_index_by_id.put(allocator, uni, i);
+        open_order[i] = uni.stream_id;
+        try stream_index_by_id.put(allocator, uni.stream_id, i);
         var payload_buf: [32]u8 = undefined;
         const payload = try std.fmt.bufPrint(&payload_buf, "buf-{d}-data", .{i});
-        try client_wt.writeStream(uni, payload);
-        try client_wt.finishStream(uni);
+        try uni.write(payload);
+        try uni.finish();
     }
 
     var server_runner = http3_zig.ServerRunner.init(allocator);
@@ -1936,7 +1936,7 @@ test "WebTransport: send-side buffered cap reports backpressure and drains" {
 
     var server_wt: ?http3_zig.WebTransportServerStream = null;
     var client_saw_response = false;
-    var uni_id: ?u64 = null;
+    var uni_id: ?http3_zig.WebTransportStream = null;
     var bytes_written: usize = 0;
     var saw_canbuffer_false = false;
     var server_received: std.ArrayList(u8) = .empty;
@@ -2003,14 +2003,14 @@ test "WebTransport: send-side buffered cap reports backpressure and drains" {
             if (bytes_written < total_bytes) {
                 const remaining = total_bytes - bytes_written;
                 const take = @min(chunk_size, remaining);
-                if (try pair.client_h3.canBufferStreamBytes(id, take)) {
-                    try client_wt.writeStream(id, expected[bytes_written .. bytes_written + take]);
+                if (try pair.client_h3.canBufferStreamBytes(id.stream_id, take)) {
+                    try id.write(expected[bytes_written .. bytes_written + take]);
                     bytes_written += take;
                 } else {
                     saw_canbuffer_false = true;
                 }
             } else if (!sent_finish) {
-                try client_wt.finishStream(id);
+                try id.finish();
                 sent_finish = true;
             }
         }
@@ -2122,13 +2122,13 @@ test "WebTransport: writeStream is gated by peer's WT_MAX_DATA limit" {
     }
 
     // With peer_max_data = 16 the client can write exactly 16 bytes.
-    const stream_id = try client_wt.openUniStream();
-    try client_wt.writeStream(stream_id, "0123456789ABCDEF"); // 16 bytes
+    const stream = try client_wt.openUniStream();
+    try stream.write("0123456789ABCDEF"); // 16 bytes
     // Anything past the limit must fire WebTransportFlowControlExceeded
     // and auto-emit WT_DATA_BLOCKED.
     try std.testing.expectError(
         error.WebTransportFlowControlExceeded,
-        client_wt.writeStream(stream_id, "x"),
+        stream.write("x"),
     );
 
     // Counters reflect the writes that did succeed.
@@ -2343,10 +2343,10 @@ test "WebTransport: bumping WT_MAX_DATA after a block lets the sender resume" {
         // flag so a fresh BLOCKED could fire later if needed.
         if (advertised_max != null and advertised_max.? == first_limit and !sent_second_max) {
             const stream = try client_wt.openUniStream();
-            try client_wt.writeStream(stream, "01234567"); // 8 bytes
+            try stream.write("01234567"); // 8 bytes
             try std.testing.expectError(
                 error.WebTransportFlowControlExceeded,
-                client_wt.writeStream(stream, "more"),
+                stream.write("more"),
             );
             // Server bumps the limit.
             if (server_wt) |*wt| try wt.sendMaxData(second_limit);
@@ -2361,7 +2361,7 @@ test "WebTransport: bumping WT_MAX_DATA after a block lets the sender resume" {
     // After the bump, the client must be able to write the additional
     // 16 bytes (24 - 8 = 16).
     const stream2 = try client_wt.openUniStream();
-    try client_wt.writeStream(stream2, "0123456789ABCDEF"); // 16 bytes
+    try stream2.write("0123456789ABCDEF"); // 16 bytes
 
     const snap = client_wt.flowState() orelse return error.MissingFlowState;
     try std.testing.expectEqual(@as(u64, 24), snap.local_data_sent);
@@ -2412,7 +2412,7 @@ test "WebTransport: peer_data_received auto-tracks bytes surfaced via webtranspo
     }
 
     var server_wt: ?http3_zig.WebTransportServerStream = null;
-    var client_uni: ?u64 = null;
+    var client_uni: ?http3_zig.WebTransportStream = null;
     const payload = "hello, server, here are some bytes for you";
     var server_received_bytes: u64 = 0;
 
@@ -2452,8 +2452,8 @@ test "WebTransport: peer_data_received auto-tracks bytes surfaced via webtranspo
                     const response = response_state.reader();
                     if (client_uni == null and response.headers().len > 0 and response.webTransportAccepted()) {
                         const id = try client_wt.openUniStream();
-                        try client_wt.writeStream(id, payload);
-                        try client_wt.finishStream(id);
+                        try id.write(payload);
+                        try id.finish();
                         client_uni = id;
                     }
                 },
@@ -2576,8 +2576,8 @@ test "WebTransport: receive-side WT_MAX_DATA enforcement fires webtransport_flow
                         // reach the server in violation. The server
                         // should reset and emit the event.
                         const id = try client_wt.openUniStream();
-                        try client_wt.writeStream(id, "12345678");
-                        try client_wt.finishStream(id);
+                        try id.write("12345678");
+                        try id.finish();
                         client_uni_sent = true;
                     }
                 },
@@ -2679,11 +2679,11 @@ test "WebTransport: receive-side WT_MAX_STREAMS_UNI enforcement fires webtranspo
                         // The 2nd should trip the violation handler on
                         // the server.
                         const a = try client_wt.openUniStream();
-                        try client_wt.writeStream(a, "first");
-                        try client_wt.finishStream(a);
+                        try a.write("first");
+                        try a.finish();
                         const b = try client_wt.openUniStream();
-                        try client_wt.writeStream(b, "second");
-                        try client_wt.finishStream(b);
+                        try b.write("second");
+                        try b.finish();
                         client_streams_sent = true;
                     }
                 },
@@ -2743,7 +2743,7 @@ test "WebTransport: long-lived stream sustains many small writes without unbound
     }
 
     var server_wt: ?http3_zig.WebTransportServerStream = null;
-    var client_uni: ?u64 = null;
+    var client_uni: ?http3_zig.WebTransportStream = null;
 
     // Bring the session up. The bookkeeping checks below assume
     // we have an established WT session both sides know about.
@@ -2788,7 +2788,7 @@ test "WebTransport: long-lived stream sustains many small writes without unbound
         clearSessionEvents(allocator, &client_events);
     }
 
-    const stream_id = client_uni.?;
+    const stream = client_uni.?;
     const cycles: usize = 64;
     // Inline 44-byte chunk (4× "small write"). Spelled out to avoid
     // the `**` repeat operator's strict whitespace requirements.
@@ -2798,7 +2798,7 @@ test "WebTransport: long-lived stream sustains many small writes without unbound
 
     var cycle_idx: usize = 0;
     while (cycle_idx < cycles) : (cycle_idx += 1) {
-        try client_wt.writeStream(stream_id, chunk);
+        try stream.write(chunk);
         total_bytes_sent += chunk.len;
 
         // Pump once so the server reads what was queued. Then
@@ -2817,7 +2817,7 @@ test "WebTransport: long-lived stream sustains many small writes without unbound
         clearSessionEvents(allocator, &server_events);
         clearSessionEvents(allocator, &client_events);
 
-        const send_state = try pair.client_h3.streamSendState(stream_id);
+        const send_state = try pair.client_h3.streamSendState(stream.stream_id);
         if (send_state.buffered_bytes > max_buffered_seen) {
             max_buffered_seen = send_state.buffered_bytes;
         }
@@ -2826,7 +2826,7 @@ test "WebTransport: long-lived stream sustains many small writes without unbound
     // Drain whatever's left.
     var settle_iters: u32 = 0;
     while (settle_iters < 100) : (settle_iters += 1) {
-        const send_state = try pair.client_h3.streamSendState(stream_id);
+        const send_state = try pair.client_h3.streamSendState(stream.stream_id);
         if (send_state.buffered_bytes == 0 and !send_state.has_pending) break;
         try pumpH3(
             &pair.client,
@@ -2849,7 +2849,7 @@ test "WebTransport: long-lived stream sustains many small writes without unbound
     try std.testing.expect(max_buffered_seen < total_bytes_sent);
 
     // Final state should be quiescent.
-    const final = try pair.client_h3.streamSendState(stream_id);
+    const final = try pair.client_h3.streamSendState(stream.stream_id);
     try std.testing.expectEqual(@as(u64, 0), final.buffered_bytes);
     try std.testing.expect(!final.has_pending);
 }
@@ -3180,9 +3180,9 @@ test "WebTransport: .buffer policy enforces wt_max_total_buffered_bytes" {
     const payload_a = "abcdefghijklmnop"; // 16 bytes, under total cap.
     const payload_b = "qrstuvwxyzABCDEF"; // second stream pushes total > 24.
     const uni_a = try client_wt.openUniStream();
-    try client_wt.writeStream(uni_a, payload_a);
+    try uni_a.write(payload_a);
     const uni_b = try client_wt.openUniStream();
-    try client_wt.writeStream(uni_b, payload_b);
+    try uni_b.write(payload_b);
 
     var client_events: std.ArrayList(http3_zig.session.Event) = .empty;
     defer {
@@ -3272,8 +3272,8 @@ test "WebTransport: .buffer replay under tight budget surfaces opened+data+finis
     // session is confirmed via `acceptWebTransport`.
     const payload = "buffered-stream-payload";
     const uni = try client_wt.openUniStream();
-    try client_wt.writeStream(uni, payload);
-    try client_wt.finishStream(uni);
+    try uni.write(payload);
+    try uni.finish();
 
     var client_runner = http3_zig.ClientRunner.init(allocator);
     defer client_runner.deinit();
@@ -3470,10 +3470,10 @@ test "WebTransport: peer FINs CONNECT control stream without CLOSE_WEBTRANSPORT_
 }
 
 test "WebTransportStream handle drives a substream and leaves the session alive" {
-    // Typed-handle coverage: adopt the id from openUniStream via
-    // streamHandle, drive write/finish through the handle, and pin the
-    // safety property the type exists for — handle verbs act on the
-    // substream, never the CONNECT stream, so the session survives.
+    // Typed-handle coverage: drive write/finish through the handle
+    // returned by openUniStream, and pin the safety property the type
+    // exists for — handle verbs act on the substream, never the
+    // CONNECT stream, so the session survives.
     const allocator = std.testing.allocator;
     const h3_settings: http3_zig.Settings = .{
         .enable_connect_protocol = true,
@@ -3558,10 +3558,8 @@ test "WebTransportStream handle drives a substream and leaves the session alive"
                 .response_updated, .response_complete => |response_state| {
                     const response = response_state.reader();
                     if (!sent_via_handle and response.headers().len > 0 and response.webTransportAccepted()) {
-                        const uni_id = try client_wt.openUniStream();
-                        const uni = client_wt.streamHandle(uni_id, .uni);
+                        const uni = try client_wt.openUniStream();
                         try std.testing.expectEqual(session_id, uni.session_id);
-                        try std.testing.expectEqual(uni_id, uni.stream_id);
                         try std.testing.expectEqual(http3_zig.WebTransportStreamKind.uni, uni.kind);
                         try std.testing.expect(try uni.canBuffer(payload.len));
                         try uni.write(payload);

@@ -153,7 +153,7 @@ test "WebTransport: 5 concurrent sessions, peer opens 10 uni streams per session
             const wt_ptr = server_wt_by_session.getPtr(sid) orelse continue;
             while (sessions_streamed[i] < streams_per_session) {
                 const stream_idx = sessions_streamed[i];
-                const stream_id = wt_ptr.openUniStream() catch |err| switch (err) {
+                const stream = wt_ptr.openUniStream() catch |err| switch (err) {
                     error.StreamLimitExceeded => break,
                     else => return err,
                 };
@@ -163,8 +163,8 @@ test "WebTransport: 5 concurrent sessions, peer opens 10 uni streams per session
                     "session-{d}-stream-{d}",
                     .{ i, stream_idx },
                 );
-                try wt_ptr.writeStream(stream_id, payload);
-                try wt_ptr.finishStream(stream_id);
+                try stream.write(payload);
+                try stream.finish();
                 sessions_streamed[i] += 1;
             }
         }
@@ -397,9 +397,9 @@ test "WebTransport: 3 sessions, one DRAINs while others stay active" {
         try std.testing.expect(!flow.received_drain);
         // Open one of each kind to prove the gate is open.
         const uni = try client_sessions[i].openUniStream();
-        try client_sessions[i].finishStream(uni);
+        try uni.finish();
         const bidi = try client_sessions[i].openBidiStream();
-        try client_sessions[i].finishStream(bidi);
+        try bidi.finish();
     }
 }
 

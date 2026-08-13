@@ -110,8 +110,8 @@ const ProxyDemo = struct {
     upstream_proxy_events: std.ArrayList(http3_zig.Event),
     upstream_server_events: std.ArrayList(http3_zig.Event),
 
-    down_to_up_streams: std.AutoHashMap(u64, u64),
-    up_to_down_streams: std.AutoHashMap(u64, u64),
+    down_to_up_streams: std.AutoHashMap(u64, http3_zig.WebTransportStream),
+    up_to_down_streams: std.AutoHashMap(u64, http3_zig.WebTransportStream),
 
     downstream_now_us: u64,
     upstream_now_us: u64,
@@ -164,8 +164,8 @@ const ProxyDemo = struct {
             .downstream_proxy_events = .empty,
             .upstream_proxy_events = .empty,
             .upstream_server_events = .empty,
-            .down_to_up_streams = std.AutoHashMap(u64, u64).init(allocator),
-            .up_to_down_streams = std.AutoHashMap(u64, u64).init(allocator),
+            .down_to_up_streams = std.AutoHashMap(u64, http3_zig.WebTransportStream).init(allocator),
+            .up_to_down_streams = std.AutoHashMap(u64, http3_zig.WebTransportStream).init(allocator),
             .downstream_now_us = 1_000_000,
             .upstream_now_us = 2_000_000,
             .downstream_request_cursor = 0,
@@ -250,11 +250,11 @@ const ProxyDemo = struct {
         try self.downstream_client_wt.sendMaxData(downstream_max_data);
         try self.downstream_client_wt.sendDatagram(downstream_datagram);
         const down_stream = try self.downstream_client_wt.openUniStream();
-        try self.downstream_client_wt.writeStream(down_stream, downstream_stream_payload);
-        try self.downstream_client_wt.finishStream(down_stream);
+        try down_stream.write(downstream_stream_payload);
+        try down_stream.finish();
         std.debug.print(
             "downstream client: sent WT_MAX_DATA, datagram, and uni stream {d}\n",
-            .{down_stream},
+            .{down_stream.stream_id},
         );
 
         var iters: u32 = 0;
@@ -452,28 +452,28 @@ const ProxyDemo = struct {
                         try self.down_to_up_streams.put(opened.stream_id, outbound);
                         std.debug.print(
                             "proxy: opened upstream WT stream {d} for downstream stream {d}\n",
-                            .{ outbound, opened.stream_id },
+                            .{ outbound.stream_id, opened.stream_id },
                         );
                     }
                 },
                 .webtransport_stream_data => |data| {
                     if (data.session_id == self.proxy_in_wt.sessionId()) {
                         const outbound = self.down_to_up_streams.get(data.stream_id) orelse return error.MissingDownstreamStreamMap;
-                        try self.proxy_out_wt.writeStream(outbound, data.data);
+                        try outbound.write(data.data);
                         std.debug.print("proxy: copied downstream stream bytes upstream\n", .{});
                     }
                 },
                 .webtransport_stream_finished => |finished| {
                     if (finished.session_id == self.proxy_in_wt.sessionId()) {
                         const outbound = self.down_to_up_streams.get(finished.stream_id) orelse return error.MissingDownstreamStreamMap;
-                        try self.proxy_out_wt.finishStream(outbound);
+                        try outbound.finish();
                         std.debug.print("proxy: forwarded downstream stream FIN upstream\n", .{});
                     }
                 },
                 .webtransport_stream_reset => |reset| {
                     if (reset.session_id == self.proxy_in_wt.sessionId()) {
                         const outbound = self.down_to_up_streams.get(reset.stream_id) orelse return error.MissingDownstreamStreamMap;
-                        try self.proxy_out_wt.resetStreamWithCode(outbound, reset.error_code);
+                        try outbound.resetWithCode(reset.error_code);
                         std.debug.print("proxy: forwarded downstream stream reset upstream\n", .{});
                     }
                 },
@@ -513,28 +513,28 @@ const ProxyDemo = struct {
                         try self.up_to_down_streams.put(opened.stream_id, outbound);
                         std.debug.print(
                             "proxy: opened downstream WT stream {d} for upstream stream {d}\n",
-                            .{ outbound, opened.stream_id },
+                            .{ outbound.stream_id, opened.stream_id },
                         );
                     }
                 },
                 .webtransport_stream_data => |data| {
                     if (data.session_id == self.proxy_out_wt.sessionId()) {
                         const outbound = self.up_to_down_streams.get(data.stream_id) orelse return error.MissingUpstreamStreamMap;
-                        try self.proxy_in_wt.writeStream(outbound, data.data);
+                        try outbound.write(data.data);
                         std.debug.print("proxy: copied upstream stream bytes downstream\n", .{});
                     }
                 },
                 .webtransport_stream_finished => |finished| {
                     if (finished.session_id == self.proxy_out_wt.sessionId()) {
                         const outbound = self.up_to_down_streams.get(finished.stream_id) orelse return error.MissingUpstreamStreamMap;
-                        try self.proxy_in_wt.finishStream(outbound);
+                        try outbound.finish();
                         std.debug.print("proxy: forwarded upstream stream FIN downstream\n", .{});
                     }
                 },
                 .webtransport_stream_reset => |reset| {
                     if (reset.session_id == self.proxy_out_wt.sessionId()) {
                         const outbound = self.up_to_down_streams.get(reset.stream_id) orelse return error.MissingUpstreamStreamMap;
-                        try self.proxy_in_wt.resetStreamWithCode(outbound, reset.error_code);
+                        try outbound.resetWithCode(reset.error_code);
                         std.debug.print("proxy: forwarded upstream stream reset downstream\n", .{});
                     }
                 },
@@ -645,12 +645,12 @@ const ProxyDemo = struct {
         try self.upstream_server_wt.sendDrain();
         try self.upstream_server_wt.sendDatagram(upstream_datagram);
         const up_stream = try self.upstream_server_wt.openUniStream();
-        try self.upstream_server_wt.writeStream(up_stream, upstream_stream_payload);
-        try self.upstream_server_wt.finishStream(up_stream);
+        try up_stream.write(upstream_stream_payload);
+        try up_stream.finish();
         self.upstream_replied = true;
         std.debug.print(
             "upstream server: sent DRAIN, datagram, and uni stream {d}\n",
-            .{up_stream},
+            .{up_stream.stream_id},
         );
     }
 
@@ -810,7 +810,7 @@ pub fn main(init: std.process.Init) !void {
 fn openMatchingStream(
     wt: anytype,
     kind: http3_zig.webtransport.StreamKind,
-) http3_zig.session.Error!u64 {
+) http3_zig.session.Error!http3_zig.WebTransportStream {
     return switch (kind) {
         .uni => try wt.openUniStream(),
         .bidi => try wt.openBidiStream(),

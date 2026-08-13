@@ -297,12 +297,12 @@ fn runHarness(allocator: std.mem.Allocator, io: std.Io, options: Options) !void 
                 .{datagram_payload.len},
             );
 
-            const uni_id = try wt.openUniStream();
-            try wt.writeStream(uni_id, uni_payload);
-            try wt.finishStream(uni_id);
+            const uni = try wt.openUniStream();
+            try uni.write(uni_payload);
+            try uni.finish();
             std.debug.print(
                 "external_wt: phase 3 — opened uni stream id={d}, payload=\"{s}\"\n",
-                .{ uni_id, uni_payload },
+                .{ uni.stream_id, uni_payload },
             );
             sent_data = true;
         }

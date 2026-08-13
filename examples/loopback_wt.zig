@@ -110,7 +110,7 @@ pub fn main(init: std.process.Init) !void {
     defer server_saw_uni_data.deinit(allocator);
     var server_saw_uni_finish = false;
     var server_saw_close = false;
-    var client_uni_id: ?u64 = null;
+    var client_uni_id: ?http3_zig.WebTransportStream = null;
 
     var iters: u32 = 0;
     while (!server_saw_close) : (iters += 1) {
@@ -203,13 +203,13 @@ pub fn main(init: std.process.Init) !void {
                         try client_wt.sendDatagram(datagram_to_server);
                         std.debug.print("step 5c: client sent datagram \"{s}\"\n", .{datagram_to_server});
 
-                        const uni_id = try client_wt.openUniStream();
-                        client_uni_id = uni_id;
-                        try client_wt.writeStream(uni_id, uni_payload);
-                        try client_wt.finishStream(uni_id);
+                        const uni = try client_wt.openUniStream();
+                        client_uni_id = uni;
+                        try uni.write(uni_payload);
+                        try uni.finish();
                         std.debug.print(
                             "step 6c: client opened uni WT stream (id={d}) with \"{s}\"\n",
-                            .{ uni_id, uni_payload },
+                            .{ uni.stream_id, uni_payload },
                         );
                     }
                 },

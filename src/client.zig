@@ -440,14 +440,16 @@ pub const WebTransportClientStream = struct {
     /// writes the WebTransport stream prefix. Returns the underlying QUIC
     /// stream id for subsequent `writeStream` / `finishStream` /
     /// `resetStream` calls.
-    pub fn openUniStream(self: *WebTransportClientStream) session_mod.Error!u64 {
-        return try self.writer.client.session.openWebTransportUniStream(self.sessionId());
+    pub fn openUniStream(self: *WebTransportClientStream) session_mod.Error!session_mod.WebTransportStream {
+        const stream_id = try self.writer.client.session.openWebTransportUniStream(self.sessionId());
+        return self.streamHandle(stream_id, .uni);
     }
 
     /// Opens a new client-initiated WebTransport bidirectional stream and
     /// writes the WebTransport bidi-frame prefix.
-    pub fn openBidiStream(self: *WebTransportClientStream) session_mod.Error!u64 {
-        return try self.writer.client.session.openWebTransportBidiStream(self.sessionId());
+    pub fn openBidiStream(self: *WebTransportClientStream) session_mod.Error!session_mod.WebTransportStream {
+        const stream_id = try self.writer.client.session.openWebTransportBidiStream(self.sessionId());
+        return self.streamHandle(stream_id, .bidi);
     }
 
     /// Typed handle for a substream of this session — from event data

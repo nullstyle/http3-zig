@@ -333,9 +333,9 @@ const App = struct {
             return;
         }
         var wt = entry.wt;
-        const stream_id = try wt.openUniStream();
-        try wt.writeStream(stream_id, payload);
-        try wt.finishStream(stream_id);
+        const stream = try wt.openUniStream();
+        try stream.write(payload);
+        try stream.finish();
         entry.wt = wt;
     }
 };

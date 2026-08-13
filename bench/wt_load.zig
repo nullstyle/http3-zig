@@ -530,7 +530,7 @@ fn runLoad(
             // MAX_STREAMS_UNI capsule lands.
             while (ps.streams_opened < streams_per_session) {
                 const stream_idx = ps.streams_opened;
-                const stream_id = wt.openUniStream() catch |err| switch (err) {
+                const stream = wt.openUniStream() catch |err| switch (err) {
                     error.WebTransportStreamLimitExceeded => break,
                     error.StreamLimitExceeded => break,
                     else => return err,
@@ -547,7 +547,7 @@ fn runLoad(
                 var combined: [stream_payload_len]u8 = undefined;
                 @memcpy(combined[0..prefix.len], prefix);
                 @memcpy(combined[prefix.len..], stream_payload[prefix.len..]);
-                wt.writeStream(stream_id, &combined) catch |err| switch (err) {
+                stream.write(&combined) catch |err| switch (err) {
                     error.WebTransportFlowControlExceeded,
                     error.FlowControlExceeded,
                     error.SendBufferFull,
@@ -555,7 +555,7 @@ fn runLoad(
                     => break,
                     else => return err,
                 };
-                wt.finishStream(stream_id) catch |err| switch (err) {
+                stream.finish() catch |err| switch (err) {
                     error.WebTransportFlowControlExceeded,
                     error.FlowControlExceeded,
                     error.SendBufferFull,

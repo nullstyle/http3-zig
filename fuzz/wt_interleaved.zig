@@ -203,6 +203,7 @@ const ServerStream = struct {
 /// left to do.
 const StreamRecord = struct {
     quic_id: u64,
+    kind: http3_zig.WebTransportStreamKind,
     session_idx: usize,
     side: Side,
     finished: bool = false,
@@ -422,7 +423,7 @@ const Harness = struct {
     fn opOpenUni(self: *Harness, c: *Cursor, side: Side) !void {
         const sid_idx = c.readU8();
         const session_idx = try self.pickSession(sid_idx, side);
-        const stream_id = switch (side) {
+        const stream = switch (side) {
             .client => blk: {
                 const s = self.clientSessionAt(session_idx) orelse return error.NoSessionAvailable;
                 break :blk try s.handle.openUniStream();
@@ -434,7 +435,8 @@ const Harness = struct {
         };
         if (self.streams.items.len < max_sessions * max_streams_per_session) {
             try self.streams.append(self.allocator, .{
-                .quic_id = stream_id,
+                .quic_id = stream.stream_id,
+                .kind = .uni,
                 .session_idx = session_idx,
                 .side = side,
             });
@@ -444,7 +446,7 @@ const Harness = struct {
     fn opOpenBidi(self: *Harness, c: *Cursor, side: Side) !void {
         const sid_idx = c.readU8();
         const session_idx = try self.pickSession(sid_idx, side);
-        const stream_id = switch (side) {
+        const stream = switch (side) {
             .client => blk: {
                 const s = self.clientSessionAt(session_idx) orelse return error.NoSessionAvailable;
                 break :blk try s.handle.openBidiStream();
@@ -456,7 +458,8 @@ const Harness = struct {
         };
         if (self.streams.items.len < max_sessions * max_streams_per_session) {
             try self.streams.append(self.allocator, .{
-                .quic_id = stream_id,
+                .quic_id = stream.stream_id,
+                .kind = .bidi,
                 .session_idx = session_idx,
                 .side = side,
             });
@@ -476,11 +479,11 @@ const Harness = struct {
             // Side bit ignored: writes go through the side that opened
             // the stream (the only side that can write to it on uni).
             _ = side;
-            try s.handle.writeStream(rec.quic_id, payload);
+            try s.handle.streamHandle(rec.quic_id, rec.kind).write(payload);
         } else {
             const s = self.serverSessionAt(rec.session_idx) orelse return error.NoSessionAvailable;
             _ = side;
-            try s.handle.writeStream(rec.quic_id, payload);
+            try s.handle.streamHandle(rec.quic_id, rec.kind).write(payload);
         }
     }
 
@@ -586,10 +589,10 @@ const Harness = struct {
         _ = side; // reset goes through whichever side opened the stream
         if (rec.side == .client) {
             const s = self.clientSessionAt(rec.session_idx) orelse return error.NoSessionAvailable;
-            try s.handle.resetStream(rec.quic_id, code);
+            try s.handle.streamHandle(rec.quic_id, rec.kind).reset(code);
         } else {
             const s = self.serverSessionAt(rec.session_idx) orelse return error.NoSessionAvailable;
-            try s.handle.resetStream(rec.quic_id, code);
+            try s.handle.streamHandle(rec.quic_id, rec.kind).reset(code);
         }
     }
 
@@ -602,10 +605,10 @@ const Harness = struct {
         _ = side;
         if (rec.side == .client) {
             const s = self.clientSessionAt(rec.session_idx) orelse return error.NoSessionAvailable;
-            try s.handle.finishStream(rec.quic_id);
+            try s.handle.streamHandle(rec.quic_id, rec.kind).finish();
         } else {
             const s = self.serverSessionAt(rec.session_idx) orelse return error.NoSessionAvailable;
-            try s.handle.finishStream(rec.quic_id);
+            try s.handle.streamHandle(rec.quic_id, rec.kind).finish();
         }
     }
 

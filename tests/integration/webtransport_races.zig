@@ -129,8 +129,8 @@ test "WebTransport: DRAIN arrives in same drain batch as 50 peer-opened streams"
                 };
                 var pl_buf: [8]u8 = undefined;
                 const pl = try std.fmt.bufPrint(&pl_buf, "s-{d}", .{streams_pushed_by_server});
-                try accepted.writeStream(uni, pl);
-                try accepted.finishStream(uni);
+                try uni.write(pl);
+                try uni.finish();
                 streams_pushed_by_server += 1;
             }
             // Send DRAIN once all 50 stream-opens have been issued
@@ -405,12 +405,12 @@ test "WebTransport: peer FIN of CONNECT while local mid-send on three streams" {
 
     // Locally open 3 uni streams and write 100 bytes on each WITHOUT
     // finishing them — this is the "mid-send" state we want to hit.
-    var uni_ids: [3]u64 = undefined;
+    var uni_ids: [3]http3_zig.WebTransportStream = undefined;
     var payload: [100]u8 = undefined;
     for (&payload, 0..) |*b, i| b.* = @intCast(i & 0xff);
     for (&uni_ids) |*sid| {
         sid.* = try client_wt.openUniStream();
-        try client_wt.writeStream(sid.*, &payload);
+        try sid.write(&payload);
     }
 
     // Server FINs the CONNECT stream WITHOUT sending CLOSE_WT.
@@ -444,7 +444,7 @@ test "WebTransport: peer FIN of CONNECT while local mid-send on three streams" {
     // the QUIC streams aren't reset by session teardown; the
     // application can keep reading what's already buffered or finish
     // / reset them itself.
-    for (uni_ids) |sid| try std.testing.expect(pair.client.stream(sid) != null);
+    for (uni_ids) |sid| try std.testing.expect(pair.client.stream(sid.stream_id) != null);
 }
 
 test "WebTransport: peer RESETs CONNECT while local has buffered WT streams pending" {
@@ -495,13 +495,13 @@ test "WebTransport: peer RESETs CONNECT while local has buffered WT streams pend
     // Open 5 uni streams BEFORE the server accepts. The server-side
     // session is still pending; its inbound dispatch will mark these
     // as `wt_buffered` entries on the server.
-    var uni_ids: [5]u64 = undefined;
+    var uni_ids: [5]http3_zig.WebTransportStream = undefined;
     var payload: [100]u8 = undefined;
     for (&payload, 0..) |*b, i| b.* = @intCast(i & 0xff);
     for (&uni_ids) |*sid| {
         sid.* = try client_wt.openUniStream();
-        try client_wt.writeStream(sid.*, &payload);
-        try client_wt.finishStream(sid.*);
+        try sid.write(&payload);
+        try sid.finish();
     }
 
     var client_runner = http3_zig.ClientRunner.init(allocator);
@@ -598,7 +598,7 @@ test "WebTransport: peer RESETs CONNECT while local has buffered WT streams pend
             };
             if (offending_id) |sid_seen| {
                 for (uni_ids) |sid| {
-                    if (sid_seen == sid) saw_phantom_opened = true;
+                    if (sid_seen == sid.stream_id) saw_phantom_opened = true;
                 }
             }
             _ = try server_runner.observe(event);

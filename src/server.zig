@@ -471,8 +471,9 @@ pub const WebTransportServerStream = struct {
         return try self.writer.datagramTracked(payload);
     }
 
-    pub fn openUniStream(self: *WebTransportServerStream) session_mod.Error!u64 {
-        return try self.writer.server.session.openWebTransportUniStream(self.sessionId());
+    pub fn openUniStream(self: *WebTransportServerStream) session_mod.Error!session_mod.WebTransportStream {
+        const stream_id = try self.writer.server.session.openWebTransportUniStream(self.sessionId());
+        return self.streamHandle(stream_id, .uni);
     }
 
     /// Opens a server-initiated bidirectional WebTransport stream
@@ -482,8 +483,9 @@ pub const WebTransportServerStream = struct {
     /// streams. The underlying QUIC stream id has the
     /// server-initiated-bidi pattern (low bits `0b01`); the prefix
     /// (frame type `0x41` + Session ID) is written automatically.
-    pub fn openBidiStream(self: *WebTransportServerStream) session_mod.Error!u64 {
-        return try self.writer.server.session.openWebTransportBidiStream(self.sessionId());
+    pub fn openBidiStream(self: *WebTransportServerStream) session_mod.Error!session_mod.WebTransportStream {
+        const stream_id = try self.writer.server.session.openWebTransportBidiStream(self.sessionId());
+        return self.streamHandle(stream_id, .bidi);
     }
 
     /// Typed handle for a substream of this session — from event data

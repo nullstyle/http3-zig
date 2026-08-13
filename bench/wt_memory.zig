@@ -315,9 +315,9 @@ fn doWorkUnit(p: *Persistent, stream_payload: []const u8, datagram_payload: []co
     // to wait for the MAX_STREAMS replenishment quic sends as
     // streams close. Pump until `openUniStream` succeeds — this is
     // the same pattern the "16 concurrent uni streams" test uses.
-    const uni_id = blk: while (true) {
-        if (p.client_wt.openUniStream()) |id| {
-            break :blk id;
+    const uni = blk: while (true) {
+        if (p.client_wt.openUniStream()) |handle| {
+            break :blk handle;
         } else |err| switch (err) {
             error.StreamLimitExceeded => {
                 try p.pumpOnce();
@@ -335,8 +335,8 @@ fn doWorkUnit(p: *Persistent, stream_payload: []const u8, datagram_payload: []co
             else => return err,
         }
     };
-    try p.client_wt.writeStream(uni_id, stream_payload);
-    try p.client_wt.finishStream(uni_id);
+    try uni.write(stream_payload);
+    try uni.finish();
 
     var saw_opened = false;
     var saw_data_bytes: usize = 0;

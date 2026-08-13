@@ -515,9 +515,9 @@ fn benchStream(allocator: std.mem.Allocator, io: std.Io, samples: []u64) !void {
 fn streamRoundTrip(p: *Persistent, io: std.Io, payload: []const u8, out_ns: ?*u64) !void {
     const start_ts = nowNs(io);
 
-    const uni_id = try p.client_wt.openUniStream();
-    try p.client_wt.writeStream(uni_id, payload);
-    try p.client_wt.finishStream(uni_id);
+    const uni = try p.client_wt.openUniStream();
+    try uni.write(payload);
+    try uni.finish();
 
     var server_saw_finish = false;
     var iters: u32 = 0;
