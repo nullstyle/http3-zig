@@ -75,6 +75,29 @@ breaking changes; see notes per release.
   new connections — BoringSSL up-refs `SSL_CTX` per `SSL_new`, so live
   connections finish on the old one — with
   `quic_zig.Server.replaceTlsContext` as the integrated wrapper path).
+- Added the typed `WebTransportStream` substream handle — a plain value
+  returned by the WT facades' `openUniStream`/`openBidiStream` with
+  `write`/`finish`/`reset`/`resetWithCode`/`sendState`/`canBuffer`, plus
+  `streamHandle(stream_id, kind)` on both facades for adopting
+  peer-opened streams from event data. Carries no capsule/datagram
+  surface, so substream code cannot reach the WT-out-of-spec
+  capsule-datagram path. (See the BREAKING entries for what it replaces.)
+- Added `RequestWriter.bidiAbort(code)` (reset + cancel — the
+  both-directions abort callers previously hand-composed) and the
+  session-scope `WebTransportClientStream.bidiAbort` forward.
+- Added a typed `priority` option to `RequestOptions` /
+  `RequestHeadOptions` (RFC 9218 §5): the client emits the `priority`
+  request field without hand-building the header.
+- Added GREASE sending (RFC 9114 §7.2.8): every session advertises one
+  reserved SETTINGS entry (`Settings.grease`, emitted via a new
+  `protocol.greaseValue`) and opens+FINs one reserved-type
+  unidirectional stream. `Config.enable_grease` (default on) opts out
+  for byte-exact wire tests.
+- Added `TransportEndpoint.nextTimerDeadline` and a "Foreign Event
+  Loops" embedding-guide section: `TimerKind.pacing` semantics, the
+  legal null-poll-while-pacing-gated state, the
+  never-switch-exhaustively forward-compat rule, and `fillGsoBatch` for
+  foreign loops doing their own `sendmsg`.
 
 ### Changed
 
@@ -111,9 +134,38 @@ breaking changes; see notes per release.
   opt-in BBRv3 (`congestion_control = .bbr`). The boringssl-zig pin
   moves 0.6.4 → 0.6.5 (a commit-SHA tarball, mirrored byte-for-byte
   from quic's manifest) for the native-Windows pkg-config linker fix.
+- **WebTransport substreams are typed handles now.** The WT facades'
+  `openUniStream`/`openBidiStream` return `WebTransportStream` instead
+  of a bare `u64`, and the four u64-taking facade methods
+  (`writeStream`/`finishStream`/`resetStream`/`resetStreamWithCode`)
+  are removed — substream verbs live on the handle
+  (`handle.write`/`finish`/`reset`/`resetWithCode`). Migration is
+  mechanical: `try wt.writeStream(id, bytes)` → `try handle.write(bytes)`;
+  code holding raw ids adopts them via `streamHandle(id, kind)` or drops
+  to the unchanged `Session.*WebTransportStream` primitives. The
+  motivation is the footgun this deletes: a substream id passed to a
+  session-scope method FINned the CONNECT stream and implicitly closed
+  the whole session (draft §5.4) — session scope and substream scope
+  are now different types, so that mistake no longer compiles.
+- **`requestWriter()` / `responseWriter()` are `underlyingWriter()`.**
+  All six extension-facade accessors (ConnectUdp/WebSocket/WebTransport
+  × client/server) renamed in one pass; hard rename, no alias. The WT
+  capsule-datagram WARNING carries over to the new name.
 
 ### Fixed
 
+- Fixed the request-time `priority` header being parsed but never
+  applied: only the PRIORITY_UPDATE frame path reached the transport
+  scheduler, so the common-case RFC 9218 signal silently no-opped. The
+  server now applies the effective signal when a request's header
+  section completes — and a PRIORITY_UPDATE that raced ahead of its
+  stream (buffered) is applied at that moment too, which it previously
+  never was.
+- Fixed the four interop harness loops treating peer-provoked socket
+  errors (ICMP-fed PortUnreachable/ConnectionResetByPeer/
+  ConnectionRefused, MessageOversize) as fatal; they now route through
+  quic's classifyReceiveError/classifySendError policy, matching the
+  bundled transport loops.
 - Fixed the drain loop resurrecting streams that `gcClosedStreams` had
   already reclaimed: quic-zig keeps yielding a finished stream until its
   own stream GC reaps it, and the recreated blank `StreamState` emitted a

@@ -43,7 +43,8 @@ but changes will be deliberate, called out in `CHANGELOG.md`, and kept minimal.
   (`ObservabilityHooks`, `KeylogCallback`, `Quic*` passthrough, `Metrics`).
 - **Extension facades** — API *shape* is stable; their on-wire format is
   draft-tracked (see *Draft-extension policy*): `WebTransportClientStream`
-  / `WebTransportServerStream` and the WT event types, `WebSocketClientStream`
+  / `WebTransportServerStream`, the typed `WebTransportStream` substream
+  handle and the WT event types, `WebSocketClientStream`
   / `WebSocketServerStream`, and the CONNECT-UDP tunnel wrappers.
 
 ### Unstable / evolving — usable, but expect movement

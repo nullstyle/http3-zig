@@ -225,22 +225,34 @@ forbidden in HTTP/3 — WebTransport carves them out (draft §4.2).
 
 ### Opening locally
 
+`openUniStream` / `openBidiStream` return a typed `WebTransportStream`
+handle — a plain copyable value carrying `{ session, session_id, stream_id,
+kind }` — and the substream verbs live on it:
+
 ```zig
 // From the WebTransportClientStream / WebTransportServerStream:
-const uni_id = try wt.openUniStream();
-try wt.writeStream(uni_id, "hello");
-try wt.finishStream(uni_id);
+const uni = try wt.openUniStream();
+try uni.write("hello");
+try uni.finish();
 
-const bidi_id = try wt.openBidiStream();
-try wt.writeStream(bidi_id, "ping");
+const bidi = try wt.openBidiStream();
+try bidi.write("ping");
 // ... peer can write back; observe via webtransport_stream_data ...
-try wt.finishStream(bidi_id);
+try bidi.finish();
 
-// Reset with an application error code (mapped to HTTP/3 wire code):
-try wt.resetStream(uni_id, 0xabad1dea);
-// Or use the raw wire code:
-try wt.resetStreamWithCode(uni_id, 0x52e4a40fa8db);
+// Reset with a 32-bit application error code (mapped to the HTTP/3 wire
+// code per draft §4.6):
+try uni.reset(0xabad1dea);
+// Or bypass the mapping with a raw wire code:
+try uni.resetWithCode(0x52e4a40fa8db);
 ```
+
+The handle's `stream_id` field is public so you can correlate it with the
+`webtransport_stream_*` events, and the handle needs no deinit — store it in
+application maps freely. Every verb delegates to the raw-u64 `Session`
+primitives (`Session.writeWebTransportStream`,
+`Session.finishWebTransportStream`, …), which stay public as an escape
+hatch for code that only holds a bare stream id.
 
 ### Observing peer-opened streams
 
@@ -253,6 +265,10 @@ loop:
 ```zig
 .webtransport_stream_opened => |opened| {
     // opened: { stream_id, session_id, kind }; kind ∈ { .uni, .bidi }
+    // Adopt the peer-opened stream as a typed handle; the same verbs
+    // (write / finish / reset / resetWithCode) now target it:
+    const handle = wt.streamHandle(opened.stream_id, opened.kind);
+    if (opened.kind == .bidi) try handle.write("pong");
 },
 .webtransport_stream_data => |data| {
     // data: { stream_id, session_id, kind, data: []u8 }
@@ -272,6 +288,11 @@ loop:
     // .final_size is the QUIC final-size at reset time.
 },
 ```
+
+`streamHandle(stream_id, kind)` works for any substream of the session —
+peer-opened ids straight out of `webtransport_stream_opened` event data, or
+raw ids you stored earlier. It is unchecked: the caller vouches that the id
+actually belongs to this WebTransport session.
 
 ### Buffered-stream policy
 
@@ -344,9 +365,9 @@ DATAGRAMs, or the payload is too large for a single frame), use
 `datagramCapsule` on the underlying writer:
 
 ```zig
-// WebTransport*Stream.requestWriter() / .responseWriter() returns the
-// underlying *RequestWriter / *ResponseWriter:
-try wt.requestWriter().datagramCapsule("reliable-payload");
+// WebTransport*Stream.underlyingWriter() returns the underlying
+// *RequestWriter / *ResponseWriter:
+try wt.underlyingWriter().datagramCapsule("reliable-payload");
 ```
 
 This packages the bytes in a `DATAGRAM` capsule on the CONNECT stream body.
@@ -355,6 +376,13 @@ The peer decodes it via `capsule.iter(body())` and the same
 capsule mode only when you've verified the peer doesn't support QUIC
 DATAGRAMs (`session.peer_settings.?.h3_datagram == false`) or you actually
 need ordering / delivery guarantees.
+
+**WARNING**: capsule-mode datagrams are out-of-spec for WebTransport — the
+draft mandates the QUIC-DATAGRAM path, and a capsule send targets the
+CONNECT stream's body, not WT's per-session datagram channel. That's why
+the path is only reachable through `underlyingWriter()`: the typed
+`WebTransportStream` substream handle deliberately carries no capsule or
+datagram surface. See README § Datagram sends for the full comparison.
 
 ---
 
@@ -465,10 +493,11 @@ When a local write would exceed the peer's `WT_MAX_DATA`, the library:
 
 ```zig
 // Server has advertised peer_max_data = 16:
-try client_wt.writeStream(stream_id, "0123456789ABCDEF"); // 16 bytes — ok
+const stream = try client_wt.openUniStream();
+try stream.write("0123456789ABCDEF"); // 16 bytes — ok
 try std.testing.expectError(
     error.WebTransportFlowControlExceeded,
-    client_wt.writeStream(stream_id, "x"), // 1 byte over — blocked
+    stream.write("x"), // 1 byte over — blocked
 );
 ```
 
@@ -547,11 +576,12 @@ cleanup.
 No protocol-level error code is surfaced — there's nothing to classify on
 the receive side beyond the stream-finished signal.
 
-### 3. Reset: `reset(error_code)` / `abort()`
+### 3. Reset: `reset(error_code)` / `abort()` / `bidiAbort(error_code)`
 
 ```zig
-try wt.reset(0x42);   // RESET_STREAM with the given app code
-try wt.abort();       // RESET_STREAM with H3_REQUEST_CANCELLED
+try wt.reset(0x42);      // RESET_STREAM with the given app code
+try wt.abort();          // RESET_STREAM with H3_REQUEST_CANCELLED
+try wt.bidiAbort(0x42);  // RESET_STREAM + STOP_SENDING (client side)
 ```
 
 `reset` aborts the CONNECT stream from the send side with the given
@@ -560,9 +590,18 @@ the peer sees a `connection_closed` / stream-reset event rather than a
 clean WT close. Use this for catastrophic local errors, not for normal
 shutdowns.
 
-`reset` and the per-WT-stream `resetStream` are different operations — the
-former tears down the whole session via the CONNECT stream; the latter
-resets a single application stream within a still-live session.
+Reset alone leaves the peer free to keep streaming the other direction, so
+a real-world abort usually needs both halves. On the client,
+`WebTransportClientStream.bidiAbort(code)` (mirroring
+`RequestWriter.bidiAbort`) does `reset(code)` on the send half plus
+`cancel()` (STOP_SENDING) on the receive half in one call. It is
+session-scope and abrupt — it tears the WebTransport session down (draft
+§5.4); prefer the `close(code, reason)` capsule path for graceful shutdown.
+
+Note that the session facade's `reset` and a substream handle's `reset` are
+different operations on different *types* — the former tears down the whole
+session via the CONNECT stream; the latter resets a single application
+stream within a still-live session. See the pitfalls section below.
 
 ---
 
@@ -643,13 +682,24 @@ a `WebTransportFlowViolationKind` describing what overflowed.
    the peer's SETTINGS frame so the eager `peerEnabled` check can run. Pump
    the session until `Session.peer_settings != null`, then retry.
 
-2. **Confusing `reset` with `resetStream`.** `wt.reset(code)` aborts the
-   *CONNECT* stream — i.e. tears down the whole session. `wt.resetStream(id,
-   code)` resets a single peer/local WT stream within a still-live session.
-   Likewise, `wt.abort()` aborts the session, not a stream. The 32-bit
-   application code on `resetStream` round-trips through the WebTransport
-   error-code mapping (draft §4.6) and surfaces on the peer as
-   `webtransport_stream_reset.application_error_code`.
+2. **Confusing session-scope with substream-scope teardown.** These are now
+   different *types*, not just different method names. `wt.finish()` /
+   `wt.reset(code)` on a `WebTransportClientStream` /
+   `WebTransportServerStream` act on the *CONNECT* stream — i.e. close or
+   tear down the whole session. `handle.finish()` / `handle.reset(code)` on
+   a `WebTransportStream` handle (from `openUniStream` / `openBidiStream` /
+   `streamHandle`) FIN or reset a single WT substream within a still-live
+   session. Likewise, `wt.abort()` and `wt.bidiAbort(code)` abort the
+   session, not a stream. Because the substream verbs live on the handle
+   rather than taking a bare `u64` id, the compiler enforces the scope
+   distinction — there is no id parameter to hand to the wrong method. The
+   32-bit application code on `handle.reset` round-trips through the
+   WebTransport error-code mapping (draft §4.6) and surfaces on the peer as
+   `webtransport_stream_reset.application_error_code`. One caveat: the
+   raw-u64 `Session` primitives (`Session.writeWebTransportStream`,
+   `finishWebTransportStream`, `resetWebTransportStream`, …) remain public
+   as an escape hatch, and code that goes through them gets no such
+   type-level protection — keep the scope distinction in mind there.
 
 3. **Forgetting to free drained events before `Session.deinit`.** The session retains
    ownership of any events queued internally, but **events already yielded

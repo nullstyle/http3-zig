@@ -158,11 +158,13 @@ For WebTransport specifically: only the QUIC-DATAGRAM path
 (`sendDatagram` / `sendDatagramTracked` on `WebTransportClientStream` /
 `WebTransportServerStream`) is correct. The WebTransport draft mandates
 QUIC DATAGRAM. The capsule path (and its context-id sibling) is
-exposed on the underlying writer accessible via `requestWriter()` /
-`responseWriter()`, but calling those for a WT datagram is out of spec —
-they target the CONNECT stream's body, not WT's per-session datagram
-channel. Use the capsule paths only for pure RFC 9297 datagram-on-stream
-cases or non-WT MASQUE multiplexing. WT control / extension capsules are
+exposed on the underlying writer accessible via `underlyingWriter()`,
+but calling those for a WT datagram is out of spec — they target the
+CONNECT stream's body, not WT's per-session datagram channel. The typed
+`WebTransportStream` substream handle deliberately carries no capsule or
+datagram surface, so `underlyingWriter()` is the only route to that
+out-of-spec path. Use the capsule paths only for pure RFC 9297
+datagram-on-stream cases or non-WT MASQUE multiplexing. WT control / extension capsules are
 different: intermediary code may forward them with
 `WebTransport*Stream.forwardCapsuleTo`, which observes the inbound capsule
 locally and writes the exact capsule on the paired outbound CONNECT stream.
@@ -172,20 +174,27 @@ policy.
 
 ## Stream lifecycle
 
-Five named verbs cover the stream-end vocabulary across `RequestWriter`,
-`ResponseWriter`, `Client`, `Server`, and the typed wrappers
-(`WebTransport*Stream`, `WebSocket*Stream`, `ConnectUdp*Stream`). Each
-has a distinct wire effect:
+Six named verbs cover the stream-end vocabulary across `RequestWriter`,
+`ResponseWriter`, `Client`, `Server`, the typed wrappers
+(`WebTransport*Stream`, `WebSocket*Stream`, `ConnectUdp*Stream`), and the
+`WebTransportStream` substream handle. Each has a distinct wire effect:
 
 | Verb | Wire effect | Side | Meaning |
 |---|---|---|---|
 | `finish` | QUIC FIN on send side | outbound | clean half-close, no error code |
-| `finishStream` | QUIC FIN on a *WT substream* | outbound | WT-only; routes through `Session.finishWebTransportStream` |
+| `WebTransportStream.finish` | QUIC FIN on a *WT substream* | outbound | on the typed handle; routes through `Session.finishWebTransportStream` |
 | `reset(code)` | RESET_STREAM with `error_code` | outbound | drop our own buffered/in-flight bytes |
-| `resetStream(code)` / `resetStreamWithCode(wire)` | RESET_STREAM on a *WT substream* | outbound | WT-only; first variant runs an app-code through draft §4.6 mapping, second takes a wire code raw |
+| `WebTransportStream.reset(app_code)` / `.resetWithCode(wire)` | RESET_STREAM on a *WT substream* | outbound | handle verbs; first runs a 32-bit app-code through draft §4.6 mapping, second takes a wire code raw |
 | `abort()` | RESET_STREAM with default code | outbound | convenience: client default `request_cancelled`, server default `internal_error` |
+| `bidiAbort(code)` | RESET_STREAM + STOP_SENDING | both | `reset(code)` on the send half plus `cancel()` on the receive half; client-side (`RequestWriter`, `WebTransportClientStream`) |
 | `cancel()` | STOP_SENDING with `request_cancelled` | inbound | ask peer to stop sending; client-only on `RequestWriter` |
 | `close(code, reason)` | `CLOSE_WEBTRANSPORT_SESSION` capsule + FIN | both | WT-session-level, distinct from stream lifecycle |
+
+WT substream lifecycle lives on the typed `WebTransportStream` handle:
+`openUniStream` / `openBidiStream` return it, `streamHandle(stream_id,
+kind)` adopts a peer-opened stream from event data (or a stored raw id),
+and the handle carries `write` / `finish` / `reset` / `resetWithCode`. The
+raw-u64 `Session.*WebTransportStream` primitives remain the escape hatch.
 
 Decision rule:
 
@@ -196,8 +205,9 @@ Decision rule:
   on the client side. (`ResponseWriter` has no symmetric `cancel`
   because the server cannot ask the client to stop sending the
   request body without a RESET, which is what `reset` already does.)
-- **bidirectional abort** (both sides) → `try self.abort(); try
-  self.cancel();`.
+- **bidirectional abort** (both sides) → `bidiAbort(code)` on
+  `RequestWriter` / `WebTransportClientStream` — `reset(code)` plus
+  `cancel()` in one call.
 
 For the WebTransport-specific subset (CONNECT control stream vs WT
 substream vs WT-session-level capsule close) see

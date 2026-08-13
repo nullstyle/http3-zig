@@ -1,8 +1,13 @@
 # API narrowing proposal — v0.2
 
-Status: largely landed. All v0.2 items and v0.3 items 1-2 shipped in prior
+Status: LANDED in full. All v0.2 items and v0.3 items 1-2 shipped in prior
 releases; v0.3+ items 3-5 (underlyingWriter rename, bidiAbort, typed
-WebTransportStream handle) are in flight in the current sprint (2026-08).
+WebTransportStream handle) landed 2026-08 in the post-0.4.9 breaking batch.
+One follow-up idea deliberately deferred: a narrowed writer wrapper for the
+WT facades (an `underlyingWriter()` variant without `datagramCapsule` /
+`datagramContextCapsule`) would type-prevent the WT-out-of-spec
+capsule-datagram path entirely; today the typed substream handle prevents it
+for substream code and the facade accessor keeps a doc WARNING.
 The audit text below is kept unchanged as the historical record.
 
 Scope: WebTransport-adjacent public API across `client.zig`, `server.zig`,
