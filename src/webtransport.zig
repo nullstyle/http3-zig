@@ -160,8 +160,6 @@ pub const Error = error{
     InvalidStreamPrefix,
     InvalidCloseCapsule,
     InvalidDrainCapsule,
-    InvalidWebTransportSessionId,
-    UnknownWebTransportCapsule,
     WebTransportSettingsMissing,
     CloseReasonTooLarge,
     /// Facade `close()` was handed a reason that is not valid UTF-8.

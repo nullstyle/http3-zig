@@ -302,6 +302,51 @@ test "era negotiation: sessions on one connection share the resolved era (same-e
     _ = &wt_b;
 }
 
+test "0-RTT: remembered settings never unlock WebTransport (extended CONNECT waits for real SETTINGS)" {
+    // The v1 early-data restriction, pinned at the facade level:
+    // remembered 0-RTT settings feed the datagram gates ONLY — a
+    // WebTransport bootstrap (extended CONNECT) always waits for the
+    // peer's REAL SETTINGS, because a CONNECT staged in 0-RTT would be
+    // replayed verbatim at 1-RTT against a server that might no longer
+    // advertise it (the mutual verbatim-replay contract with quic).
+    // The era resolver follows the same rule (never computed from
+    // remembered settings).
+    const allocator = std.testing.allocator;
+    const wt: http3_zig.Settings = .{
+        .enable_connect_protocol = true,
+        .h3_datagram = true,
+        .wt_enabled = true,
+    };
+    var pair: H3Pair = undefined;
+    try pair.initStarted(allocator, .{ .settings = wt }, .{ .settings = wt });
+    defer pair.deinit();
+
+    // Remember a fully WT-capable settings snapshot BEFORE any exchange.
+    try pair.client_h3.rememberPeerSettings(wt);
+    var h3_client = http3_zig.Client.init(&pair.client_h3);
+
+    // Neither WebTransport nor the era resolve from remembered state.
+    try std.testing.expectEqual(
+        @as(?http3_zig.webtransport.WtDraft, null),
+        pair.client_h3.webTransportNegotiatedDraft(),
+    );
+    try std.testing.expectError(
+        error.PeerSettingsNotReceived,
+        h3_client.startWebTransport(allocator, .{
+            .authority = "localhost",
+            .path = "/wt",
+        }),
+    );
+
+    // Real SETTINGS unlock it.
+    try exchangePairSettings(allocator, &pair);
+    var client_wt = try h3_client.startWebTransport(allocator, .{
+        .authority = "localhost",
+        .path = "/wt",
+    });
+    _ = &client_wt;
+}
+
 test "production(): the draft-07 knob advertises exactly the enforced session cap" {
     // Advertisement equals enforcement, structurally: both derive from
     // one option [draft-ietf-webtrans-http3-07 §3.1].

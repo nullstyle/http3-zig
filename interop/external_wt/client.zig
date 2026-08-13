@@ -280,9 +280,18 @@ fn runHarness(allocator: std.mem.Allocator, io: std.Io, options: Options) !void 
                 },
                 .datagram => |dgram| {
                     if (dgram.stream_id == session_id) {
+                        // Content assertion, not just arrival: the peer
+                        // must echo our exact bytes back.
+                        if (!std.mem.eql(u8, dgram.payload, datagram_payload)) {
+                            std.debug.print(
+                                "external_wt: datagram echo MISMATCH (len={d})\n",
+                                .{dgram.payload.len},
+                            );
+                            return error.DatagramEchoMismatch;
+                        }
                         saw_datagram_echo = true;
                         std.debug.print(
-                            "external_wt: phase 3 — received datagram (len={d})\n",
+                            "external_wt: phase 3 — received datagram echo (len={d}, content ok)\n",
                             .{dgram.payload.len},
                         );
                     }
@@ -319,16 +328,18 @@ fn runHarness(allocator: std.mem.Allocator, io: std.Io, options: Options) !void 
             sent_data = true;
         }
 
-        if (sent_data and !sent_close) {
+        // CLOSE only after the datagram echo is in hand: peers that
+        // implement CLOSE-on-arrival (webtransport-go v0.12.0, and this
+        // library) tear the session down the moment the capsule lands,
+        // dropping any echo still in flight — closing first makes the
+        // run a race instead of a verification.
+        if (sent_data and saw_datagram_echo and !sent_close) {
             try wt.close(close_code, close_reason);
             std.debug.print(
                 "external_wt: phase 3 — sent CLOSE_WEBTRANSPORT_SESSION (code=0x{x}, reason=\"{s}\")\n",
                 .{ close_code, close_reason },
             );
             sent_close = true;
-        }
-
-        if (sent_close and saw_datagram_echo) {
             saw_finish = true;
         }
 

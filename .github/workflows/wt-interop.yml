@@ -34,6 +34,19 @@ on:
 #
 # Operators can point the matrix at additional URLs via the `urls`
 # workflow input.
+#
+# PROMOTION CRITERION (mirrors h3-interop.yml): promote the matrix to a
+# hard per-push gate after TWO consecutive green workflow_dispatch runs
+# on the release-tag peer pins (webtransport-go v0.12.0 +
+# pywebtransport 0.17.1) — record the run ids in this header when it
+# happens. Until then it stays advisory (`continue-on-error` on the
+# matrix step); the per-push hard gates are wt-interop-self-test.yml's
+# two in-tree legs (modern matrix + the draft-02 era leg).
+# DEMOTION RULE (pre-agreed, not a debate): if a promoted leg fails
+# twice within a week for causes not attributable to http3-zig (peer
+# build breakage, runner infrastructure), demote it by restoring
+# `continue-on-error: true` in a one-line commit that names the cause;
+# re-promote with the same soak criterion once the cause clears.
 jobs:
   matrix:
     name: WT interop (http3-zig as client)
