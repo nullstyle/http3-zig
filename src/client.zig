@@ -707,6 +707,12 @@ pub const ResponseEvent = union(enum) {
     webtransport_stream_finished: session_mod.WebTransportStreamFinishedEvent,
     webtransport_stream_reset: session_mod.WebTransportStreamResetEvent,
     webtransport_flow_violated: session_mod.WebTransportFlowViolationEvent,
+    webtransport_session_established: session_mod.WebTransportSessionEstablishedEvent,
+    webtransport_session_closed: session_mod.WebTransportSessionClosedEvent,
+    webtransport_session_draining: session_mod.WebTransportSessionDrainingEvent,
+    webtransport_peer_blocked: session_mod.WebTransportPeerBlockedEvent,
+    webtransport_credit_granted: session_mod.WebTransportCreditGrantedEvent,
+    webtransport_unknown_capsule: session_mod.WebTransportUnknownCapsuleEvent,
     goaway: u64,
     connection_closed: ConnectionClosed,
     ignored_unknown_frame: UnknownFrame,
@@ -774,6 +780,12 @@ pub const ResponseEvent = union(enum) {
             .webtransport_stream_finished => |finished| .{ .webtransport_stream_finished = finished },
             .webtransport_stream_reset => |reset| .{ .webtransport_stream_reset = reset },
             .webtransport_flow_violated => |v| .{ .webtransport_flow_violated = v },
+            .webtransport_session_established => |v| .{ .webtransport_session_established = v },
+            .webtransport_session_closed => |v| .{ .webtransport_session_closed = v },
+            .webtransport_session_draining => |v| .{ .webtransport_session_draining = v },
+            .webtransport_peer_blocked => |v| .{ .webtransport_peer_blocked = v },
+            .webtransport_credit_granted => |v| .{ .webtransport_credit_granted = v },
+            .webtransport_unknown_capsule => |v| .{ .webtransport_unknown_capsule = v },
         };
     }
 };
@@ -1025,6 +1037,12 @@ pub const ResponseTracker = struct {
             .webtransport_stream_finished,
             .webtransport_stream_reset,
             .webtransport_flow_violated,
+            .webtransport_session_established,
+            .webtransport_session_closed,
+            .webtransport_session_draining,
+            .webtransport_peer_blocked,
+            .webtransport_credit_granted,
+            .webtransport_unknown_capsule,
             => return null,
         }
     }

@@ -92,6 +92,20 @@ pub const TraceEventName = enum {
     webtransport_peer_streams_blocked,
     /// Peer sent `DRAIN_WEBTRANSPORT_SESSION` (§5.5).
     webtransport_session_drain_received,
+    /// A WebTransport session reached `.established` (accept completed /
+    /// 2xx observed).
+    webtransport_session_established,
+    /// A WebTransport session ended (CLOSE capsule, CONNECT FIN/RESET,
+    /// or local protocol-violation termination). `error_code` carries
+    /// the wire code when one applies; `bytes` the close-reason length.
+    webtransport_session_closed,
+    /// Peer strictly raised a WT_MAX_DATA / WT_MAX_STREAMS_* limit
+    /// (§5.6); `value` is the new limit.
+    webtransport_credit_granted,
+    /// A capsule outside the WebTransport family arrived on a session's
+    /// CONNECT stream (ignored per RFC 9297 §3.2); `frame_type` is the
+    /// capsule type, `bytes` its value length.
+    webtransport_unknown_capsule_received,
 };
 
 pub const TraceEvent = struct {
@@ -195,6 +209,14 @@ pub const Metrics = struct {
     webtransport_peer_streams_blocked: u64 = 0,
     /// Inbound `DRAIN_WEBTRANSPORT_SESSION` capsules.
     webtransport_session_drain_received: u64 = 0,
+    /// Sessions that reached `.established`.
+    webtransport_sessions_established: u64 = 0,
+    /// Sessions that ended (any cause).
+    webtransport_sessions_closed: u64 = 0,
+    /// Inbound strictly-increasing WT_MAX_* credit grants.
+    webtransport_credit_grants_received: u64 = 0,
+    /// Unknown capsules observed on WT CONNECT streams.
+    webtransport_unknown_capsules_received: u64 = 0,
 
     pub fn observe(self: *Metrics, event: TraceEvent) void {
         switch (event.name) {
@@ -301,6 +323,10 @@ pub const Metrics = struct {
             .webtransport_peer_data_blocked => increment(&self.webtransport_peer_data_blocked),
             .webtransport_peer_streams_blocked => increment(&self.webtransport_peer_streams_blocked),
             .webtransport_session_drain_received => increment(&self.webtransport_session_drain_received),
+            .webtransport_session_established => increment(&self.webtransport_sessions_established),
+            .webtransport_session_closed => increment(&self.webtransport_sessions_closed),
+            .webtransport_credit_granted => increment(&self.webtransport_credit_grants_received),
+            .webtransport_unknown_capsule_received => increment(&self.webtransport_unknown_capsules_received),
         }
     }
 };

@@ -761,6 +761,67 @@ pub const WebTransportStreamResetEvent = struct {
     final_size: u64,
 };
 
+/// Which per-session WebTransport limit a flow-control capsule refers to.
+pub const WebTransportLimitKind = enum { data, streams_bidi, streams_uni };
+
+pub const WebTransportSessionEstablishedEvent = struct {
+    session_id: u64,
+};
+
+pub const WebTransportSessionClosedHow = enum {
+    /// The peer's CLOSE_WEBTRANSPORT_SESSION capsule ended the session
+    /// (`code`/`reason` carry its payload).
+    close_capsule,
+    /// The peer FIN'd the CONNECT stream without a CLOSE capsule.
+    fin,
+    /// The peer reset the CONNECT stream (`wire_error_code` preserved).
+    reset,
+    /// We terminated the session locally for a protocol violation;
+    /// `wire_error_code` is the WT_* code we sent on the CONNECT reset
+    /// (or H3_MESSAGE_ERROR for a malformed capsule stream).
+    protocol_violation,
+};
+
+pub const WebTransportSessionClosedEvent = struct {
+    session_id: u64,
+    how: WebTransportSessionClosedHow,
+    /// 32-bit application close code — present only for `.close_capsule`.
+    code: ?u32,
+    /// Owned UTF-8 close reason; empty when none. Freed via
+    /// `event.deinit` like every owned payload.
+    reason: []u8,
+    /// `.reset`: the RESET wire code. `.protocol_violation`: the code we
+    /// sent. Null otherwise.
+    wire_error_code: ?u64,
+};
+
+pub const WebTransportSessionDrainingEvent = struct {
+    session_id: u64,
+};
+
+pub const WebTransportPeerBlockedEvent = struct {
+    session_id: u64,
+    kind: WebTransportLimitKind,
+    /// The limit value the peer reports being blocked at (the capsule's
+    /// payload varint).
+    offered_limit: u64,
+};
+
+pub const WebTransportCreditGrantedEvent = struct {
+    session_id: u64,
+    kind: WebTransportLimitKind,
+    /// The new, strictly-greater limit now in force for our sends.
+    limit: u64,
+};
+
+pub const WebTransportUnknownCapsuleEvent = struct {
+    session_id: u64,
+    capsule_type: u64,
+    /// Owned raw value bytes, byte-exact as received (so intermediaries
+    /// can re-encode). Freed via `event.deinit`.
+    value: []u8,
+};
+
 /// Drained from `Session.poll()` and returned to the application. The
 /// union is shared between client and server sessions; some variants
 /// only fire on one role. Each variant carries a `Role:` tag in its
@@ -943,6 +1004,49 @@ pub const Event = union(enum) {
     ///
     /// Role: both
     webtransport_flow_violated: WebTransportFlowViolationEvent,
+    /// A WebTransport session reached `.established` (server: accept
+    /// completed; client: 2xx observed). Emitted at the top of the next
+    /// drain, BEFORE any replayed `webtransport_stream_*` events for
+    /// streams that were buffered against the session.
+    ///
+    /// Role: both
+    webtransport_session_established: WebTransportSessionEstablishedEvent,
+    /// A WebTransport session ended — via the peer's CLOSE capsule, a
+    /// CONNECT FIN/RESET, or a local protocol-violation termination
+    /// (see `how`). By the time this event is delivered the session's
+    /// registry state is gone and every live substream has been swept
+    /// with `WEBTRANSPORT_SESSION_GONE`.
+    ///
+    /// Role: both
+    webtransport_session_closed: WebTransportSessionClosedEvent,
+    /// The peer sent DRAIN_WEBTRANSPORT_SESSION: stop opening new
+    /// streams, existing ones may run to completion
+    /// (draft-ietf-webtrans-http3 §5.5). Local opens on the session now
+    /// fail with `WebTransportSessionDraining`.
+    ///
+    /// Role: both
+    webtransport_session_draining: WebTransportSessionDrainingEvent,
+    /// The peer reports being blocked on one of OUR advertised limits
+    /// (WT_DATA_BLOCKED / WT_STREAMS_BLOCKED_*). Granting more credit
+    /// (`sendMaxData` / `sendMaxStreams*`) is application policy.
+    ///
+    /// Role: both
+    webtransport_peer_blocked: WebTransportPeerBlockedEvent,
+    /// The peer strictly raised a limit that gates OUR sends
+    /// (WT_MAX_DATA / WT_MAX_STREAMS_*). This is the wakeup an
+    /// application blocked on `WebTransportFlowControlExceeded` /
+    /// `WebTransportStreamLimitExceeded` waits for. Non-increasing
+    /// capsules are ignored and emit nothing (monotonic fold).
+    ///
+    /// Role: both
+    webtransport_credit_granted: WebTransportCreditGrantedEvent,
+    /// A capsule outside the known WebTransport family arrived on the
+    /// session's CONNECT stream. Byte-exact value preserved so
+    /// intermediaries can forward it; applications normally ignore it
+    /// (unknown capsules MUST be ignored per RFC 9297 §3.2).
+    ///
+    /// Role: both
+    webtransport_unknown_capsule: WebTransportUnknownCapsuleEvent,
 
     pub fn deinit(self: Event, allocator: std.mem.Allocator) void {
         switch (self) {
@@ -958,6 +1062,8 @@ pub const Event = union(enum) {
             .priority_update => |event| allocator.free(event.priority_field_value),
             .connection_closed => |event| event.deinit(allocator),
             .webtransport_stream_data => |event| allocator.free(event.data),
+            .webtransport_session_closed => |event| allocator.free(event.reason),
+            .webtransport_unknown_capsule => |event| allocator.free(event.value),
             else => {},
         }
     }
@@ -1001,14 +1107,17 @@ pub fn clearEvents(allocator: std.mem.Allocator, events: *std.ArrayList(Event)) 
 //   - priority_update   — peer PRIORITY_UPDATE; rejected on clients
 //   - request_rejected  — STOP_SENDING with H3_REQUEST_REJECTED
 //
-// Both roles (20):
+// Both roles (26):
 //   - peer_settings, headers, data, trailers, datagram,
 //     datagram_acked, datagram_lost, flow_blocked,
 //     connection_ids_needed, cancel_push, goaway, stream_finished,
 //     stream_reset, connection_closed, ignored_unknown_frame,
 //     webtransport_stream_opened, webtransport_stream_data,
 //     webtransport_stream_finished, webtransport_stream_reset,
-//     webtransport_flow_violated
+//     webtransport_flow_violated, webtransport_session_established,
+//     webtransport_session_closed, webtransport_session_draining,
+//     webtransport_peer_blocked, webtransport_credit_granted,
+//     webtransport_unknown_capsule
 //
 // For the "both" variants whose payload carries a message kind
 // (`headers`, `data`, `trailers`), the `kind` field on the payload
@@ -1044,6 +1153,12 @@ const StreamState = struct {
     /// `.buffer`. Cleared once the session is confirmed (via the
     /// drain-time replay path) or when the session is rejected.
     wt_buffered: bool = false,
+    /// Tombstone on a WT CONNECT stream: a CLOSE_WEBTRANSPORT_SESSION
+    /// capsule was ingested (the session registry entry is gone by
+    /// then). Capsules MUST NOT follow CLOSE — any further body bytes
+    /// on this stream are a message error (H3_MESSAGE_ERROR abort of
+    /// the CONNECT stream, not a connection error).
+    wt_close_observed: bool = false,
     /// True when a FIN arrived on a buffered WebTransport stream
     /// before the session was confirmed. Holding the FIN here lets
     /// the replay path emit `webtransport_stream_finished` *after* the
@@ -1183,10 +1298,14 @@ const WTSessionState = struct {
     phase: enum { pending, established },
     flow: WTSessionFlowState,
     /// Per-session incremental capsule reassembly across DATA-frame
-    /// boundaries (a capsule may legally span frames). Reserved for the
-    /// capsule-native ingestion rework, which allocates into and drains
-    /// it; until then it stays empty and `deinit` is a no-op.
+    /// boundaries (a capsule may legally span frames). Fed by the
+    /// native ingestion path from the CONNECT stream's DATA; complete
+    /// capsules fold into `flow` and emit typed events.
     reassembler: capsule_mod.Reassembler = .{},
+    /// Set when the session transitions to `.established`; the next
+    /// drain emits `webtransport_session_established` (before any
+    /// buffered-stream replay events) and clears it.
+    established_event_pending: bool = false,
 
     fn deinit(self: *WTSessionState, allocator: std.mem.Allocator) void {
         self.reassembler.deinit(allocator);
@@ -1896,9 +2015,15 @@ pub const Session = struct {
         const sess = try self.allocator.create(WTSessionState);
         errdefer self.allocator.destroy(sess);
         sess.* = .{ .phase = phase, .flow = .{ .session_id = stream_id } };
+        // Bound a single reassembled capsule's declared value length by
+        // the same knob that caps outbound capsule values; null keeps
+        // the reassembler unbounded (dev default; production() caps it).
+        sess.reassembler.max_capsule_value_len =
+            if (self.config.max_capsule_value_size) |cap| @as(u64, cap) else null;
         self.seedWebTransportFlowCredit(&sess.flow);
         try self.wt_sessions.put(self.allocator, stream_id, sess);
         if (phase == .pending) self.wt_pending_count += 1;
+        if (phase == .established) sess.established_event_pending = true;
         return sess;
     }
 
@@ -1941,6 +2066,7 @@ pub const Session = struct {
         if (self.wt_sessions.get(stream_id)) |sess| {
             if (sess.phase == .established) return;
             sess.phase = .established;
+            sess.established_event_pending = true;
             self.wt_pending_count -= 1;
             // Late seed: the server may have marked this session pending
             // before the client's SETTINGS landed — fill any still-null
@@ -1958,6 +2084,387 @@ pub const Session = struct {
             if (entry.value.phase == .pending) self.wt_pending_count -= 1;
             entry.value.deinit(self.allocator);
             self.allocator.destroy(entry.value);
+        }
+    }
+
+    /// Sweeps every live substream of a terminating session:
+    /// STOP_SENDING plus a best-effort send-side RESET, both with
+    /// `WEBTRANSPORT_SESSION_GONE` — the draft folds session-gone
+    /// stream resets into session termination. The CONNECT stream
+    /// itself is not touched (the caller decides its fate: echo-FIN,
+    /// reset, or nothing). No per-stream events are emitted; the
+    /// session-scoped `webtransport_session_closed` event covers the
+    /// teardown.
+    fn sweepWebTransportSubstreams(self: *Session, session_id: u64) void {
+        var it = self.streams.valueIterator();
+        while (it.next()) |state_ptr| {
+            const state = state_ptr.*;
+            if (state.id == session_id) continue;
+            const sid = state.wt_session_id orelse continue;
+            if (sid != session_id) continue;
+            self.quic.streamStopSending(state.id, webtransport_mod.session_gone_code) catch {};
+            // Unconditional best-effort: succeeds for halves we own
+            // (local uni, either bidi direction), harmlessly refused
+            // for peer-owned uni halves.
+            self.quic.streamReset(state.id, webtransport_mod.session_gone_code) catch {};
+            state.locally_rejected = true;
+            state.recv_finished = true;
+            state.rx.clearRetainingCapacity();
+            state.wt_buffered = false;
+            self.removeFromBufferedList(state.id);
+        }
+    }
+
+    /// Ends `session_id` and emits the session-closed event: clones the
+    /// reason FIRST (it may alias the session's own reassembler
+    /// buffer), then sweeps substreams, drops registry state, and
+    /// appends the event.
+    fn closeWebTransportSessionWithEvent(
+        self: *Session,
+        session_id: u64,
+        events: *std.ArrayList(Event),
+        budget: *DrainBudget,
+        how: WebTransportSessionClosedHow,
+        code: ?u32,
+        reason: []const u8,
+        wire_error_code: ?u64,
+    ) Error!void {
+        try budget.reserve(reason.len);
+        const owned_reason = try self.allocator.dupe(u8, reason);
+        errdefer self.allocator.free(owned_reason);
+        self.sweepWebTransportSubstreams(session_id);
+        self.endWebTransportSession(session_id);
+        try self.appendReservedEvent(events, .{
+            .webtransport_session_closed = .{
+                .session_id = session_id,
+                .how = how,
+                .code = code,
+                .reason = owned_reason,
+                .wire_error_code = wire_error_code,
+            },
+        });
+    }
+
+    /// Message-scoped failure of a WT CONNECT stream (malformed capsule
+    /// framing, capsules after CLOSE, FIN mid-capsule): abort the
+    /// CONNECT stream both directions with H3_MESSAGE_ERROR — a MESSAGE
+    /// error, deliberately not a connection error — and end the session
+    /// with a `.protocol_violation` close event if it still exists.
+    /// Does NOT touch `state.rx`: the caller may still be iterating it
+    /// (`processMessageState` returns without compacting on failure).
+    fn failWebTransportConnectMessage(
+        self: *Session,
+        state: *StreamState,
+        events: *std.ArrayList(Event),
+        budget: *DrainBudget,
+    ) Error!void {
+        self.quic.streamStopSending(state.id, protocol.ErrorCode.message_error) catch {};
+        self.quic.streamReset(state.id, protocol.ErrorCode.message_error) catch {};
+        state.locally_rejected = true;
+        state.recv_finished = true;
+        state.wt_close_observed = true;
+        if (self.wt_sessions.contains(state.id)) {
+            try self.closeWebTransportSessionWithEvent(
+                state.id,
+                events,
+                budget,
+                .protocol_violation,
+                null,
+                "",
+                protocol.ErrorCode.message_error,
+            );
+        }
+    }
+
+    /// True when `state`/`kind` name the body of a known WT CONNECT
+    /// stream (or its post-CLOSE tombstone) in the direction the
+    /// capsule protocol flows for our role.
+    fn isWebTransportConnectBody(self: *const Session, state: *const StreamState, kind: message_mod.Kind) bool {
+        const direction_ok = switch (self.role) {
+            .server => kind == .request,
+            .client => kind == .response,
+        };
+        if (!direction_ok) return false;
+        return self.wt_sessions.contains(state.id) or state.wt_close_observed;
+    }
+
+    const WTIngestOutcome = enum { ok, stream_failed };
+
+    /// Native ingestion entry: feeds one DATA event's worth of WT
+    /// CONNECT-stream body bytes into the session's reassembler and
+    /// folds complete capsules. `.stream_failed` tells the caller the
+    /// CONNECT stream was message-error aborted (stop processing it).
+    fn ingestWebTransportCapsuleBytes(
+        self: *Session,
+        state: *StreamState,
+        bytes: []const u8,
+        events: *std.ArrayList(Event),
+        budget: *DrainBudget,
+    ) Error!WTIngestOutcome {
+        if (state.wt_close_observed) {
+            // Capsules MUST NOT follow CLOSE_WEBTRANSPORT_SESSION.
+            try self.failWebTransportConnectMessage(state, events, budget);
+            return .stream_failed;
+        }
+        // Bytes racing a completed teardown are dropped (same tolerance
+        // as the manual-observe path's `.none` rule).
+        const sess = self.wt_sessions.get(state.id) orelse return .ok;
+        try sess.reassembler.push(self.allocator, bytes);
+        return self.drainWebTransportReassembler(sess, state, events, budget);
+    }
+
+    /// Conservative per-fold budget headroom: covers the largest
+    /// session-scoped event payload with a bounded size (a CLOSE reason
+    /// is at most 1024 bytes). Unknown-capsule values reserve their
+    /// exact size and may still surface the normal oversized-payload
+    /// budget errors, matching oversized `data` events.
+    const wt_session_event_budget_headroom: usize = 1280;
+
+    fn drainBudgetHasRoom(budget: *const DrainBudget, owned_payload_bytes: usize) bool {
+        if (budget.max_events) |max| {
+            if (budget.events >= max) return false;
+        }
+        if (budget.max_payload_size) |max| {
+            if (owned_payload_bytes > max) return false;
+        }
+        if (budget.max_payload_bytes) |max| {
+            if (owned_payload_bytes > max or budget.payload_bytes > max - owned_payload_bytes) return false;
+        }
+        return true;
+    }
+
+    /// Folds complete capsules out of the session's reassembler under a
+    /// conservative budget guard. Pauses (bytes stay buffered) when the
+    /// budget cannot take another session event; the next drain resumes
+    /// via `flushWebTransportSessionSignals`.
+    fn drainWebTransportReassembler(
+        self: *Session,
+        sess: *WTSessionState,
+        state: *StreamState,
+        events: *std.ArrayList(Event),
+        budget: *DrainBudget,
+    ) Error!WTIngestOutcome {
+        while (true) {
+            if (!drainBudgetHasRoom(budget, wt_session_event_budget_headroom)) return .ok;
+            const maybe = sess.reassembler.next() catch {
+                // Undecodable capsule framing (bad varints, declared
+                // value over the reassembly cap): the capsule stream is
+                // unrecoverable — message error.
+                try self.failWebTransportConnectMessage(state, events, budget);
+                return .stream_failed;
+            };
+            const capsule = maybe orelse return .ok;
+            switch (try self.foldWebTransportCapsuleNative(sess, state, capsule, events, budget)) {
+                .continue_folding => {},
+                // `sess` was destroyed with the session — do not touch
+                // it (or its reassembler) again.
+                .session_ended => return .ok,
+                .stream_failed => return .stream_failed,
+            }
+        }
+    }
+
+    const WTFoldOutcome = enum { continue_folding, session_ended, stream_failed };
+
+    /// The native fold: one complete capsule from the CONNECT stream
+    /// into session state + typed events. Replaces the manual
+    /// `observeWebTransportCapsule` path as the authoritative consumer.
+    fn foldWebTransportCapsuleNative(
+        self: *Session,
+        sess: *WTSessionState,
+        state: *StreamState,
+        capsule: capsule_mod.Capsule,
+        events: *std.ArrayList(Event),
+        budget: *DrainBudget,
+    ) Error!WTFoldOutcome {
+        const session_id = sess.flow.session_id;
+        switch (capsule.capsule_type) {
+            webtransport_mod.CapsuleType.close_session => {
+                const close_info = webtransport_mod.decodeCloseSessionValue(capsule.value) catch {
+                    // Malformed CLOSE (short value, oversized or
+                    // invalid-UTF-8 reason) is a message error
+                    // [draft-ietf-webtrans-http3 §5.4].
+                    try self.failWebTransportConnectMessage(state, events, budget);
+                    return .stream_failed;
+                };
+                if (sess.reassembler.buffered() > 0) {
+                    // Capsules MUST NOT follow CLOSE — trailing bytes in
+                    // the same flight are a message error.
+                    try self.failWebTransportConnectMessage(state, events, budget);
+                    return .stream_failed;
+                }
+                state.wt_close_observed = true;
+                // Clean close: event first (the reason aliases the
+                // reassembler owned by the session state we destroy),
+                // then echo-FIN our send half — the draft's clean-close
+                // shape is CLOSE, then FIN in both directions.
+                try self.closeWebTransportSessionWithEvent(
+                    session_id,
+                    events,
+                    budget,
+                    .close_capsule,
+                    close_info.code,
+                    close_info.reason,
+                    null,
+                );
+                self.finishStream(session_id) catch {};
+                return .session_ended;
+            },
+            webtransport_mod.CapsuleType.drain_session => {
+                if (capsule.value.len != 0) {
+                    // Strictness unified with `classifyCapsule`: DRAIN's
+                    // value MUST be empty [draft-ietf-webtrans-http3
+                    // §5.5]; a non-empty one is a malformed capsule.
+                    try self.failWebTransportConnectMessage(state, events, budget);
+                    return .stream_failed;
+                }
+                if (!sess.flow.received_drain) {
+                    sess.flow.received_drain = true;
+                    try budget.reserve(0);
+                    try self.appendReservedEvent(events, .{
+                        .webtransport_session_draining = .{ .session_id = session_id },
+                    });
+                }
+                return .continue_folding;
+            },
+            webtransport_mod.CapsuleType.max_data => {
+                const value = webtransport_mod.decodeMaxDataValue(capsule.value) catch return .continue_folding;
+                if (sess.flow.peer_max_data == null or value > sess.flow.peer_max_data.?) {
+                    sess.flow.peer_max_data = value;
+                    sess.flow.sent_data_blocked_for = null;
+                    try budget.reserve(0);
+                    try self.appendReservedEvent(events, .{
+                        .webtransport_credit_granted = .{
+                            .session_id = session_id,
+                            .kind = .data,
+                            .limit = value,
+                        },
+                    });
+                }
+                // Non-increasing values are NOT applied (monotonic fold)
+                // and emit nothing — a peer cannot shrink our budget.
+                return .continue_folding;
+            },
+            webtransport_mod.CapsuleType.max_streams_bidi => {
+                const value = webtransport_mod.decodeMaxStreamsBidiValue(capsule.value) catch return .continue_folding;
+                if (sess.flow.peer_max_streams_bidi == null or value > sess.flow.peer_max_streams_bidi.?) {
+                    sess.flow.peer_max_streams_bidi = value;
+                    sess.flow.sent_streams_blocked_bidi_for = null;
+                    try budget.reserve(0);
+                    try self.appendReservedEvent(events, .{
+                        .webtransport_credit_granted = .{
+                            .session_id = session_id,
+                            .kind = .streams_bidi,
+                            .limit = value,
+                        },
+                    });
+                }
+                return .continue_folding;
+            },
+            webtransport_mod.CapsuleType.max_streams_uni => {
+                const value = webtransport_mod.decodeMaxStreamsUniValue(capsule.value) catch return .continue_folding;
+                if (sess.flow.peer_max_streams_uni == null or value > sess.flow.peer_max_streams_uni.?) {
+                    sess.flow.peer_max_streams_uni = value;
+                    sess.flow.sent_streams_blocked_uni_for = null;
+                    try budget.reserve(0);
+                    try self.appendReservedEvent(events, .{
+                        .webtransport_credit_granted = .{
+                            .session_id = session_id,
+                            .kind = .streams_uni,
+                            .limit = value,
+                        },
+                    });
+                }
+                return .continue_folding;
+            },
+            webtransport_mod.CapsuleType.data_blocked => {
+                const value = webtransport_mod.decodeDataBlockedValue(capsule.value) catch return .continue_folding;
+                try budget.reserve(0);
+                try self.appendReservedEvent(events, .{
+                    .webtransport_peer_blocked = .{
+                        .session_id = session_id,
+                        .kind = .data,
+                        .offered_limit = value,
+                    },
+                });
+                return .continue_folding;
+            },
+            webtransport_mod.CapsuleType.streams_blocked_bidi => {
+                const value = webtransport_mod.decodeStreamsBlockedBidiValue(capsule.value) catch return .continue_folding;
+                try budget.reserve(0);
+                try self.appendReservedEvent(events, .{
+                    .webtransport_peer_blocked = .{
+                        .session_id = session_id,
+                        .kind = .streams_bidi,
+                        .offered_limit = value,
+                    },
+                });
+                return .continue_folding;
+            },
+            webtransport_mod.CapsuleType.streams_blocked_uni => {
+                const value = webtransport_mod.decodeStreamsBlockedUniValue(capsule.value) catch return .continue_folding;
+                try budget.reserve(0);
+                try self.appendReservedEvent(events, .{
+                    .webtransport_peer_blocked = .{
+                        .session_id = session_id,
+                        .kind = .streams_uni,
+                        .offered_limit = value,
+                    },
+                });
+                return .continue_folding;
+            },
+            else => {
+                // Unknown capsule types MUST be ignored (RFC 9297 §3.2)
+                // — surfaced byte-exact so intermediaries can forward.
+                try budget.reserve(capsule.value.len);
+                const owned = try self.allocator.dupe(u8, capsule.value);
+                errdefer self.allocator.free(owned);
+                try self.appendReservedEvent(events, .{
+                    .webtransport_unknown_capsule = .{
+                        .session_id = session_id,
+                        .capsule_type = capsule.capsule_type,
+                        .value = owned,
+                    },
+                });
+                return .continue_folding;
+            },
+        }
+    }
+
+    /// Drain-top pass: emits pending `webtransport_session_established`
+    /// events (BEFORE buffered-stream replay, so establishment precedes
+    /// replayed stream events) and resumes any budget-paused capsule
+    /// folding.
+    fn flushWebTransportSessionSignals(
+        self: *Session,
+        events: *std.ArrayList(Event),
+        budget: *DrainBudget,
+    ) Error!void {
+        // Collect ids first — folding a CLOSE mutates the map mid-walk.
+        var ids: std.ArrayList(u64) = .empty;
+        defer ids.deinit(self.allocator);
+        var it = self.wt_sessions.iterator();
+        while (it.next()) |entry| {
+            if (entry.value_ptr.*.established_event_pending or
+                entry.value_ptr.*.reassembler.buffered() > 0)
+            {
+                try ids.append(self.allocator, entry.key_ptr.*);
+            }
+        }
+        for (ids.items) |session_id| {
+            const sess = self.wt_sessions.get(session_id) orelse continue;
+            if (sess.established_event_pending) {
+                if (!drainBudgetHasRoom(budget, 0)) return;
+                sess.established_event_pending = false;
+                try budget.reserve(0);
+                try self.appendReservedEvent(events, .{
+                    .webtransport_session_established = .{ .session_id = session_id },
+                });
+            }
+            if (sess.reassembler.buffered() > 0) {
+                const state = self.streams.get(session_id) orelse continue;
+                _ = try self.drainWebTransportReassembler(sess, state, events, budget);
+            }
         }
     }
 
@@ -2393,6 +2900,10 @@ pub const Session = struct {
         try self.quic.streamFinish(stream_id);
         if (self.streams.get(stream_id)) |state| state.locally_finished = true;
         if (self.webTransportSessionExists(stream_id)) {
+            // Local FIN ends the session: sweep live substreams with
+            // SESSION_GONE (the draft folds those resets into session
+            // termination). No event — the application initiated this.
+            self.sweepWebTransportSubstreams(stream_id);
             self.endWebTransportSession(stream_id);
         }
     }
@@ -2472,6 +2983,8 @@ pub const Session = struct {
             .error_code = application_error_code,
         });
         if (self.webTransportSessionExists(stream_id)) {
+            // RESET implies abandonment, same as `finishStream`.
+            self.sweepWebTransportSubstreams(stream_id);
             self.endWebTransportSession(stream_id);
         }
     }
@@ -2733,6 +3246,18 @@ pub const Session = struct {
         try self.pollEarlyDataStatus(events, &budget);
         try self.drainConnectionEvents(events, &budget);
         try self.drainDatagrams(events, &budget);
+
+        // Session-scoped WebTransport signals: pending `established`
+        // events flush here — BEFORE the buffered-stream replay below,
+        // so establishment always precedes the replayed stream events —
+        // and budget-paused capsule folding resumes. Budget exhaustion
+        // is non-fatal for the same reason as the replay path.
+        self.flushWebTransportSessionSignals(events, &budget) catch |err| {
+            if (!isLocalDrainBudgetError(err)) {
+                self.closeForError(err);
+                return err;
+            }
+        };
 
         // Replay WebTransport streams whose buffered prefix is now
         // unblocked because the corresponding session was confirmed (or
@@ -4075,6 +4600,20 @@ pub const Session = struct {
             if (maybe_event) |message_event| {
                 defer message_event.deinit(self.allocator);
                 try self.observeWebTransportHeadersIfApplicable(state, decoder.kind, message_event);
+                // Native WT capsule ingestion: a WT CONNECT stream's body
+                // IS the capsule protocol — feed it through the
+                // per-session reassembler and fold complete capsules into
+                // typed events. (Transitional: the raw `Event.data` below
+                // is still emitted alongside until the manual-observe
+                // surface is removed.)
+                if (message_event == .data and self.isWebTransportConnectBody(state, decoder.kind)) {
+                    switch (try self.ingestWebTransportCapsuleBytes(state, message_event.data, events, budget)) {
+                        .ok => {},
+                        // The CONNECT stream was message-error aborted:
+                        // stop processing it (no compact — rx is dead).
+                        .stream_failed => return,
+                    }
+                }
                 try self.appendReservedMessageEvent(events, state.id, decoder.kind, message_event);
             }
 
@@ -4150,6 +4689,11 @@ pub const Session = struct {
                 if (webtransport_mod.isAcceptedStatus(value)) {
                     try self.confirmWebTransportSession(state.id);
                 } else {
+                    // Bootstrap rejected (non-2xx): no session-closed
+                    // event — the application sees the response headers
+                    // themselves. Substreams opened against the pending
+                    // session are swept.
+                    self.sweepWebTransportSubstreams(state.id);
                     self.endWebTransportSession(state.id);
                 }
             },
@@ -4264,11 +4808,28 @@ pub const Session = struct {
 
         try budget.reserve(0);
         state.recv_finished = true;
-        // If this stream was the CONNECT stream of a WebTransport session,
-        // peer FIN ends the session — clear the registry so subsequent
-        // peer-opened WT streams aren't dispatched as if the session were
-        // still alive.
-        self.endWebTransportSession(state.id);
+        // If this stream was the CONNECT stream of a WebTransport
+        // session, peer FIN ends the session [draft-ietf-webtrans-http3
+        // §5.4]. A FIN landing with a partial capsule still buffered is
+        // a malformed message; otherwise it's a clean fin-close with a
+        // session-closed event. Either way the registry is cleared so
+        // subsequent peer-opened WT streams aren't dispatched against a
+        // dead session.
+        if (self.wt_sessions.get(state.id)) |sess| {
+            if (sess.reassembler.buffered() > 0) {
+                try self.failWebTransportConnectMessage(state, events, budget);
+            } else {
+                try self.closeWebTransportSessionWithEvent(
+                    state.id,
+                    events,
+                    budget,
+                    .fin,
+                    null,
+                    "",
+                    null,
+                );
+            }
+        }
         try self.appendReservedEvent(events, .{
             .stream_finished = .{
                 .stream_id = state.id,
@@ -4291,9 +4852,20 @@ pub const Session = struct {
         state.recv_reset_seen = true;
         state.recv_finished = true;
 
-        // A peer RESET of the CONNECT stream tears the session down, the
-        // same way a FIN does.
-        self.endWebTransportSession(state.id);
+        // A peer RESET of the CONNECT stream tears the session down the
+        // same way a FIN does — reset-close event with the wire code
+        // preserved [draft-ietf-webtrans-http3 §4.6].
+        if (self.wt_sessions.contains(state.id)) {
+            try self.closeWebTransportSessionWithEvent(
+                state.id,
+                events,
+                budget,
+                .reset,
+                null,
+                "",
+                error_code,
+            );
+        }
 
         // If we locally rejected this stream (e.g. via the
         // buffered-stream `.reject` policy), the peer's matching RESET is
@@ -5712,6 +6284,58 @@ pub const Session = struct {
                 .error_code = webtransport_mod.session_gone_code,
                 .value = violation.limit,
             }),
+            .webtransport_session_established => |established| self.trace(.{
+                .name = .webtransport_session_established,
+                .role = self.role,
+                .stream_id = established.session_id,
+            }),
+            .webtransport_session_closed => |closed| self.trace(.{
+                .name = .webtransport_session_closed,
+                .role = self.role,
+                .stream_id = closed.session_id,
+                .error_code = closed.wire_error_code orelse 0,
+                .bytes = closed.reason.len,
+            }),
+            .webtransport_session_draining => |draining| self.trace(.{
+                .name = .webtransport_session_drain_received,
+                .role = self.role,
+                .stream_id = draining.session_id,
+            }),
+            .webtransport_peer_blocked => |blocked| switch (blocked.kind) {
+                .data => self.trace(.{
+                    .name = .webtransport_peer_data_blocked,
+                    .role = self.role,
+                    .stream_id = blocked.session_id,
+                    .value = blocked.offered_limit,
+                }),
+                .streams_bidi => self.trace(.{
+                    .name = .webtransport_peer_streams_blocked,
+                    .role = self.role,
+                    .stream_id = blocked.session_id,
+                    .frame_type = webtransport_mod.CapsuleType.streams_blocked_bidi,
+                    .value = blocked.offered_limit,
+                }),
+                .streams_uni => self.trace(.{
+                    .name = .webtransport_peer_streams_blocked,
+                    .role = self.role,
+                    .stream_id = blocked.session_id,
+                    .frame_type = webtransport_mod.CapsuleType.streams_blocked_uni,
+                    .value = blocked.offered_limit,
+                }),
+            },
+            .webtransport_credit_granted => |credit| self.trace(.{
+                .name = .webtransport_credit_granted,
+                .role = self.role,
+                .stream_id = credit.session_id,
+                .value = credit.limit,
+            }),
+            .webtransport_unknown_capsule => |unknown| self.trace(.{
+                .name = .webtransport_unknown_capsule_received,
+                .role = self.role,
+                .stream_id = unknown.session_id,
+                .frame_type = unknown.capsule_type,
+                .bytes = unknown.value.len,
+            }),
         }
     }
 
@@ -5790,6 +6414,12 @@ fn eventStreamId(event: Event) ?u64 {
         .webtransport_stream_finished => |e| e.stream_id,
         .webtransport_stream_reset => |e| e.stream_id,
         .webtransport_flow_violated => |e| e.stream_id,
+        .webtransport_session_established => |e| e.session_id,
+        .webtransport_session_closed => |e| e.session_id,
+        .webtransport_session_draining => |e| e.session_id,
+        .webtransport_peer_blocked => |e| e.session_id,
+        .webtransport_credit_granted => |e| e.session_id,
+        .webtransport_unknown_capsule => |e| e.session_id,
         else => null,
     };
 }
@@ -5804,6 +6434,8 @@ fn eventOwnedPayloadBytes(event: Event) usize {
         .priority_update => |update| update.priority_field_value.len,
         .connection_closed => |closed| closed.reason.len,
         .webtransport_stream_data => |data| data.data.len,
+        .webtransport_session_closed => |closed| closed.reason.len,
+        .webtransport_unknown_capsule => |unknown| unknown.value.len,
         else => 0,
     };
 }

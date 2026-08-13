@@ -37,6 +37,12 @@ pub const BatchStats = struct {
     webtransport_streams_finished: usize = 0,
     webtransport_streams_reset: usize = 0,
     webtransport_flow_violations: usize = 0,
+    webtransport_sessions_established: usize = 0,
+    webtransport_sessions_closed: usize = 0,
+    webtransport_sessions_draining: usize = 0,
+    webtransport_peer_blocked: usize = 0,
+    webtransport_credit_grants: usize = 0,
+    webtransport_unknown_capsules: usize = 0,
 
     pub fn madeProgress(self: BatchStats) bool {
         return self.observed != 0 or
@@ -120,6 +126,12 @@ pub const ClientObservation = union(enum) {
     webtransport_stream_finished: session_mod.WebTransportStreamFinishedEvent,
     webtransport_stream_reset: session_mod.WebTransportStreamResetEvent,
     webtransport_flow_violated: session_mod.WebTransportFlowViolationEvent,
+    webtransport_session_established: session_mod.WebTransportSessionEstablishedEvent,
+    webtransport_session_closed: session_mod.WebTransportSessionClosedEvent,
+    webtransport_session_draining: session_mod.WebTransportSessionDrainingEvent,
+    webtransport_peer_blocked: session_mod.WebTransportPeerBlockedEvent,
+    webtransport_credit_granted: session_mod.WebTransportCreditGrantedEvent,
+    webtransport_unknown_capsule: session_mod.WebTransportUnknownCapsuleEvent,
 };
 
 pub const ServerObservation = union(enum) {
@@ -142,6 +154,12 @@ pub const ServerObservation = union(enum) {
     webtransport_stream_finished: session_mod.WebTransportStreamFinishedEvent,
     webtransport_stream_reset: session_mod.WebTransportStreamResetEvent,
     webtransport_flow_violated: session_mod.WebTransportFlowViolationEvent,
+    webtransport_session_established: session_mod.WebTransportSessionEstablishedEvent,
+    webtransport_session_closed: session_mod.WebTransportSessionClosedEvent,
+    webtransport_session_draining: session_mod.WebTransportSessionDrainingEvent,
+    webtransport_peer_blocked: session_mod.WebTransportPeerBlockedEvent,
+    webtransport_credit_granted: session_mod.WebTransportCreditGrantedEvent,
+    webtransport_unknown_capsule: session_mod.WebTransportUnknownCapsuleEvent,
 };
 
 test "BatchStats reports progress and accumulates runner counters" {
@@ -338,6 +356,12 @@ pub const ClientRunner = struct {
             .webtransport_stream_finished => |finished| return .{ .webtransport_stream_finished = finished },
             .webtransport_stream_reset => |reset| return .{ .webtransport_stream_reset = reset },
             .webtransport_flow_violated => |v| return .{ .webtransport_flow_violated = v },
+            .webtransport_session_established => |v| return .{ .webtransport_session_established = v },
+            .webtransport_session_closed => |v| return .{ .webtransport_session_closed = v },
+            .webtransport_session_draining => |v| return .{ .webtransport_session_draining = v },
+            .webtransport_peer_blocked => |v| return .{ .webtransport_peer_blocked = v },
+            .webtransport_credit_granted => |v| return .{ .webtransport_credit_granted = v },
+            .webtransport_unknown_capsule => |v| return .{ .webtransport_unknown_capsule = v },
         }
     }
 
@@ -422,6 +446,12 @@ pub const ServerRunner = struct {
             .webtransport_stream_finished => |finished| return .{ .webtransport_stream_finished = finished },
             .webtransport_stream_reset => |reset| return .{ .webtransport_stream_reset = reset },
             .webtransport_flow_violated => |v| return .{ .webtransport_flow_violated = v },
+            .webtransport_session_established => |v| return .{ .webtransport_session_established = v },
+            .webtransport_session_closed => |v| return .{ .webtransport_session_closed = v },
+            .webtransport_session_draining => |v| return .{ .webtransport_session_draining = v },
+            .webtransport_peer_blocked => |v| return .{ .webtransport_peer_blocked = v },
+            .webtransport_credit_granted => |v| return .{ .webtransport_credit_granted = v },
+            .webtransport_unknown_capsule => |v| return .{ .webtransport_unknown_capsule = v },
         }
     }
 
@@ -471,6 +501,12 @@ fn noteClientObservation(
         .webtransport_stream_finished => stats.webtransport_streams_finished += 1,
         .webtransport_stream_reset => stats.webtransport_streams_reset += 1,
         .webtransport_flow_violated => stats.webtransport_flow_violations += 1,
+        .webtransport_session_established => stats.webtransport_sessions_established += 1,
+        .webtransport_session_closed => stats.webtransport_sessions_closed += 1,
+        .webtransport_session_draining => stats.webtransport_sessions_draining += 1,
+        .webtransport_peer_blocked => stats.webtransport_peer_blocked += 1,
+        .webtransport_credit_granted => stats.webtransport_credit_grants += 1,
+        .webtransport_unknown_capsule => stats.webtransport_unknown_capsules += 1,
     }
 }
 
@@ -504,5 +540,11 @@ fn noteServerObservation(
         .webtransport_stream_finished => stats.webtransport_streams_finished += 1,
         .webtransport_stream_reset => stats.webtransport_streams_reset += 1,
         .webtransport_flow_violated => stats.webtransport_flow_violations += 1,
+        .webtransport_session_established => stats.webtransport_sessions_established += 1,
+        .webtransport_session_closed => stats.webtransport_sessions_closed += 1,
+        .webtransport_session_draining => stats.webtransport_sessions_draining += 1,
+        .webtransport_peer_blocked => stats.webtransport_peer_blocked += 1,
+        .webtransport_credit_granted => stats.webtransport_credit_grants += 1,
+        .webtransport_unknown_capsule => stats.webtransport_unknown_capsules += 1,
     }
 }

@@ -390,5 +390,8 @@ test "WebTransport forwarding preserves DRAIN unknown and CLOSE capsule lifecycl
     try expectCapsuleEqual(close_decoded.capsule, upstream_close);
     try std.testing.expect(h.proxy_in_wt.flowState() != null);
     try std.testing.expect(h.proxy_out_wt.flowState() != null);
-    try std.testing.expect(h.upstream_server_wt.flowState() != null);
+    // Native ingestion: the upstream server folds the forwarded CLOSE the
+    // moment it arrives — its session ends (registry gone, flow state
+    // null) instead of lingering until the CONNECT FIN as it used to.
+    try std.testing.expect(h.upstream_server_wt.flowState() == null);
 }

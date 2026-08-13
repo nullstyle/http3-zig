@@ -169,6 +169,29 @@ breaking changes; see notes per release.
   on it) now returns `error.UnknownWebTransportSession` when invoked on a
   stream id that is unknown or carries no WebTransport session
   association, instead of silently writing unmetered bytes.
+- **The Session now speaks WebTransport capsules natively.** WT CONNECT
+  stream bodies are fed through a per-session reassembler (a capsule may
+  legally span DATA frames — previously a split capsule was unparseable),
+  folded into session state, and surfaced as six new typed events:
+  `webtransport_session_established` (always preceding replayed buffered-
+  stream events), `webtransport_session_closed{how, code, reason,
+  wire_error_code}` (CLOSE capsule / CONNECT FIN / RESET / local
+  protocol-violation — a received CLOSE now ends the session THE MOMENT IT
+  ARRIVES, with every live substream swept via WEBTRANSPORT_SESSION_GONE
+  and our send half echo-FIN'd), `webtransport_session_draining`,
+  `webtransport_peer_blocked`, `webtransport_credit_granted` (fires only
+  on a strict increase — the wakeup for blocked senders), and
+  `webtransport_unknown_capsule` (byte-exact for intermediaries). Received
+  WT_MAX_DATA / WT_MAX_STREAMS now fold MONOTONICALLY — a peer can no
+  longer shrink our send budget [draft-ietf-webtrans-http3 §5.6]. Malformed
+  CLOSE payloads, capsules after CLOSE, non-empty DRAIN values, and a FIN
+  landing mid-capsule are message-scoped H3_MESSAGE_ERROR aborts of the
+  CONNECT stream (never a connection error) [§5.4/§5.5]. Local
+  finish/reset of a CONNECT and the non-2xx bootstrap rejection also sweep
+  substreams now. Transitional: raw `Event.data` for WT CONNECT bodies is
+  still emitted alongside (removal is a separate breaking change), and the
+  manual `observeCapsule` path remains (idempotent against the native
+  fold thanks to monotonicity).
 - **WebTransport pending sessions are now flow-controlled.** The two
   internal session registries were unified into one, and per-session
   flow state now exists from the moment a session is marked pending —
