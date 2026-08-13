@@ -38,6 +38,16 @@ pub const Settings = struct {
     /// peer-initiated bidirectional WT streams per session. `null` = not
     /// advertised.
     wt_initial_max_streams_bidi: ?u64 = null,
+    /// RFC 9114 §7.2.8 GREASE: when set, `encode` appends this reserved
+    /// setting after the defined ones. The id must satisfy
+    /// `protocol.isGreaseValue`. `decode` never populates it — reserved ids
+    /// on the receive side are ignored like any other unknown id.
+    grease: ?GreaseSetting = null,
+
+    pub const GreaseSetting = struct {
+        id: u64,
+        value: u64,
+    };
 
     pub fn encodedLen(self: Settings) usize {
         var n: usize = 0;
@@ -63,6 +73,9 @@ pub const Settings = struct {
         }
         if (self.wt_initial_max_streams_bidi) |v| {
             n += settingEncodedLen(protocol.SettingId.wt_initial_max_streams_bidi, v);
+        }
+        if (self.grease) |g| {
+            n += settingEncodedLen(g.id, g.value);
         }
         return n;
     }
@@ -91,6 +104,9 @@ pub const Settings = struct {
         }
         if (self.wt_initial_max_streams_bidi) |v| {
             pos += try put(dst[pos..], protocol.SettingId.wt_initial_max_streams_bidi, v);
+        }
+        if (self.grease) |g| {
+            pos += try put(dst[pos..], g.id, g.value);
         }
         return pos;
     }

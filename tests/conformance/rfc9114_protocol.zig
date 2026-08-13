@@ -53,6 +53,7 @@
 //!   RFC9204 §6     ¶1   MUST     QPACK_DECODER_STREAM_ERROR error code is 0x0202
 //!   RFC9297 §5.2   ¶1   MUST     H3_DATAGRAM_ERROR error code is 0x33
 //!   RFC9114 §7.2.8 ¶1   MUST     reserve `0x1f * N + 0x21` values as GREASE in every registry
+//!   RFC9114 §7.2.8 ¶1   MUST     greaseValue emits only reserved values (isGreaseValue inverse)
 //!   RFC9114 §3.1   ¶3   MUST     ALPN identifier is "h3"
 //!
 //! Visible debt:
@@ -480,4 +481,16 @@ test "MUST NOT classify a value just past a GREASE point as GREASE [RFC9114 §7.
     try std.testing.expect(!protocol.isGreaseValue(0x22));
     try std.testing.expect(!protocol.isGreaseValue(0x41)); // just past 0x40 GREASE
     try std.testing.expect(!protocol.isGreaseValue(0x60)); // just past 0x5f GREASE
+}
+
+test "MUST emit only reserved values from greaseValue; isGreaseValue inverts it [RFC9114 §7.2.8 ¶1]" {
+    // Encode-side counterpart of the reservation audit above: every value
+    // `protocol.greaseValue` can produce satisfies `isGreaseValue`, and
+    // the first two match the registry examples (0x21, 0x40).
+    var n: u64 = 0;
+    while (n < 256) : (n += 1) {
+        try std.testing.expect(protocol.isGreaseValue(protocol.greaseValue(n)));
+    }
+    try std.testing.expectEqual(@as(u64, 0x21), protocol.greaseValue(0));
+    try std.testing.expectEqual(@as(u64, 0x40), protocol.greaseValue(1));
 }

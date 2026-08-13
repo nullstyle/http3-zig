@@ -99,6 +99,14 @@ pub fn isGreaseValue(value: u64) bool {
     return value >= 0x21 and (value - 0x21) % 0x1f == 0;
 }
 
+/// Encode-side GREASE counterpart: the Nth reserved value. Usable as a
+/// SETTINGS id, a frame type, or a unidirectional stream type — the HTTP/3
+/// registries reserve the same `0x1f * N + 0x21` pattern for all three
+/// (RFC 9114 §7.2.8).
+pub fn greaseValue(n: u64) u64 {
+    return 0x1f * n + 0x21;
+}
+
 pub fn isReservedHttp2Setting(setting_id: u64) bool {
     return setting_id == 0x00 or (setting_id >= 0x02 and setting_id <= 0x05);
 }

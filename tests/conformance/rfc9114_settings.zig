@@ -31,6 +31,9 @@
 //!   RFC9114 §7.2.4   ¶3   NORMATIVE encode/decode round-trips a non-zero value for every defined ID
 //!   RFC9114 §7.2.4   ¶3   NORMATIVE encoder emits exactly the `encodedLen` byte count
 //!   RFC9114 §7.2.4   ¶1   MUST NOT accept a SETTINGS payload truncated mid-pair
+//!   RFC9114 §7.2.8   ¶1   MAY      encode appends a reserved GREASE setting when Settings.grease is set
+//!   RFC9114 §7.2.8   ¶2   MUST     reserved setting ids are ignored on receipt (round-trip drops grease)
+//!   RFC9114 §7.2.8   ¶1   NORMATIVE greased sessions complete the SETTINGS exchange end-to-end
 //!
 //! Visible debt:
 //!   (none)
@@ -52,6 +55,7 @@
 const std = @import("std");
 const http3_zig = @import("http3_zig");
 const quic = @import("quic");
+const fixture = @import("_h3_fixture.zig");
 
 const settings_mod = http3_zig.settings;
 const protocol = http3_zig.protocol;
@@ -648,4 +652,62 @@ test "NORMATIVE encode picks the minimum varint form for a value that crosses a 
         pos += val_d.bytes_read;
     }
     return error.TestExpectedEqual;
+}
+
+// ---------------------------------------------------------------- §7.2.8 — GREASE
+
+test "MAY include a reserved GREASE setting; encode appends Settings.grease [RFC9114 §7.2.8 ¶1]" {
+    // §7.2.8 ¶1: "Endpoints SHOULD include at least one such setting in
+    // their SETTINGS frame." The codec spelling is `Settings.grease`; the
+    // reserved pair goes on the wire after the defined settings.
+    const s: settings_mod.Settings = .{
+        .grease = .{ .id = protocol.greaseValue(3), .value = 7 },
+    };
+    var buf: [128]u8 = undefined;
+    const n = try s.encode(&buf);
+    try std.testing.expectEqual(s.encodedLen(), n);
+
+    const plain: settings_mod.Settings = .{};
+    var pos: usize = plain.encodedLen();
+    const id_d = try varint.decode(buf[pos..n]);
+    pos += id_d.bytes_read;
+    const val_d = try varint.decode(buf[pos..n]);
+    pos += val_d.bytes_read;
+    try std.testing.expectEqual(protocol.greaseValue(3), id_d.value);
+    try std.testing.expect(protocol.isGreaseValue(id_d.value));
+    try std.testing.expectEqual(@as(u64, 7), val_d.value);
+    try std.testing.expectEqual(n, pos);
+}
+
+test "MUST ignore reserved setting ids on receipt — round-trip drops grease [RFC9114 §7.2.8 ¶2]" {
+    // §7.2.8 ¶2 (with §7.2.4.1 ¶7): reserved ids "have no defined meaning"
+    // and MUST be ignored; decoding our own greased payload yields the
+    // same Settings minus the grease slot.
+    const sent: settings_mod.Settings = .{
+        .h3_datagram = true,
+        .grease = .{ .id = protocol.greaseValue(11), .value = 0x1234 },
+    };
+    var buf: [128]u8 = undefined;
+    const n = try sent.encode(&buf);
+    const received = try settings_mod.Settings.decode(buf[0..n]);
+    try std.testing.expect(received.grease == null);
+    var expected = sent;
+    expected.grease = null;
+    try std.testing.expect(std.meta.eql(expected, received));
+}
+
+test "NORMATIVE greased sessions complete the SETTINGS exchange end-to-end [RFC9114 §7.2.8 ¶1]" {
+    // Both sides emit a reserved SETTINGS entry and a reserved-type uni
+    // stream (`Config.enable_grease`); the peer's mandatory tolerance
+    // (§7.2.4.1 unknown ids ignored, §6.2 unknown uni streams discarded or
+    // STOP_SENDING'd) must make all of it invisible above the wire.
+    const allocator = std.testing.allocator;
+
+    var pair: fixture.H3Pair = undefined;
+    try pair.initStartedWithOptions(allocator, .{}, .{}, .{ .keep_grease = true });
+    defer pair.deinit();
+    try fixture.exchangePairSettings(allocator, &pair);
+
+    try std.testing.expect(pair.client_h3.peer_settings.?.grease == null);
+    try std.testing.expect(pair.server_h3.peer_settings.?.grease == null);
 }

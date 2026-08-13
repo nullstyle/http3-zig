@@ -247,10 +247,19 @@ pub const H3Pair = struct {
             self.client.deinit();
         }
 
-        self.client_h3 = http3_zig.Session.init(allocator, .client, &self.client, client_config);
+        // Integration tests hand-open uni streams at hard-coded ids; the
+        // GREASE uni stream (`Config.enable_grease`, default on) would
+        // shift every id. Grease-on coverage lives in the conformance
+        // suite (keep_grease) and the real-socket examples/smokes.
+        var client_cfg = client_config;
+        var server_cfg = server_config;
+        client_cfg.enable_grease = false;
+        server_cfg.enable_grease = false;
+
+        self.client_h3 = http3_zig.Session.init(allocator, .client, &self.client, client_cfg);
         errdefer self.client_h3.deinit();
 
-        self.server_h3 = http3_zig.Session.init(allocator, .server, &self.server, server_config);
+        self.server_h3 = http3_zig.Session.init(allocator, .server, &self.server, server_cfg);
         errdefer self.server_h3.deinit();
 
         try self.client_h3.start();

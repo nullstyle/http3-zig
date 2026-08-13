@@ -290,6 +290,12 @@ pub const Config = struct {
     max_capsule_value_size: ?usize = null,
     /// Client-only opt-in for server push. Null means do not send MAX_PUSH_ID.
     max_push_id: ?u64 = null,
+    /// RFC 9114 §7.2.8: send GREASE — one reserved SETTINGS entry in the
+    /// initial SETTINGS frame and one reserved-type unidirectional stream at
+    /// session start — so peers' mandatory unknown-codepoint tolerance stays
+    /// exercised by every session, not just by adversaries. Values are
+    /// deterministic (no RNG dependency); disable for byte-exact wire tests.
+    enable_grease: bool = true,
     /// Optional cap on per-stream bytes buffered in quic but not yet
     /// acknowledged. Leave null to preserve unbounded legacy behavior.
     max_stream_send_buffered: ?usize = null,
@@ -2793,6 +2799,14 @@ pub const Session = struct {
         }
     }
 
+    /// Deterministic GREASE picks (RFC 9114 §7.2.8). N is arbitrary but
+    /// fixed: variety would need an RNG the session deliberately doesn't
+    /// own, and a predictable reserved codepoint exercises peer tolerance
+    /// just as well. 0x1f * 27 + 0x21 = 0x36a (setting), 0x1f * 41 + 0x21
+    /// = 0x520 (stream type).
+    const grease_setting_n: u64 = 27;
+    const grease_stream_type_n: u64 = 41;
+
     fn openControlStream(self: *Session) Error!void {
         // openNextUni: monotonic per-type id, reap-safe (see openWebTransportUniStream).
         const id = (try self.quic.openNextUni()).id;
@@ -2800,7 +2814,16 @@ pub const Session = struct {
         self.control_stream_id = id;
         errdefer self.control_stream_id = null;
 
-        try self.writeControlFrame(.{ .settings = self.local_settings });
+        // Emission-only copy: `local_settings` stays clean for peer
+        // validation and re-reads; GREASE exists solely on the wire.
+        var advertised = self.local_settings;
+        if (self.config.enable_grease) {
+            advertised.grease = .{
+                .id = protocol.greaseValue(grease_setting_n),
+                .value = 0,
+            };
+        }
+        try self.writeControlFrame(.{ .settings = advertised });
         self.trace(.{
             .name = .control_stream_opened,
             .role = self.role,
@@ -2817,6 +2840,18 @@ pub const Session = struct {
                 try self.writeControlFrame(.{ .max_push_id = max_push_id });
             }
         }
+        if (self.config.enable_grease) try self.openGreaseUniStream();
+    }
+
+    /// RFC 9114 §7.2.8 ¶2 + §6.2.3: open one stream of a reserved
+    /// unidirectional type and FIN it immediately. Peers MUST either
+    /// discard it or STOP_SENDING it (§6.2 ¶last); http3-zig's own receive
+    /// path does the latter. Runs once per session, from
+    /// `openControlStream` (guarded by `control_stream_id`).
+    fn openGreaseUniStream(self: *Session) Error!void {
+        const id = (try self.quic.openNextUni()).id;
+        try self.writeStreamType(id, protocol.greaseValue(grease_stream_type_n));
+        try self.quic.streamFinish(id);
     }
 
     fn openQpackStreams(self: *Session) Error!void {

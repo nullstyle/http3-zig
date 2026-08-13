@@ -129,6 +129,12 @@ pub const H3Pair = struct {
     pub const StartOptions = struct {
         start_client: bool = true,
         start_server: bool = true,
+        /// The fixture's tests hand-inject frames at hard-coded uni-stream
+        /// ids and assert byte-exact wire runs; the GREASE uni stream
+        /// (`Config.enable_grease`, default on) would shift every id. The
+        /// fixture therefore forces GREASE off unless a grease-focused test
+        /// opts back in with this flag.
+        keep_grease: bool = false,
     };
 
     /// Like `initStarted`, but lets the caller skip `start()` on either side
@@ -154,10 +160,17 @@ pub const H3Pair = struct {
             self.client.deinit();
         }
 
-        self.client_h3 = http3_zig.Session.init(allocator, .client, &self.client, client_config);
+        var client_cfg = client_config;
+        var server_cfg = server_config;
+        if (!options.keep_grease) {
+            client_cfg.enable_grease = false;
+            server_cfg.enable_grease = false;
+        }
+
+        self.client_h3 = http3_zig.Session.init(allocator, .client, &self.client, client_cfg);
         errdefer self.client_h3.deinit();
 
-        self.server_h3 = http3_zig.Session.init(allocator, .server, &self.server, server_config);
+        self.server_h3 = http3_zig.Session.init(allocator, .server, &self.server, server_cfg);
         errdefer self.server_h3.deinit();
 
         if (options.start_client) try self.client_h3.start();
