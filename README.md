@@ -18,7 +18,7 @@ for TLS 1.3 / ALPN configuration.
 | Priority | RFC 9218 |
 | WebSocket-over-H3 | RFC 8441 / 9220 |
 | CONNECT-UDP / MASQUE | RFC 9298 |
-| WebTransport | **draft-ietf-webtrans-http3-16** (`SETTINGS_WT_ENABLED = 0x2c7cf000`; `:protocol = webtransport-h3`, legacy `webtransport` accepted) |
+| WebTransport | **draft-ietf-webtrans-http3-16** (`SETTINGS_WT_ENABLED = 0x2c7cf000`; `:protocol = webtransport-h3`, legacy `webtransport` accepted). Browser-era negotiation (draft-02 — what shipped Chrome/Firefox speak — and draft-07) is available via opt-in config knobs; see the [WebTransport tour](docs/webtransport-tour.md)'s "Draft eras and browsers" |
 
 **0-RTT:** HTTP/3 early data (RFC 9114 §7.2.4.2) is supported end-to-end —
 remembered-SETTINGS capture/resume on the client (`http3_zig.earlydata`),

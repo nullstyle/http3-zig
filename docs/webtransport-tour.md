@@ -235,6 +235,53 @@ referencing this Session ID are dispatched (or replayed if held under the
 
 ---
 
+## Draft eras and browsers
+
+The draft renumbers its bootstrap SETTINGS codepoint every revision, and
+shipping browsers are years behind the current draft: **Chrome and
+Firefox both negotiate the draft-02 era today** (`SETTINGS_ENABLE_WEBTRANSPORT
+= 0x2b603742`, `:protocol = webtransport`), while the modern draft uses
+`SETTINGS_WT_ENABLED = 0x2c7cf000` and `webtransport-h3`. The data path —
+stream prefixes, CLOSE/DRAIN capsules, error-code mapping, datagrams — is
+identical across every revision, so http3-zig speaks multiple eras
+concurrently and resolves the newest era both peers advertise, once per
+connection ([draft-ietf-webtrans-http3-07 §6]'s selection rule):
+
+```zig
+// A browser-facing server: modern draft + the browser era.
+const cfg = http3_zig.SessionConfig.production(.{
+    .enable_webtransport = true,          // draft-16 peers
+    .enable_webtransport_draft02 = true,  // Chrome + Firefox today
+    // .enable_webtransport_draft07 = true — quiche-flag peers; its
+    // SETTINGS value IS the session cap, derived from max_wt_sessions
+    // (default 256): advertisement always equals enforcement.
+});
+
+// After SETTINGS arrive:
+const era = session.webTransportNegotiatedDraft(); // ?WtDraft
+```
+
+Sessions inherit the connection's era (mixed-era sessions cannot exist);
+the established `flowState()` snapshot reports it. On a **legacy-era
+session** the modern session-level flow control does not exist: no
+SETTINGS credit is seeded, inbound `WT_MAX_*`/`BLOCKED` capsules surface
+as `webtransport_unknown_capsule` (never folded), and the modern send
+verbs (`sendMaxData`, `sendMaxStreams*`) refuse with
+`error.WebTransportEraUnsupported`. Everything else — streams,
+datagrams, CLOSE, DRAIN, the typed events — works identically.
+Establishment is era-shaped automatically: the client sends the resolved
+era's token and headers (draft-02 adds `sec-webtransport-http3-draft02:
+1`, which Chrome sends too), and the server echoes the era response
+header and validates the token against the resolved era.
+
+The default wire surface stays **modern-only** — the era knobs are
+opt-in, and they sunset (draft-02 first) once browsers ship the modern
+draft, per the API-stability sunset mechanics. Real-browser CI legs live
+in `interop/browser_wt/` (`just wt-browser-chrome`); browsers connecting
+to a local dev server need either the CI SPKI-flag recipe documented
+there or `serverCertificateHashes` (ECDSA P-256 certificate, validity
+under 14 days).
+
 ## Streams
 
 WebTransport streams are layered over QUIC streams with a small framing

@@ -187,6 +187,7 @@ kind of change to expect:
 | Extension | Wire anchor | Disposition |
 | --- | --- | --- |
 | WebTransport over HTTP/3 | `draft-ietf-webtrans-http3-16` | Track-to-RFC |
+| WebTransport browser eras (draft-02 / draft-07 negotiation: `WtDraft`, the `enable_webtransport_draft*` knobs, legacy SETTINGS fields) | superseded revisions -02 / -07 | Experimental (Unstable-with-SLA) — deliberately NOT Track-to-RFC: the eras are dead ends by definition, kept only while shipping browsers speak them; sunset trigger is Chrome shipping the modern draft (draft-02 deprecates first, one-minor window each) |
 | MASQUE CONNECT-UDP (`Masque*`, `ConnectUdp*`) | RFC 9298 + RFC 9297 (published) | Experimental (Unstable-with-SLA) — API still settling; see [masque-caveats.md](masque-caveats.md) |
 | qlog / trace observability | qlog event schema | Stable **API** (callback signatures), draft-tracked **schema** (emitted field shape follows the qlog draft) |
 
