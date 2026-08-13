@@ -74,6 +74,15 @@ pub const Endpoint = struct {
         try self.quic.handle(datagram, from, now_us);
     }
 
+    /// Soonest armed transport deadline (`Connection.nextTimerDeadline`):
+    /// foreign loops park their wait on this instead of a fixed sleep so
+    /// PTO/loss/pacing timers fire on schedule. See the embedding guide's
+    /// "Foreign Event Loops" section for the contract (past-due deadlines
+    /// clamp to zero; never switch exhaustively on `TimerDeadline.kind`).
+    pub fn nextTimerDeadline(self: *const Endpoint, now_us: u64) ?quic.TimerDeadline {
+        return self.quic.nextTimerDeadline(now_us);
+    }
+
     /// Run the QUIC handshake state machine (`Connection.advance`): feed
     /// buffered CRYPTO to TLS and queue any resulting flight for the next
     /// `poll`/`flush`. Real-network clients MUST call this once after

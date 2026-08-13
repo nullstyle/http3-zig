@@ -163,9 +163,53 @@ recovery timers backwards. `runUdpServer`/`runUdpClient` own the clock
 
 Open-coded loops own wakeups too: size the poll/recv timeout with
 `quic.Server.nextTimerDeadline(now_us)` (the earliest deadline across
-slots) or per-connection `Connection.nextTimerDeadline`, rather than a
-fixed sleep — that keeps PTO/loss-detection firing on schedule at idle
-without busy-spinning.
+slots), per-connection `Connection.nextTimerDeadline`, or
+`TransportEndpoint.nextTimerDeadline`, rather than a fixed sleep — that
+keeps PTO/loss-detection firing on schedule at idle without
+busy-spinning. Two clamps matter when converting the returned absolute
+`at_us` into a wait: a past-due deadline clamps to zero (a negative
+timeout means "block forever" to `poll`, and the PTO never fires), and a
+sub-millisecond deadline rounds *up* to 1 ms so a 300 µs ACK-delay timer
+cannot spin the loop hot.
+
+## Foreign Event Loops
+
+If your process already owns a wait — a reactor, a runtime scheduler, a
+`poll`/`epoll`/`kqueue` set you multiplex yourself — drive http3-zig from
+it directly: the manual pump order above is the supported integration.
+quic-zig's `EMBEDDING.md` ("Foreign Event Loops") and its
+`examples/foreign_loop_embedder.zig` document the transport half in depth
+(socket tuning, ingress budgeting, stateless-response drain, per-datagram
+destinations, shutdown grace). The H3-layer notes that matter on top:
+
+- **Pacing is a timer, not a failure.** Since quic 0.11 packet pacing is
+  on by default: the deadline from `nextTimerDeadline` can be
+  `TimerKind.pacing`, meaning application data is waiting on send credit
+  and the transport will emit nothing until roughly `at_us`. Treat it
+  like any other deadline — wake, `tick`, drain and `flush`. A
+  `poll`/`flush` that moves no bytes while session data is still queued
+  has always been a legal state (flow control, anti-amplification, cwnd
+  exhaustion); pacing adds one more cause. Loops keyed on the deadline
+  need no changes; fixed-interval loops still work — each wake releases
+  up to one interval's worth of credit — and `enable_pacing = false` on
+  either transport `Config` restores pre-0.11 burst timing exactly.
+- **Never switch exhaustively on `TimerKind`.** New variants may appear
+  in quic minor releases; that is the documented forward-compat signal
+  (`pacing` itself arrived that way, as a compile error for exhaustive
+  switches). Handle unknown kinds generically — waking, ticking, and
+  draining is always correct.
+- **The loop thread is the serializer.** Neither quic nor `Session` has
+  internal locking; no thread but the loop thread may call into either.
+  Cross-thread work arrives via a queue plus a wake fd; a wake means
+  "check the queue", not "one item" — N pushes may coalesce into one
+  wake, so drain until empty.
+- **Batched egress helpers.** A foreign loop doing its own `sendmsg` can
+  keep Linux GSO batching (instead of one syscall per datagram) with
+  `quic.transport.fillGsoBatch` and the GSO cmsg helpers.
+- `examples/manual_pump_get.zig` teaches the pump *order* on a fixed
+  virtual clock; it is deliberately not a wakeup-timing reference —
+  deadline-driven waiting is what this section and quic-zig's
+  foreign-loop example add on top of it.
 
 ## Choosing Event Surfaces
 
