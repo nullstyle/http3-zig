@@ -122,6 +122,18 @@ test "era negotiation: a draft-02 client and a dual-era server establish a legac
                 .request_updated, .request_complete => |request_state| {
                     const request = request_state.reader();
                     if (server_wt == null and request.headers().len > 0 and request.isWebTransport()) {
+                        // The era's establishment shape on the wire: the
+                        // legacy token and the draft-02 request header
+                        // Chrome sends unconditionally.
+                        try std.testing.expectEqualStrings("webtransport", request.protocol().?);
+                        var saw_draft02_header = false;
+                        for (request.headers()) |field| {
+                            if (std.mem.eql(u8, field.name, "sec-webtransport-http3-draft02")) {
+                                try std.testing.expectEqualStrings("1", field.value);
+                                saw_draft02_header = true;
+                            }
+                        }
+                        try std.testing.expect(saw_draft02_header);
                         server_wt = try h3_server.acceptWebTransport(allocator, request, .{});
                         // Sessions inherit the connection era — visible
                         // on the established snapshot.
@@ -141,6 +153,17 @@ test "era negotiation: a draft-02 client and a dual-era server establish a legac
                 .response_updated, .response_complete => |response_state| {
                     const response = response_state.reader();
                     if (!capsule_sent and response.headers().len > 0 and response.webTransportAccepted()) {
+                        // Era response header (quiche-server-compatible;
+                        // no shipping client validates it — we emit it
+                        // for symmetry with what browsers expect to see).
+                        var saw_resp_header = false;
+                        for (response.headers()) |field| {
+                            if (std.mem.eql(u8, field.name, "sec-webtransport-http3-draft")) {
+                                try std.testing.expectEqualStrings("draft02", field.value);
+                                saw_resp_header = true;
+                            }
+                        }
+                        try std.testing.expect(saw_resp_header);
                         // Datagrams are era-stable and must flow...
                         try client_wt.sendDatagram("era ping");
                         // ...while a modern flow capsule injected raw is
@@ -277,4 +300,151 @@ test "era negotiation: sessions on one connection share the resolved era (same-e
     try std.testing.expectEqual(snap_a.draft, snap_b.draft);
     _ = &wt_a;
     _ = &wt_b;
+}
+
+test "production(): the draft-07 knob advertises exactly the enforced session cap" {
+    // Advertisement equals enforcement, structurally: both derive from
+    // one option [draft-ietf-webtrans-http3-07 §3.1].
+    const config = http3_zig.SessionConfig.production(.{ .enable_webtransport_draft07 = true });
+    try std.testing.expectEqual(@as(?u64, 256), config.settings.wt_draft07_max_sessions);
+    try std.testing.expectEqual(@as(?usize, 256), config.max_wt_sessions);
+    try std.testing.expect(config.settings.enable_connect_protocol);
+    try std.testing.expect(config.settings.h3_datagram);
+
+    const custom = http3_zig.SessionConfig.production(.{
+        .enable_webtransport_draft07 = true,
+        .max_wt_sessions = 8,
+    });
+    try std.testing.expectEqual(@as(?u64, 8), custom.settings.wt_draft07_max_sessions);
+    try std.testing.expectEqual(@as(?usize, 8), custom.max_wt_sessions);
+
+    // Without the era knob the cap is policy-only (nothing advertised).
+    const modern = http3_zig.SessionConfig.production(.{
+        .enable_webtransport = true,
+        .max_wt_sessions = 4,
+    });
+    try std.testing.expectEqual(@as(?u64, null), modern.settings.wt_draft07_max_sessions);
+    try std.testing.expectEqual(@as(?usize, 4), modern.max_wt_sessions);
+}
+
+test "session cap: over-cap accept refuses pre-response and the 429 rejection reaches the client" {
+    const allocator = std.testing.allocator;
+    const wt: http3_zig.Settings = .{
+        .enable_connect_protocol = true,
+        .h3_datagram = true,
+        .wt_enabled = true,
+    };
+    var pair: H3Pair = undefined;
+    try pair.initStarted(
+        allocator,
+        .{ .settings = wt },
+        .{ .settings = wt, .max_wt_sessions = 1 },
+    );
+    defer pair.deinit();
+    try exchangePairSettings(allocator, &pair);
+
+    var h3_client = http3_zig.Client.init(&pair.client_h3);
+    var h3_server = http3_zig.Server.init(&pair.server_h3);
+    var wt_a = try h3_client.startWebTransport(allocator, .{ .authority = "localhost", .path = "/a" });
+    var wt_b = try h3_client.startWebTransport(allocator, .{ .authority = "localhost", .path = "/b" });
+
+    var client_runner = http3_zig.ClientRunner.init(allocator);
+    defer client_runner.deinit();
+    var server_runner = http3_zig.ServerRunner.init(allocator);
+    defer server_runner.deinit();
+    var client_events: std.ArrayList(http3_zig.session.Event) = .empty;
+    defer {
+        clearSessionEvents(allocator, &client_events);
+        client_events.deinit(allocator);
+    }
+    var server_events: std.ArrayList(http3_zig.session.Event) = .empty;
+    defer {
+        clearSessionEvents(allocator, &server_events);
+        server_events.deinit(allocator);
+    }
+
+    var first: ?http3_zig.WebTransportServerStream = null;
+    var second_rejected = false;
+    var client_saw_429 = false;
+    var now_us: u64 = 1_000_000;
+    var iters: u32 = 0;
+    while (!client_saw_429) : (iters += 1) {
+        try std.testing.expect(iters < 20_000);
+        try pumpH3(
+            &pair.client,
+            &pair.server,
+            &pair.client_h3,
+            &pair.server_h3,
+            &client_events,
+            &server_events,
+            &now_us,
+        );
+        for (server_events.items) |event| {
+            switch (try server_runner.observe(event)) {
+                .request_updated, .request_complete => |request_state| {
+                    const request = request_state.reader();
+                    if (request.headers().len == 0 or !request.isWebTransport()) continue;
+                    if (request.streamId() == wt_a.sessionId()) {
+                        if (first == null) first = try h3_server.acceptWebTransport(allocator, request, .{});
+                    } else if (!second_rejected and first != null) {
+                        // The cap refuses BEFORE any response bytes; the
+                        // application answers with the polite 429.
+                        try std.testing.expectError(
+                            error.WebTransportSessionLimitReached,
+                            h3_server.acceptWebTransport(allocator, request, .{}),
+                        );
+                        try h3_server.rejectWebTransport(allocator, request, .{ .status = "429" });
+                        second_rejected = true;
+                    }
+                },
+                else => {},
+            }
+        }
+        clearSessionEvents(allocator, &server_events);
+        for (client_events.items) |event| {
+            switch (try client_runner.observe(event)) {
+                .response_updated, .response_complete => |response_state| {
+                    const response = response_state.reader();
+                    if (response.streamId() == wt_b.sessionId() and response.headers().len > 0) {
+                        try std.testing.expect(!response.webTransportAccepted());
+                        try std.testing.expectEqualStrings("429", response.status().?);
+                        client_saw_429 = true;
+                    }
+                },
+                else => {},
+            }
+        }
+        clearSessionEvents(allocator, &client_events);
+    }
+    // The rejected bootstrap left no session behind on the client.
+    try std.testing.expect(
+        pair.client_h3.webTransportSessionState(wt_b.sessionId()) == .none,
+    );
+    try std.testing.expectEqual(@as(usize, 1), pair.server_h3.webTransportEstablishedCount());
+    _ = &wt_a;
+}
+
+test "draft-07: the peer's advertised session count binds the client before anything reaches the wire" {
+    const allocator = std.testing.allocator;
+    const d07: http3_zig.Settings = .{
+        .enable_connect_protocol = true,
+        .h3_datagram = true,
+        .wt_draft07_max_sessions = 1,
+    };
+    var pair: H3Pair = undefined;
+    try pair.initStarted(allocator, .{ .settings = d07 }, .{ .settings = d07 });
+    defer pair.deinit();
+    try exchangePairSettings(allocator, &pair);
+
+    try std.testing.expectEqual(
+        @as(?http3_zig.webtransport.WtDraft, .draft07),
+        pair.client_h3.webTransportNegotiatedDraft(),
+    );
+    var h3_client = http3_zig.Client.init(&pair.client_h3);
+    var wt_a = try h3_client.startWebTransport(allocator, .{ .authority = "localhost", .path = "/a" });
+    try std.testing.expectError(
+        error.WebTransportSessionLimitReached,
+        h3_client.startWebTransport(allocator, .{ .authority = "localhost", .path = "/b" }),
+    );
+    _ = &wt_a;
 }

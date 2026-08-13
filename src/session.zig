@@ -154,6 +154,13 @@ pub const Error = quic.conn.state.Error ||
         /// count past `Config.max_pending_wt_sessions` (server). The
         /// session closes the connection with H3_EXCESSIVE_LOAD.
         ExcessivePendingWebTransportSessions,
+        /// Accepting/confirming a WebTransport session would push the
+        /// ESTABLISHED count past `Config.max_wt_sessions` (or, client
+        /// side on a draft-07 connection, past the peer's advertised
+        /// session willingness). Per-request soft error — never a
+        /// connection error; servers answer with
+        /// `Server.rejectWebTransport` (429 or a reset).
+        WebTransportSessionLimitReached,
         /// A modern-era WebTransport verb (`sendMaxData`,
         /// `sendMaxStreams*`) was invoked on a session whose resolved
         /// draft era predates session-level flow control. The browser
@@ -252,6 +259,16 @@ pub const ProductionOptions = struct {
     /// SETTINGS value IS a session cap, and advertisement must equal
     /// enforcement).
     enable_webtransport_draft02: bool = false,
+    /// Additionally advertise the draft-07 browser-era bootstrap
+    /// (`SETTINGS_WEBTRANSPORT_MAX_SESSIONS`) — quiche peers and Chrome
+    /// behind its default-off flag. The advertised value IS the session
+    /// cap: `max_wt_sessions` (defaulted to 256 here when this is set)
+    /// is both advertised and enforced, never one without the other.
+    enable_webtransport_draft07: bool = false,
+    /// Cap on established WebTransport sessions (see
+    /// `Config.max_wt_sessions`). Null = 256 when a draft-07 era knob
+    /// requires an advertised value, otherwise uncapped.
+    max_wt_sessions: ?usize = null,
     /// Initial per-session WebTransport flow-control credit this endpoint
     /// advertises via the draft-15 §9.2 SETTINGS
     /// (`SETTINGS_WT_INITIAL_MAX_DATA` / `_STREAMS_UNI` / `_STREAMS_BIDI`).
@@ -370,6 +387,19 @@ pub const Config = struct {
     /// H3_EXCESSIVE_LOAD. Null preserves the legacy behavior (bounded only
     /// by MAX_PUSH_ID); `production()` defaults to 256.
     max_tracked_push_promises: ?usize = null,
+    /// Optional cap on ESTABLISHED WebTransport sessions. The modern
+    /// draft has no SETTINGS-advertised session count — over-cap
+    /// sessions are refused at accept time with 429 / a reset via
+    /// `Server.rejectWebTransport` — while on a draft-07 connection
+    /// this value doubles as the advertised
+    /// `SETTINGS_WEBTRANSPORT_MAX_SESSIONS` (advertisement always
+    /// equals enforcement). `checkWebTransportSessionCapacity` /
+    /// `acceptWebTransport` enforce it; null = uncapped.
+    /// `production()` defaults it to 256 whenever the draft-07 era is
+    /// enabled. Orthogonal to `max_pending_wt_sessions` below (DoS
+    /// hygiene on unconfirmed CONNECTs vs protocol policy on live
+    /// sessions).
+    max_wt_sessions: ?usize = null,
     /// Optional cap on unconfirmed pending WebTransport sessions
     /// (pending entries in `wt_sessions`, server only) — CONNECT streams that began a
     /// WT handshake but have not been accepted or torn down. A peer opening
@@ -405,9 +435,15 @@ pub const Config = struct {
         // `enable_webtransport` is set so callers don't have to remember
         // the prerequisites.
         const enable_connect_protocol = options.enable_connect_protocol or
-            options.enable_webtransport or options.enable_webtransport_draft02;
+            options.enable_webtransport or options.enable_webtransport_draft02 or
+            options.enable_webtransport_draft07;
         const enable_datagram = options.enable_datagram or
-            options.enable_webtransport or options.enable_webtransport_draft02;
+            options.enable_webtransport or options.enable_webtransport_draft02 or
+            options.enable_webtransport_draft07;
+        // Advertisement equals enforcement: when draft-07 is enabled its
+        // SETTINGS value and the enforced cap derive from ONE option.
+        const wt_session_cap: ?usize = options.max_wt_sessions orelse
+            (if (options.enable_webtransport_draft07) @as(?usize, 256) else null);
 
         return .{
             .settings = .{
@@ -418,6 +454,10 @@ pub const Config = struct {
                 .h3_datagram = enable_datagram,
                 .wt_enabled = options.enable_webtransport,
                 .wt_draft02 = options.enable_webtransport_draft02,
+                .wt_draft07_max_sessions = if (options.enable_webtransport_draft07)
+                    @as(?u64, @intCast(wt_session_cap.?))
+                else
+                    null,
                 .wt_initial_max_data = options.wt_initial_max_data,
                 .wt_initial_max_streams_uni = options.wt_initial_max_streams_uni,
                 .wt_initial_max_streams_bidi = options.wt_initial_max_streams_bidi,
@@ -440,6 +480,7 @@ pub const Config = struct {
             .max_concurrent_peer_streams = options.max_concurrent_peer_streams,
             .max_tracked_priorities = options.max_tracked_priorities,
             .max_tracked_push_promises = options.max_tracked_push_promises,
+            .max_wt_sessions = wt_session_cap,
             .max_pending_wt_sessions = options.max_pending_wt_sessions,
             .wt_max_buffered_bytes_per_stream = options.wt_max_buffered_bytes_per_stream,
             .wt_max_total_buffered_bytes = options.wt_max_total_buffered_bytes,
@@ -2151,6 +2192,9 @@ pub const Session = struct {
 
         if (self.wt_sessions.get(stream_id)) |sess| {
             if (sess.phase == .established) return;
+            // Defensive re-check: `acceptWebTransport` gates BEFORE the
+            // response; direct-confirm callers get the same policy.
+            try self.checkWebTransportSessionCapacity();
             sess.phase = .established;
             sess.established_event_pending = true;
             self.wt_pending_count -= 1;
@@ -2162,6 +2206,7 @@ pub const Session = struct {
         }
         // Direct confirmation without a prior pending mark (primitive
         // users / unit fixtures) keeps working.
+        try self.checkWebTransportSessionCapacity();
         _ = try self.createWebTransportSession(stream_id, .established);
     }
 
@@ -2720,6 +2765,18 @@ pub const Session = struct {
 
     pub fn webTransportEstablishedCount(self: *const Session) usize {
         return self.wt_sessions.count() - self.wt_pending_count;
+    }
+
+    /// Accept-time capacity gate for `Config.max_wt_sessions`. Called by
+    /// `Server.acceptWebTransport` BEFORE the 2xx goes on the wire (a
+    /// confirm-time failure would be too late — the response is already
+    /// sent); public so raw-Session embedders can gate the same way.
+    pub fn checkWebTransportSessionCapacity(self: *const Session) Error!void {
+        if (self.config.max_wt_sessions) |limit| {
+            if (self.webTransportEstablishedCount() >= limit) {
+                return Error.WebTransportSessionLimitReached;
+            }
+        }
     }
 
     /// The draft era WebTransport resolved to on this connection, or
@@ -4815,11 +4872,13 @@ pub const Session = struct {
     /// pending set carry the response status. A 2xx confirms the
     /// session; any other status closes it.
     ///
-    /// Draft-15 removed `SETTINGS_WT_MAX_SESSIONS` and replaced it with
-    /// the boolean `SETTINGS_WT_ENABLED`. There is no longer a numeric
-    /// session limit advertised in SETTINGS, so sessions that exceed an
-    /// application's policy must be rejected by `Server.acceptWebTransport`
-    /// (or the equivalent capsule path) rather than at this layer.
+    /// The modern draft has no SETTINGS-advertised session count
+    /// (draft-15 replaced `SETTINGS_WT_MAX_SESSIONS` with the boolean
+    /// `SETTINGS_WT_ENABLED`): the session-count policy lives in
+    /// `Config.max_wt_sessions`, enforced at accept time
+    /// (`checkWebTransportSessionCapacity`) with
+    /// `Server.rejectWebTransport` as the wire answer — and on a
+    /// draft-07 connection the same value is what SETTINGS advertises.
     fn observeWebTransportHeadersIfApplicable(
         self: *Session,
         state: *StreamState,

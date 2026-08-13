@@ -191,6 +191,25 @@ breaking changes; see notes per release.
   on it) now returns `error.UnknownWebTransportSession` when invoked on a
   stream id that is unknown or carries no WebTransport session
   association, instead of silently writing unmetered bytes.
+- Added `Config.max_wt_sessions` — the established-session cap the
+  modern draft expects applications to enforce at accept time
+  (`Session.checkWebTransportSessionCapacity`, called by
+  `acceptWebTransport` BEFORE the response ships; new soft
+  `Error.WebTransportSessionLimitReached`, answered with
+  `Server.rejectWebTransport(allocator, request, .{ .status = "429" })`
+  — the new polite-refusal arm — or a reset). On a draft-07 connection
+  the same value IS the advertised
+  `SETTINGS_WEBTRANSPORT_MAX_SESSIONS` (production()'s
+  `enable_webtransport_draft07` derives both from one option, default
+  256 — advertisement always equals enforcement) and the peer's
+  advertised count binds the client before anything reaches the wire.
+  Establishment is now fully era-shaped: the client sends the resolved
+  era's `:protocol` token and headers (draft-02's
+  `sec-webtransport-http3-draft02: 1`), the server echoes the era
+  response header, validates the received token against the resolved
+  era, and rejects WT CONNECTs carrying the legacy `datagram-flow-id`
+  header (mirroring Chrome). `rejectWebTransport` now takes an
+  allocator (unreleased-surface signature fix).
 - **Added the WebTransport browser-era negotiation layer.** One endpoint
   can now speak the modern draft AND the browser eras concurrently:
   `webtransport.WtDraft`/`resolveDraft` pick the newest era both peers

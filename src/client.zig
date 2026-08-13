@@ -1882,35 +1882,58 @@ pub const Client = struct {
             peer,
             webtransport_mod.localEras(self.session.local_settings),
         )) return webtransport_mod.Error.PeerDidNotEnableWebTransport;
+        const era = self.session.webTransportNegotiatedDraft() orelse .draft16;
+        const profile = webtransport_mod.eraProfile(era);
+        // draft-07 makes the peer's advertised session count BINDING on
+        // the client [draft-ietf-webtrans-http3-07 §3.1].
+        if (era == .draft07) {
+            if (peer.wt_draft07_max_sessions) |peer_cap| {
+                const live = self.session.webTransportPendingCount() +
+                    self.session.webTransportEstablishedCount();
+                if (live >= peer_cap) return session_mod.Error.WebTransportSessionLimitReached;
+            }
+        }
 
+        // The era's establishment shape: its `:protocol` token plus any
+        // era-specific request headers (draft-02's
+        // sec-webtransport-http3-draft02, which Chrome also sends).
+        const extra = profile.request_headers;
         var writer: RequestWriter = undefined;
-        if (options.subprotocols.len == 0) {
+        if (options.subprotocols.len == 0 and extra.len == 0) {
             writer = try self.startRequest(allocator, .{
                 .method = "CONNECT",
                 .scheme = options.scheme,
                 .authority = options.authority,
                 .path = options.path,
-                .connect_protocol = webtransport_mod.protocol_token,
+                .connect_protocol = profile.protocol_token,
                 .headers = options.headers,
             });
         } else {
-            const available_value = try webtransport_mod.allocAvailableProtocols(allocator, options.subprotocols);
-            defer allocator.free(available_value);
+            const has_subprotocols = options.subprotocols.len != 0;
+            const available_value = if (has_subprotocols)
+                try webtransport_mod.allocAvailableProtocols(allocator, options.subprotocols)
+            else
+                "";
+            defer if (has_subprotocols) allocator.free(available_value);
 
-            const combined = try allocator.alloc(qpack.FieldLine, options.headers.len + 1);
+            const sub_slot: usize = if (has_subprotocols) 1 else 0;
+            const combined = try allocator.alloc(qpack.FieldLine, options.headers.len + extra.len + sub_slot);
             defer allocator.free(combined);
-            combined[0] = .{
-                .name = webtransport_mod.available_protocols_header,
-                .value = available_value,
-            };
-            for (options.headers, 0..) |header, i| combined[i + 1] = header;
+            if (has_subprotocols) {
+                combined[0] = .{
+                    .name = webtransport_mod.available_protocols_header,
+                    .value = available_value,
+                };
+            }
+            for (extra, 0..) |header, i| combined[sub_slot + i] = header;
+            for (options.headers, 0..) |header, i| combined[sub_slot + extra.len + i] = header;
 
             writer = try self.startRequest(allocator, .{
                 .method = "CONNECT",
                 .scheme = options.scheme,
                 .authority = options.authority,
                 .path = options.path,
-                .connect_protocol = webtransport_mod.protocol_token,
+                .connect_protocol = profile.protocol_token,
                 .headers = combined,
             });
         }

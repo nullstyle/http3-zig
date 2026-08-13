@@ -2138,7 +2138,7 @@ test "WebTransport malformed CLOSE is a message-scoped H3_MESSAGE_ERROR, oversiz
                         request.isWebTransport() and request.streamId() == sid2)
                     {
                         // The server can't honor "chat-v9": signal it.
-                        try h3_server.rejectWebTransport(request, .alpn_failed);
+                        try h3_server.rejectWebTransport(allocator, request, .alpn_failed);
                         rejected = true;
                     }
                 },

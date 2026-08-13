@@ -1453,6 +1453,24 @@ pub const Server = struct {
             peer,
             webtransport_mod.localEras(self.session.local_settings),
         )) return webtransport_mod.Error.PeerDidNotEnableWebTransport;
+        const profile = webtransport_mod.eraProfile(
+            self.session.webTransportNegotiatedDraft() orelse .draft16,
+        );
+        // The received token must match the RESOLVED era (both tokens
+        // pass classification; a mismatch means the peer disagrees
+        // about which era this connection speaks — reject the request,
+        // never the connection).
+        if (request.protocol()) |token| {
+            if (!std.mem.eql(u8, token, profile.protocol_token)) return error.NotWebTransport;
+        }
+        // Mirror Chrome's server: a WT CONNECT carrying the legacy
+        // datagram-flow-id header is rejected outright.
+        for (request.headers()) |field| {
+            if (std.ascii.eqlIgnoreCase(field.name, "datagram-flow-id")) return error.NotWebTransport;
+        }
+        // Session-count policy gates BEFORE the response goes on the
+        // wire (a confirm-time failure would be after the 2xx shipped).
+        try self.session.checkWebTransportSessionCapacity();
 
         var writer: ResponseWriter = undefined;
         if (options.subprotocol) |selected| {
@@ -1461,13 +1479,25 @@ pub const Server = struct {
             if (!webtransport_mod.isOfferedProtocol(offered, selected)) {
                 return error.SubprotocolNotOffered;
             }
-            const combined = try allocator.alloc(qpack.FieldLine, options.headers.len + 1);
+            const extra = profile.response_headers;
+            const combined = try allocator.alloc(qpack.FieldLine, options.headers.len + extra.len + 1);
             defer allocator.free(combined);
             combined[0] = .{
                 .name = webtransport_mod.protocol_header,
                 .value = selected,
             };
-            for (options.headers, 0..) |header, i| combined[i + 1] = header;
+            for (extra, 0..) |header, i| combined[i + 1] = header;
+            for (options.headers, 0..) |header, i| combined[extra.len + i + 1] = header;
+            writer = try self.startResponse(allocator, request.streamId(), .{
+                .status = options.status,
+                .headers = combined,
+            });
+        } else if (profile.response_headers.len > 0) {
+            const extra = profile.response_headers;
+            const combined = try allocator.alloc(qpack.FieldLine, options.headers.len + extra.len);
+            defer allocator.free(combined);
+            for (extra, 0..) |header, i| combined[i] = header;
+            for (options.headers, 0..) |header, i| combined[extra.len + i] = header;
             writer = try self.startResponse(allocator, request.streamId(), .{
                 .status = options.status,
                 .headers = combined,
@@ -1499,6 +1529,10 @@ pub const Server = struct {
         /// Any other wire code, e.g. an application code mapped through
         /// `webtransportAppErrorToHttp3`.
         wire_code: u64,
+        /// Respond with a plain HTTP status (canonically "429" for the
+        /// modern-draft session-cap rejection) + FIN instead of a
+        /// stream reset — the browser-friendly refusal.
+        status: []const u8,
     };
 
     /// Rejects a pending WebTransport session with a wire-visible
@@ -1512,17 +1546,33 @@ pub const Server = struct {
     /// application chooses the signal.
     pub fn rejectWebTransport(
         self: *Server,
+        allocator: std.mem.Allocator,
         request: RequestReader,
         reason: WebTransportRejectReason,
     ) (session_mod.Error || webtransport_mod.Error)!void {
         if (!request.isWebTransport()) return error.NotWebTransport;
-        const code: u64 = switch (reason) {
-            .alpn_failed => webtransport_mod.alpn_error_code,
-            .requirements_not_met => webtransport_mod.requirements_not_met_code,
-            .wire_code => |c| c,
-        };
-        self.session.stopSending(request.streamId(), code) catch {};
-        try self.session.resetStream(request.streamId(), code);
+        switch (reason) {
+            // The polite refusal: a plain HTTP response (canonically 429
+            // for the modern-draft session-cap policy) + FIN. The
+            // pending registry entry clears when the client's CONNECT
+            // FIN/reset lands, exactly like any non-2xx bootstrap.
+            .status => |status_code| {
+                var writer = try self.startResponse(allocator, request.streamId(), .{
+                    .status = status_code,
+                });
+                try writer.finish();
+            },
+            .alpn_failed, .requirements_not_met, .wire_code => {
+                const code: u64 = switch (reason) {
+                    .alpn_failed => webtransport_mod.alpn_error_code,
+                    .requirements_not_met => webtransport_mod.requirements_not_met_code,
+                    .wire_code => |c| c,
+                    .status => unreachable,
+                };
+                self.session.stopSending(request.streamId(), code) catch {};
+                try self.session.resetStream(request.streamId(), code);
+            },
+        }
     }
 
     pub fn classify(self: *const Server, event: session_mod.Event) ?RequestEvent {
