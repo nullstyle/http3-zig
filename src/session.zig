@@ -2569,12 +2569,29 @@ pub const Session = struct {
         self.config.observability = hooks;
     }
 
+    /// Install a QUIC qlog sink on the underlying connection
+    /// (`Connection.setQlogCallback`). `quic.qlog.Writer.callback` is a
+    /// compatible sink that serializes the stream to a `.sqlog` file
+    /// (JSON-SEQ, loads in qvis). Since quic 0.12 the connection emits
+    /// `connection_started` at install time — the first moment a sink
+    /// exists — so the event is no longer silently dropped for wrapper
+    /// users whose callback lands after connection setup.
     pub fn setQuicQlogCallback(
         self: *Session,
         callback: ?observability_mod.QuicQlogCallback,
         user_data: ?*anyopaque,
     ) void {
         self.quic.setQlogCallback(callback, user_data);
+    }
+
+    /// Enable or disable per-packet qlog events (`packet_sent`,
+    /// `packet_received`, `packet_lost`) on the underlying connection
+    /// (`Connection.setQlogPacketEvents`). Off by default; high-volume —
+    /// keep off in production unless actively debugging. Pair with
+    /// `setQuicQlogCallback`, which alone carries the lifecycle,
+    /// recovery, and key-schedule events.
+    pub fn setQlogPacketEvents(self: *Session, enabled: bool) void {
+        self.quic.setQlogPacketEvents(enabled);
     }
 
     pub fn streamSendState(self: *const Session, stream_id: u64) Error!StreamSendState {

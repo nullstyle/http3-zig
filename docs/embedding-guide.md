@@ -211,6 +211,61 @@ destinations, shutdown grace). The H3-layer notes that matter on top:
   deadline-driven waiting is what this section and quic-zig's
   foreign-loop example add on top of it.
 
+## Transport Tuning
+
+Everything below is quic-layer configuration that http3-zig passes
+through untouched; it is listed here because an HTTP/3 embedder chooses
+it at `quic.Client.Config` / `quic.Server.Config` / `RunUdpOptions`
+construction time. The defaults *are* the deployment posture (quic's
+0.11 changelog: CUBIC + pacing + HyStart++ on by default, batched UDP
+datapath, each with committed benchmark baselines behind it) — the demo
+examples set none of them, and `examples/udp_server.zig` /
+`examples/udp_client.zig` carry the same list as annotated comment
+blocks in place.
+
+Congestion and send timing, on both `quic.Client.Config` and
+`quic.Server.Config`:
+
+- `congestion_control` (default `.cubic`, RFC 9438). `.bbr` opts into
+  BBRv3 (draft-ietf-ccwg-bbr-06, new in quic 0.12): model-based, paces
+  at the estimated bottleneck bandwidth — quic's changelog measures
+  line-rate parity with a ~5× shorter bottleneck queue and large wins on
+  loss-heavy paths, but it stays opt-in until upstream's multi-flow
+  fairness and interop gates pass. It expects `enable_pacing = true`.
+  `.new_reno` (RFC 9002) is the pre-0.11 one-line rollback.
+- `enable_pacing` (default `true`, RFC 9002 §7.7): spreads sends at
+  gain × cwnd/RTT instead of bursting a full window. `false` restores
+  pre-0.11 burst timing exactly. See "Foreign Event Loops" above for the
+  `TimerKind.pacing` deadline this surfaces.
+- `enable_hystart` (default `true`, RFC 9406 HyStart++): exits slow
+  start on sustained RTT inflation instead of on the overshoot loss.
+  `false` restores plain RFC 9002 slow start.
+
+Batched datapath, on `quic.transport.RunUdpOptions` (server) and
+`RunUdpClientOptions` (client), all since quic 0.11:
+
+- `max_datagrams_per_iteration` (default 16): ingress batch bound per
+  listener per loop iteration; 1 restores the historical
+  datagram-per-iteration behavior exactly.
+- `max_send_batch_datagrams` (default 64): egress datagrams shipped per
+  `sendMany` call — real `sendmmsg` on Linux, a plain send loop
+  elsewhere; 1 restores a syscall per datagram.
+- `enable_gso` / `enable_gro` (default `true`): Linux UDP generic
+  segmentation/receive offload — super-datagrams packed (split) by the
+  kernel, probed per socket and degraded automatically; no effect on
+  other platforms.
+
+For observing the result: `Session.transportStats()` (also on
+`TransportEndpoint`) snapshots the transport's `ConnectionStats` —
+bytes/packets/loss counters plus the active path's cwnd, RTT estimates,
+congestion state, and PMTU. For deep debugging, `quic.qlog.Writer`
+serializes the qlog event stream installed via
+`Session.setQuicQlogCallback` into a `.sqlog` file that loads in qvis;
+`Session.setQlogPacketEvents(true)` opts into the high-volume
+per-packet events, and since quic 0.12 `connection_started` is emitted
+at callback-install time, so wrapper users no longer lose it. Both udp
+examples wire this up behind `--qlog <dir>`.
+
 ## Choosing Event Surfaces
 
 Use the raw event classifiers when your application wants streaming ownership:
@@ -238,7 +293,9 @@ Runnable examples:
 - Run the full cookbook with `zig build run-examples` or `just run-examples`.
 - `examples/udp_server.zig` / `examples/udp_client.zig`: start here for a
   real server/client — UDP sockets, multi-connection accept via
-  `quic.Server`, per-slot `Session` lifecycle, SIGINT GOAWAY drain.
+  `quic.Server`, per-slot `Session` lifecycle, SIGINT GOAWAY drain,
+  `--qlog <dir>` `.sqlog` traces (qvis-loadable), and live
+  `transportStats()` logging on the client.
   `zig build run-udp-smoke` proves the pair end-to-end in one process.
 - `examples/loopback_get.zig`: facade runners and complete response tracking.
 - `examples/manual_pump_get.zig`: the same GET while manually driving QUIC

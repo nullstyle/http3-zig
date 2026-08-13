@@ -7,6 +7,7 @@
 //! zig build examples
 //! ./zig-out/bin/http3-zig-udp-server                # listens on 127.0.0.1:4433
 //! ./zig-out/bin/http3-zig-udp-server --enable-0rtt  # + accept 0-RTT early data
+//! ./zig-out/bin/http3-zig-udp-server --qlog <dir>   # + per-connection .sqlog traces
 //! ./zig-out/bin/http3-zig-udp-client --insecure     # GETs / against it
 //! ```
 //!
@@ -139,6 +140,11 @@ const ConnState = struct {
     endpoint: http3_zig.TransportEndpoint,
     /// Copied from `slot.slot_id` for log lines.
     slot_id: u64,
+    /// `--qlog`: the per-connection `.sqlog` sink. Lives in the heap
+    /// ConnState so the callback's user_data pointer stays stable; torn
+    /// down in `onConnectionWillClose`, before the session feeding it.
+    qlog_file: ?std.Io.File = null,
+    qlog_writer: ?quic.qlog.Writer = null,
     /// One GOAWAY per session during the drain phase.
     goaway_sent: bool = false,
     /// Tiny per-connection counter, reported at close.
@@ -154,6 +160,10 @@ fn connState(slot: *quic.Server.Slot) ?*ConnState {
 /// pointer.
 pub const App = struct {
     allocator: std.mem.Allocator,
+    /// For per-connection qlog file creation (`--qlog`).
+    io: std.Io,
+    /// `--qlog <dir>`: write one `.sqlog` trace per connection here.
+    qlog_dir: ?[]const u8 = null,
     /// Flipped by SIGINT (or the smoke harness): starts the HTTP/3
     /// GOAWAY drain.
     request_shutdown: *const std.atomic.Value(bool),
@@ -250,6 +260,15 @@ pub const App = struct {
             "[server] conn {d}: reaped after {d} request(s)\n",
             .{ state.slot_id, state.requests_served },
         );
+        // qlog teardown, before the session that feeds it: uninstall
+        // the sink, then drop the writer, then close (= flush) the
+        // file. Uninstalling first guarantees nothing later in this
+        // teardown can call into a dead writer.
+        if (state.qlog_writer) |*writer| {
+            state.session.setQuicQlogCallback(null, null);
+            writer.deinit();
+        }
+        if (state.qlog_file) |file| file.close(app.io);
         state.session.clearEvents(&state.events);
         state.events.deinit(app.allocator);
         state.runner.deinit();
@@ -286,7 +305,45 @@ pub const App = struct {
         );
         slot.user_data = state;
         std.debug.print("[server] conn {d}: accepted\n", .{state.slot_id});
+        // `--qlog`: one JSON-SEQ trace per connection (a qlog trace is
+        // one vantage point on one connection), installed through the
+        // same `setQuicQlogCallback` / `setQlogPacketEvents`
+        // passthroughs any embedder uses. A qlog failure costs the
+        // trace, never the connection.
+        if (app.qlog_dir) |dir| {
+            app.installQlog(state, dir) catch |err| std.debug.print(
+                "[server] conn {d}: qlog setup failed: {s}\n",
+                .{ state.slot_id, @errorName(err) },
+            );
+        }
         return state;
+    }
+
+    /// Create `<dir>/server-<timestamp>-conn<slot>.sqlog` and stream
+    /// this connection's qlog events into it with quic's own writer
+    /// (`quic.qlog.Writer`, qlog 0.4 JSON-SEQ — loads in qvis).
+    /// Installed at first sight of the slot, so `connection_started`
+    /// (emitted at install time since quic 0.12) and the rest of the
+    /// handshake land in the trace. Per-packet events are opted in via
+    /// `setQlogPacketEvents` — high-volume, right for a demo trace.
+    fn installQlog(app: *App, state: *ConnState, dir: []const u8) !void {
+        const stamp = std.Io.Timestamp.now(app.io, .real).toMilliseconds();
+        const path = try std.fmt.allocPrint(
+            app.allocator,
+            "{s}/server-{d}-conn{d}.sqlog",
+            .{ dir, stamp, state.slot_id },
+        );
+        defer app.allocator.free(path);
+        const file = try std.Io.Dir.cwd().createFile(app.io, path, .{});
+        errdefer file.close(app.io);
+        state.qlog_writer = try quic.qlog.Writer.init(app.allocator, app.io, file, .{
+            .vantage_point = .server,
+            .title = "http3-zig-udp-server",
+        });
+        state.qlog_file = file;
+        state.session.setQuicQlogCallback(quic.qlog.Writer.callback, &state.qlog_writer.?);
+        state.session.setQlogPacketEvents(true);
+        std.debug.print("[server] conn {d}: qlog trace -> {s}\n", .{ state.slot_id, path });
     }
 
     /// Drain the H3 session (auto-starts it), assemble requests through
@@ -361,6 +418,9 @@ pub const ServeOptions = struct {
     /// Accept 0-RTT early data (`--enable-0rtt`). Off by default so the
     /// demo's baseline matches quic's secure default (`.disabled`).
     enable_0rtt: bool = false,
+    /// `--qlog <dir>`: write one `.sqlog` qlog trace per connection
+    /// into this directory (JSON-SEQ; loads in qvis). Off by default.
+    qlog_dir: ?[]const u8 = null,
 };
 
 /// Run the HTTP/3 server until `request_shutdown` flips and the GOAWAY
@@ -385,6 +445,8 @@ pub fn serveWithOptions(
     var loop_shutdown = std.atomic.Value(bool).init(false);
     var app: App = .{
         .allocator = allocator,
+        .io = io,
+        .qlog_dir = options.qlog_dir,
         .request_shutdown = request_shutdown,
         .loop_shutdown = &loop_shutdown,
     };
@@ -398,6 +460,13 @@ pub fn serveWithOptions(
         .transport_params = transportParams(),
         .on_connection_will_close = App.onConnectionWillClose,
         .on_connection_will_close_user_data = &app,
+        // Transport tuning (docs/embedding-guide.md "Transport
+        // Tuning"). Since quic 0.11 the defaults are the deployment
+        // posture — CUBIC + pacing + HyStart++ — so this demo sets
+        // nothing; the levers, shown at their defaults:
+        // .congestion_control = .cubic, // .bbr = BBRv3 opt-in; .new_reno = pre-0.11 rollback
+        // .enable_pacing = true, // false restores pre-0.11 burst timing exactly
+        // .enable_hystart = true, // false restores plain RFC 9002 slow start
     };
 
     // 0-RTT opt-in. The tracker gives each resumed ticket a single-use
@@ -428,6 +497,13 @@ pub fn serveWithOptions(
     defer server.deinit();
 
     if (options.enable_0rtt) std.debug.print("[server] 0-RTT enabled (anti-replay tracker armed)\n", .{});
+    if (options.qlog_dir) |dir| {
+        try std.Io.Dir.cwd().createDirPath(io, dir);
+        std.debug.print(
+            "[server] qlog: per-connection .sqlog traces -> {s}/ (JSON-SEQ; loads in qvis)\n",
+            .{dir},
+        );
+    }
     std.debug.print("[server] HTTP/3 server listening on {s} (ALPN h3)\n", .{listen});
 
     try quic.transport.runUdpServer(&server, .{
@@ -438,11 +514,33 @@ pub fn serveWithOptions(
         // example runs unprivileged everywhere. Production servers
         // should leave `tune_socket = true` (the default).
         .tune_socket = false,
+        // Batched-datapath levers (0.11+ defaults shown; see
+        // docs/embedding-guide.md "Transport Tuning"):
+        // .max_datagrams_per_iteration = 16, // ingress batch per listener per iteration; 1 = historical behavior
+        // .max_send_batch_datagrams = 64, // egress batch per sendMany (sendmmsg on Linux)
+        // .enable_gso = true, // Linux UDP generic segmentation offload; no effect elsewhere
+        // .enable_gro = true, // Linux UDP generic receive offload; no effect elsewhere
         .on_iteration = App.onIteration,
         .on_iteration_ctx = &app,
     });
 
-    std.debug.print("[server] shut down cleanly\n", .{});
+    // `egress_local_faults` counts sends abandoned on a LOCAL socket
+    // fault (NetworkDown / SystemResources / AccessDenied) inside
+    // `runUdpServer`. The loop deliberately keeps running through
+    // egress failures, so this counter is the only signal for "the
+    // host has no interface/buffers and is silently serving nothing" —
+    // peer-provoked send failures are excluded by design (routine on
+    // the open internet, they would bury the signal). A production
+    // deployment samples `metricsSnapshot()` periodically and alerts
+    // on any sustained nonzero rate; the demo reports it at shutdown.
+    const snapshot = server.metricsSnapshot();
+    if (snapshot.egress_local_faults != 0) {
+        std.debug.print(
+            "[server] WARNING: {d} egress attempt(s) hit local socket faults — host-side trouble\n",
+            .{snapshot.egress_local_faults},
+        );
+    }
+    std.debug.print("[server] shut down cleanly (egress_local_faults={d})\n", .{snapshot.egress_local_faults});
 }
 
 // -- SIGINT -> shutdown flag ------------------------------------------------
@@ -463,9 +561,12 @@ pub fn main(init: std.process.Init) !void {
 
     var listen: []const u8 = default_addr;
     var enable_0rtt = false;
+    var qlog_dir: ?[]const u8 = null;
     while (args.next()) |arg| {
         if (std.mem.eql(u8, arg, "--enable-0rtt")) {
             enable_0rtt = true;
+        } else if (std.mem.eql(u8, arg, "--qlog")) {
+            qlog_dir = args.next() orelse return error.MissingQlogDir;
         } else {
             listen = arg;
         }
@@ -481,5 +582,8 @@ pub fn main(init: std.process.Init) !void {
         std.debug.print("[server] Ctrl-C to shut down gracefully (GOAWAY drain)\n", .{});
     }
 
-    try serveWithOptions(allocator, io, listen, &sigint_flag, .{ .enable_0rtt = enable_0rtt });
+    try serveWithOptions(allocator, io, listen, &sigint_flag, .{
+        .enable_0rtt = enable_0rtt,
+        .qlog_dir = qlog_dir,
+    });
 }

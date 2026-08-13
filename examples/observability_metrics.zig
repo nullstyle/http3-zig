@@ -158,6 +158,34 @@ pub fn main(init: std.process.Init) !void {
             server_traces.count,
         },
     );
+
+    // Transport-level `ConnectionStats` snapshot (`Session.
+    // transportStats` = `quic.Connection.stats`): the transport-reality
+    // complement to the HTTP/3 `metrics()` counters above. This example
+    // runs on the in-process loopback shim, so the values are
+    // degenerate — no real datagrams cross a socket and no RTT samples
+    // exist; `examples/udp_client.zig` logs the same snapshot with live
+    // numbers over a real UDP socket.
+    const client_transport = client_h3.transportStats();
+    const server_transport = server_h3.transportStats();
+    std.debug.print(
+        "client_transport: srtt={d}us cwnd={d} bytes_sent={d} bytes_received={d}\n",
+        .{
+            client_transport.smoothed_rtt_us,
+            client_transport.cwnd,
+            client_transport.bytes_sent,
+            client_transport.bytes_received,
+        },
+    );
+    std.debug.print(
+        "server_transport: srtt={d}us cwnd={d} bytes_sent={d} bytes_received={d}\n",
+        .{
+            server_transport.smoothed_rtt_us,
+            server_transport.cwnd,
+            server_transport.bytes_sent,
+            server_transport.bytes_received,
+        },
+    );
 }
 
 fn connectQuic(client: *quic.Connection, server: *quic.Connection) !void {

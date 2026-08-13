@@ -1020,6 +1020,12 @@ pub const Server = struct {
         self.session.setQuicQlogCallback(callback, user_data);
     }
 
+    /// See `Session.setQlogPacketEvents` — opt into high-volume
+    /// per-packet qlog events alongside `setQuicQlogCallback`.
+    pub fn setQlogPacketEvents(self: *Server, enabled: bool) void {
+        self.session.setQlogPacketEvents(enabled);
+    }
+
     pub fn sendDatagram(self: *Server, stream_id: u64, payload: []const u8) session_mod.Error!void {
         try self.session.sendDatagram(stream_id, payload);
     }

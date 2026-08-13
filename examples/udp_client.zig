@@ -5,7 +5,7 @@
 //! zig build examples
 //! ./zig-out/bin/http3-zig-udp-server &
 //! ./zig-out/bin/http3-zig-udp-client --insecure [target] [--sni host] [--path /] \
-//!     [--session-cache <path>]
+//!     [--session-cache <path>] [--qlog <dir>]
 //! ```
 //!
 //! The shape to copy for your own client:
@@ -52,6 +52,9 @@ const Options = struct {
     /// `H3RS` envelope file for 0-RTT: read to resume, written after
     /// every fetch that captured a fresh ticket. Null = 1-RTT only.
     session_cache: ?[]const u8 = null,
+    /// `--qlog <dir>`: stream this connection's qlog trace into
+    /// `<dir>/client-<timestamp>.sqlog` (JSON-SEQ; loads in qvis).
+    qlog_dir: ?[]const u8 = null,
 };
 
 /// Transport parameters this client advertises. Same H3-suitable shape
@@ -103,6 +106,8 @@ const FetchFlow = struct {
     binder: ?*earlydata.TicketBinder = null,
     /// Pre-set true when the request was staged in the 0-RTT flight.
     request_sent: bool = false,
+    /// One transport-stats line per connection, once the handshake is up.
+    stats_logged: bool = false,
     /// Set once the response completes; body/status stay owned by the
     /// runner, so `run` can validate them after the loop exits.
     response: ?*http3_zig.ResponseState = null,
@@ -132,6 +137,22 @@ const FetchFlow = struct {
             std.debug.print(
                 "[client] handshake established; sent GET {s} on stream {d}\n",
                 .{ flow.path, request.stream_id },
+            );
+        }
+
+        // One-line transport snapshot after handshake completion.
+        // `TransportEndpoint.transportStats` (= `Session.transportStats`
+        // = `quic.Connection.stats`) is a by-value copy — safe to hold
+        // across drains and teardown. It is the transport-reality
+        // complement to the H3-level `metrics()` counters: RTT and cwnd
+        // here are the live active-path estimates the real network
+        // produced.
+        if (!flow.stats_logged and client.conn.handshakeDone()) {
+            flow.stats_logged = true;
+            const stats = flow.endpoint.transportStats();
+            std.debug.print(
+                "[client] transport: srtt={d}us cwnd={d} bytes_sent={d} bytes_received={d}\n",
+                .{ stats.smoothed_rtt_us, stats.cwnd, stats.bytes_sent, stats.bytes_received },
             );
         }
 
@@ -238,6 +259,13 @@ pub fn run(
         // every connection (including resumed ones); latest wins.
         .new_session_callback = if (options.session_cache != null) captureTicket else null,
         .new_session_user_data = if (options.session_cache != null) @as(?*anyopaque, &binder) else null,
+        // Transport tuning (docs/embedding-guide.md "Transport
+        // Tuning"). Since quic 0.11 the defaults are the deployment
+        // posture — CUBIC + pacing + HyStart++ — so this demo sets
+        // nothing; the levers, shown at their defaults:
+        // .congestion_control = .cubic, // .bbr = BBRv3 opt-in; .new_reno = pre-0.11 rollback
+        // .enable_pacing = true, // false restores pre-0.11 burst timing exactly
+        // .enable_hystart = true, // false restores plain RFC 9002 slow start
     });
     defer client.deinit();
 
@@ -252,6 +280,40 @@ pub fn run(
     // until the resumed connection's real SETTINGS arrive. Must land
     // before any SETTINGS exchange, so: right after init.
     if (resumed) |decoded| try session.rememberPeerSettings(decoded.settings);
+
+    // `--qlog`: stream this connection's qlog events into
+    // `<dir>/client-<timestamp>.sqlog` via quic's own JSON-SEQ writer
+    // (`quic.qlog.Writer`, qlog 0.4) — its `callback` is installed
+    // through the same `setQuicQlogCallback` passthrough any embedder
+    // uses, and per-packet events are opted in with the
+    // `setQlogPacketEvents` passthrough (high-volume; right for a demo
+    // trace, off by default in production). Installed BEFORE start/
+    // advance: since quic 0.12 `connection_started` fires at install
+    // time (the first moment a sink exists), so the whole handshake
+    // lands in the trace.
+    var qlog_file: ?std.Io.File = null;
+    defer if (qlog_file) |file| file.close(io);
+    var qlog_writer: ?quic.qlog.Writer = null;
+    defer if (qlog_writer) |*writer| {
+        // Uninstall first so nothing later in teardown can call into a
+        // dead writer; closing the file above flushes the trace.
+        session.setQuicQlogCallback(null, null);
+        writer.deinit();
+    };
+    if (options.qlog_dir) |dir| {
+        try std.Io.Dir.cwd().createDirPath(io, dir);
+        const stamp = std.Io.Timestamp.now(io, .real).toMilliseconds();
+        const qlog_path = try std.fmt.allocPrint(allocator, "{s}/client-{d}.sqlog", .{ dir, stamp });
+        defer allocator.free(qlog_path);
+        qlog_file = try std.Io.Dir.cwd().createFile(io, qlog_path, .{});
+        qlog_writer = try quic.qlog.Writer.init(allocator, io, qlog_file.?, .{
+            .vantage_point = .client,
+            .title = "http3-zig-udp-client",
+        });
+        session.setQuicQlogCallback(quic.qlog.Writer.callback, &qlog_writer.?);
+        session.setQlogPacketEvents(true);
+        std.debug.print("[client] qlog trace -> {s} (JSON-SEQ .sqlog; loads in qvis)\n", .{qlog_path});
+    }
 
     var h3_client = http3_zig.Client.init(&session);
     var runner = http3_zig.ClientRunner.init(allocator);
@@ -315,6 +377,12 @@ pub fn run(
         .io = io,
         // Demo posture, same as the server: run unprivileged.
         .tune_socket = false,
+        // Batched-datapath levers (0.11+ defaults shown; see
+        // docs/embedding-guide.md "Transport Tuning"):
+        // .max_datagrams_per_iteration = 16, // ingress batch per iteration; 1 = historical behavior
+        // .max_send_batch_datagrams = 64, // egress batch per sendMany (sendmmsg on Linux)
+        // .enable_gso = true, // Linux UDP generic segmentation offload; no effect elsewhere
+        // .enable_gro = true, // Linux UDP generic receive offload; no effect elsewhere
         .on_iteration = FetchFlow.onIteration,
         .on_iteration_ctx = &flow,
     });
@@ -364,6 +432,8 @@ pub fn main(init: std.process.Init) !void {
             options.path = args.next() orelse return error.MissingPath;
         } else if (std.mem.eql(u8, arg, "--session-cache")) {
             options.session_cache = args.next() orelse return error.MissingSessionCachePath;
+        } else if (std.mem.eql(u8, arg, "--qlog")) {
+            options.qlog_dir = args.next() orelse return error.MissingQlogDir;
         } else {
             options.target = arg;
         }

@@ -402,6 +402,12 @@ test "public API smoke: stable embedding surface compiles" {
         _ = H.TraceEvent;
         _ = H.Metrics;
         _ = H.QuicConnectionStats;
+        _ = H.Session.setQuicQlogCallback;
+        _ = H.Session.setQlogPacketEvents;
+        _ = H.Client.setQuicQlogCallback;
+        _ = H.Client.setQlogPacketEvents;
+        _ = H.Server.setQuicQlogCallback;
+        _ = H.Server.setQlogPacketEvents;
         _ = H.Settings;
         _ = H.Frame;
         _ = H.FieldLine;
