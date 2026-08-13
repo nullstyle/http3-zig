@@ -67,6 +67,22 @@ pub const SettingId = struct {
     /// §9.2. Initial limit for peer-initiated bidirectional WebTransport
     /// streams.
     pub const wt_initial_max_streams_bidi: u64 = 0x2b65;
+
+    /// `SETTINGS_ENABLE_WEBTRANSPORT` from the draft-02 browser era
+    /// [draft-ietf-webtrans-http3-02 §3.1/§8.2]: "The
+    /// SETTINGS_ENABLE_WEBTRANSPORT parameter value SHALL be either
+    /// '0' or '1', with '0' being the default." Shipped Chrome AND
+    /// shipped Firefox negotiate WebTransport with exactly this
+    /// codepoint today; each draft revision deliberately renumbers its
+    /// bootstrap setting so peers never agree across revisions.
+    pub const wt_draft02_enabled: u64 = 0x2b603742;
+    /// `SETTINGS_WEBTRANSPORT_MAX_SESSIONS` from the draft-07 browser
+    /// era [draft-ietf-webtrans-http3-07 §3.1/§8.2]: both endpoints
+    /// MUST send a value greater than 0 to enable WebTransport; the
+    /// server's value is the number of concurrent sessions it is
+    /// willing to receive (0 = default = not willing). quiche/Chrome
+    /// implement it behind a default-off feature flag.
+    pub const wt_draft07_max_sessions: u64 = 0xc671706a;
 };
 
 /// HTTP/3, HTTP Datagrams, and QPACK error codes (RFC 9114 §8.1, RFC 9297 §5.2, RFC 9204 §6).

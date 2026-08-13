@@ -38,6 +38,16 @@ pub const Settings = struct {
     /// peer-initiated bidirectional WT streams per session. `null` = not
     /// advertised.
     wt_initial_max_streams_bidi: ?u64 = null,
+    /// Browser-era (draft-02) `SETTINGS_ENABLE_WEBTRANSPORT`
+    /// advertisement [draft-ietf-webtrans-http3-02 §3.1]. Encode emits
+    /// value 1 when true; decode treats any nonzero value as true
+    /// (legacy peers are not held to the modern strictness).
+    wt_draft02: bool = false,
+    /// Browser-era (draft-07) `SETTINGS_WEBTRANSPORT_MAX_SESSIONS`
+    /// advertisement [draft-ietf-webtrans-http3-07 §3.1]: raw session
+    /// count; 0 decodes as advertised-but-disabled per the draft's
+    /// default semantics. Null = not advertised.
+    wt_draft07_max_sessions: ?u64 = null,
     /// RFC 9114 §7.2.8 GREASE: when set, `encode` appends this reserved
     /// setting after the defined ones. The id must satisfy
     /// `protocol.isGreaseValue`. `decode` never populates it — reserved ids
@@ -74,6 +84,12 @@ pub const Settings = struct {
         if (self.wt_initial_max_streams_bidi) |v| {
             n += settingEncodedLen(protocol.SettingId.wt_initial_max_streams_bidi, v);
         }
+        if (self.wt_draft02) {
+            n += settingEncodedLen(protocol.SettingId.wt_draft02_enabled, 1);
+        }
+        if (self.wt_draft07_max_sessions) |v| {
+            n += settingEncodedLen(protocol.SettingId.wt_draft07_max_sessions, v);
+        }
         if (self.grease) |g| {
             n += settingEncodedLen(g.id, g.value);
         }
@@ -105,6 +121,12 @@ pub const Settings = struct {
         if (self.wt_initial_max_streams_bidi) |v| {
             pos += try put(dst[pos..], protocol.SettingId.wt_initial_max_streams_bidi, v);
         }
+        if (self.wt_draft02) {
+            pos += try put(dst[pos..], protocol.SettingId.wt_draft02_enabled, 1);
+        }
+        if (self.wt_draft07_max_sessions) |v| {
+            pos += try put(dst[pos..], protocol.SettingId.wt_draft07_max_sessions, v);
+        }
         if (self.grease) |g| {
             pos += try put(dst[pos..], g.id, g.value);
         }
@@ -122,6 +144,8 @@ pub const Settings = struct {
         var seen_wt_initial_max_data = false;
         var seen_wt_initial_max_streams_uni = false;
         var seen_wt_initial_max_streams_bidi = false;
+        var seen_wt_draft02 = false;
+        var seen_wt_draft07_max_sessions = false;
 
         var pos: usize = 0;
         while (pos < src.len) {
@@ -185,6 +209,20 @@ pub const Settings = struct {
                     if (seen_wt_initial_max_streams_uni) return Error.DuplicateSetting;
                     seen_wt_initial_max_streams_uni = true;
                     out.wt_initial_max_streams_uni = value;
+                },
+                protocol.SettingId.wt_draft02_enabled => {
+                    if (seen_wt_draft02) return Error.DuplicateSetting;
+                    seen_wt_draft02 = true;
+                    // Legacy tolerance: the draft-02 era predates the
+                    // modern strictness — any nonzero value enables.
+                    out.wt_draft02 = value >= 1;
+                },
+                protocol.SettingId.wt_draft07_max_sessions => {
+                    if (seen_wt_draft07_max_sessions) return Error.DuplicateSetting;
+                    seen_wt_draft07_max_sessions = true;
+                    // Raw count; 0 = advertised-but-disabled per the
+                    // draft-07 default semantics.
+                    out.wt_draft07_max_sessions = value;
                 },
                 protocol.SettingId.wt_initial_max_streams_bidi => {
                     if (seen_wt_initial_max_streams_bidi) return Error.DuplicateSetting;

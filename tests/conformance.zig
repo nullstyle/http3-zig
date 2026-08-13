@@ -48,4 +48,5 @@ test {
     _ = @import("conformance/rfc9298_masque.zig");
     // draft-ietf-webtrans-http3 — WebTransport over HTTP/3
     _ = @import("conformance/draft_webtrans_http3.zig");
+    _ = @import("conformance/draft_webtrans_http3_legacy.zig");
 }

@@ -257,9 +257,7 @@ pub fn responseAccepted(fields: []const qpack.FieldLine) bool {
 /// datagrams enabled, and the draft-15 `SETTINGS_WT_ENABLED` codepoint
 /// (`0x2c7cf000`) sent with a non-zero value.
 pub fn peerEnabled(s: settings_mod.Settings) bool {
-    if (!s.enable_connect_protocol) return false;
-    if (!s.h3_datagram) return false;
-    return s.wt_enabled;
+    return peerEnabledFor(s, .{ .draft16 = true });
 }
 
 /// Validates that the given local settings are sufficient to bootstrap a
@@ -276,6 +274,134 @@ pub fn validateLocalSettings(role: protocol.Role, s: settings_mod.Settings) Erro
             if (!s.enable_connect_protocol) return error.WebTransportSettingsMissing;
         },
     }
+}
+
+// ---------------------------------------------------------------------------
+// Draft-era negotiation (browser compatibility layer)
+//
+// Each draft revision renumbers its bootstrap SETTINGS codepoint so peers
+// never agree by accident; version selection is therefore pure SETTINGS
+// intersection: "when multiple versions are supported by both of the
+// peers, the most recent version supported by both is selected"
+// [draft-ietf-webtrans-http3-07 §6]. The DATA PATH is identical across
+// every revision (stream prefixes, CLOSE/DRAIN capsules, §4.6 error
+// mapping, RFC 9297 datagrams) — only the bootstrap SETTINGS, the
+// `:protocol` token, session-level flow control (modern era only), and
+// a draft-02 request header differ, so an era resolves per CONNECTION
+// and sessions inherit it.
+// ---------------------------------------------------------------------------
+
+/// Draft eras this implementation can speak, oldest → newest. `draft16`
+/// is the pinned modern revision; `draft07`/`draft02` are the browser
+/// eras (shipped Chrome AND shipped Firefox negotiate draft-02 today;
+/// quiche additionally supports draft-07 behind a default-off flag).
+pub const WtDraft = enum(u8) { draft02 = 0, draft07 = 1, draft16 = 2 };
+
+/// Which eras an endpoint advertises/accepts.
+pub const WtDraftSet = struct {
+    draft02: bool = false,
+    draft07: bool = false,
+    draft16: bool = false,
+};
+
+/// Eras OUR settings advertise: modern via `SETTINGS_WT_ENABLED`,
+/// draft-07 via a nonzero `SETTINGS_WEBTRANSPORT_MAX_SESSIONS`,
+/// draft-02 via `SETTINGS_ENABLE_WEBTRANSPORT`.
+pub fn localEras(s: settings_mod.Settings) WtDraftSet {
+    return .{
+        .draft02 = s.wt_draft02,
+        .draft07 = (s.wt_draft07_max_sessions orelse 0) > 0,
+        .draft16 = s.wt_enabled,
+    };
+}
+
+/// Eras the PEER's decoded settings advertise. Same field mapping as
+/// `localEras`; a draft-07 advertisement of 0 sessions means
+/// advertised-but-disabled [draft-ietf-webtrans-http3-07 §3.1] and does
+/// not enable the era.
+pub fn peerAdvertisedEras(s: settings_mod.Settings) WtDraftSet {
+    return localEras(s);
+}
+
+/// Newest-common era, or null when the sets don't intersect (no
+/// WebTransport on this connection): the draft-07 §6 selection rule.
+pub fn resolveDraft(local: WtDraftSet, peer: settings_mod.Settings) ?WtDraft {
+    const p = peerAdvertisedEras(peer);
+    if (local.draft16 and p.draft16) return .draft16;
+    if (local.draft07 and p.draft07) return .draft07;
+    if (local.draft02 and p.draft02) return .draft02;
+    return null;
+}
+
+/// Era-aware peer gate: the RFC 9220 + RFC 9297 prerequisites apply to
+/// every era (Chrome and Firefox both advertise them), plus at least one
+/// common draft era.
+pub fn peerEnabledFor(s: settings_mod.Settings, local: WtDraftSet) bool {
+    if (!s.enable_connect_protocol) return false;
+    if (!s.h3_datagram) return false;
+    return resolveDraft(local, s) != null;
+}
+
+const draft02_request_headers = [_]qpack.FieldLine{
+    .{ .name = "sec-webtransport-http3-draft02", .value = "1" },
+};
+const draft02_response_headers = [_]qpack.FieldLine{
+    .{ .name = "sec-webtransport-http3-draft", .value = "draft02" },
+};
+
+/// Everything era-divergent about session ESTABLISHMENT, as one static
+/// descriptor per era. The data path needs no era awareness.
+pub const EraProfile = struct {
+    draft: WtDraft,
+    /// The `:protocol` value this era's CONNECT uses. Servers accept
+    /// both tokens at classification (`isProtocolToken`) and validate
+    /// the received token against the resolved era.
+    protocol_token: []const u8,
+    /// Extra request headers the client adds in this era. draft-02:
+    /// `sec-webtransport-http3-draft02: 1` — Chrome sends it
+    /// unconditionally [draft-ietf-webtrans-http3-02 §6]; servers do
+    /// not require it.
+    request_headers: []const qpack.FieldLine = &.{},
+    /// Extra response headers the server adds. draft-02:
+    /// `sec-webtransport-http3-draft: draft02` (quiche-server
+    /// compatible; no shipping client validates it).
+    response_headers: []const qpack.FieldLine = &.{},
+    /// §3.4 subprotocol negotiation works in EVERY era: the header
+    /// names are era-stable and Chrome's draft-02 client already uses
+    /// them. Offered-if-requested, never required.
+    has_subprotocols: bool = true,
+    /// Session-level flow control (the WT_MAX_*/BLOCKED capsules and
+    /// the wt_initial_* SETTINGS credit) exists only in the modern era
+    /// — quiche has the capsules commented out; a legacy session must
+    /// never block on peer credit nor emit modern capsules.
+    has_flow_control: bool,
+    /// draft-07 advertises the session cap as its SETTINGS value.
+    settings_session_limit: bool,
+};
+
+pub fn eraProfile(draft: WtDraft) EraProfile {
+    return switch (draft) {
+        .draft16 => .{
+            .draft = .draft16,
+            .protocol_token = protocol_token,
+            .has_flow_control = true,
+            .settings_session_limit = false,
+        },
+        .draft07 => .{
+            .draft = .draft07,
+            .protocol_token = legacy_protocol_token,
+            .has_flow_control = false,
+            .settings_session_limit = true,
+        },
+        .draft02 => .{
+            .draft = .draft02,
+            .protocol_token = legacy_protocol_token,
+            .request_headers = &draft02_request_headers,
+            .response_headers = &draft02_response_headers,
+            .has_flow_control = false,
+            .settings_session_limit = false,
+        },
+    };
 }
 
 // ---------------------------------------------------------------------------
@@ -879,6 +1005,55 @@ test "protocol token: draft-16 token pinned, browser-era legacy token accepted" 
     try std.testing.expect(!isProtocolToken("webtransport-h2"));
     try std.testing.expect(!isProtocolToken("webtransport-h3 "));
     try std.testing.expect(!isProtocolToken(""));
+}
+
+test "resolveDraft picks the newest common era; disabled and zero-valued eras don't match" {
+    const all: WtDraftSet = .{ .draft02 = true, .draft07 = true, .draft16 = true };
+    // Newest-common wins [draft-ietf-webtrans-http3-07 §6].
+    try std.testing.expectEqual(@as(?WtDraft, .draft16), resolveDraft(all, .{ .wt_enabled = true, .wt_draft02 = true }));
+    try std.testing.expectEqual(@as(?WtDraft, .draft07), resolveDraft(all, .{ .wt_draft07_max_sessions = 4, .wt_draft02 = true }));
+    try std.testing.expectEqual(@as(?WtDraft, .draft02), resolveDraft(all, .{ .wt_draft02 = true }));
+    // A draft-07 value of 0 is advertised-but-disabled.
+    try std.testing.expectEqual(@as(?WtDraft, null), resolveDraft(all, .{ .wt_draft07_max_sessions = 0 }));
+    // No intersection → no WebTransport, cleanly.
+    try std.testing.expectEqual(@as(?WtDraft, null), resolveDraft(.{ .draft16 = true }, .{ .wt_draft02 = true }));
+    try std.testing.expectEqual(@as(?WtDraft, null), resolveDraft(.{}, .{ .wt_enabled = true }));
+}
+
+test "peerEnabledFor requires the prerequisites in every era" {
+    const legacy_only: WtDraftSet = .{ .draft02 = true };
+    try std.testing.expect(peerEnabledFor(.{
+        .enable_connect_protocol = true,
+        .h3_datagram = true,
+        .wt_draft02 = true,
+    }, legacy_only));
+    try std.testing.expect(!peerEnabledFor(.{
+        .enable_connect_protocol = false,
+        .h3_datagram = true,
+        .wt_draft02 = true,
+    }, legacy_only));
+    try std.testing.expect(!peerEnabledFor(.{
+        .enable_connect_protocol = true,
+        .h3_datagram = false,
+        .wt_draft02 = true,
+    }, legacy_only));
+}
+
+test "eraProfile: tokens, headers, and capability bits match the verified browser behavior" {
+    try std.testing.expectEqualStrings("webtransport-h3", eraProfile(.draft16).protocol_token);
+    try std.testing.expectEqualStrings("webtransport", eraProfile(.draft07).protocol_token);
+    try std.testing.expectEqualStrings("webtransport", eraProfile(.draft02).protocol_token);
+    try std.testing.expect(eraProfile(.draft16).has_flow_control);
+    try std.testing.expect(!eraProfile(.draft07).has_flow_control);
+    try std.testing.expect(!eraProfile(.draft02).has_flow_control);
+    try std.testing.expect(eraProfile(.draft07).settings_session_limit);
+    const d02 = eraProfile(.draft02);
+    try std.testing.expectEqual(@as(usize, 1), d02.request_headers.len);
+    try std.testing.expectEqualStrings("sec-webtransport-http3-draft02", d02.request_headers[0].name);
+    try std.testing.expectEqualStrings("1", d02.request_headers[0].value);
+    try std.testing.expectEqual(@as(usize, 0), eraProfile(.draft07).request_headers.len);
+    // Subprotocol headers are era-stable — offered in every era.
+    try std.testing.expect(d02.has_subprotocols);
 }
 
 test "peerEnabled requires datagrams, extended CONNECT, and SETTINGS_WT_ENABLED" {

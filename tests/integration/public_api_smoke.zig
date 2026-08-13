@@ -345,6 +345,15 @@ test "public API smoke: stable embedding surface compiles" {
         _ = H.Server.rejectWebTransport;
         _ = H.Server.WebTransportRejectReason;
         _ = H.webtransport.truncateCloseReasonUtf8;
+        _ = H.webtransport.WtDraft;
+        _ = H.webtransport.WtDraftSet;
+        _ = H.webtransport.localEras;
+        _ = H.webtransport.peerAdvertisedEras;
+        _ = H.webtransport.resolveDraft;
+        _ = H.webtransport.peerEnabledFor;
+        _ = H.webtransport.EraProfile;
+        _ = H.webtransport.eraProfile;
+        _ = H.webtransport.legacy_protocol_token;
         _ = H.webtransportAppErrorToHttp3;
         _ = H.webtransportHttp3ToAppError;
         _ = H.WebTransportErrorCode.session_gone;
