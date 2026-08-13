@@ -504,34 +504,6 @@ pub const WebTransportServerStream = struct {
         };
     }
 
-    pub fn writeStream(
-        self: *WebTransportServerStream,
-        stream_id: u64,
-        bytes: []const u8,
-    ) session_mod.Error!void {
-        try self.writer.server.session.writeWebTransportStream(stream_id, bytes);
-    }
-
-    pub fn finishStream(self: *WebTransportServerStream, stream_id: u64) session_mod.Error!void {
-        try self.writer.server.session.finishWebTransportStream(stream_id);
-    }
-
-    pub fn resetStream(
-        self: *WebTransportServerStream,
-        stream_id: u64,
-        app_error_code: u32,
-    ) session_mod.Error!void {
-        try self.writer.server.session.resetWebTransportStream(stream_id, app_error_code);
-    }
-
-    pub fn resetStreamWithCode(
-        self: *WebTransportServerStream,
-        stream_id: u64,
-        wire_code: u64,
-    ) session_mod.Error!void {
-        try self.writer.server.session.resetWebTransportStreamWithCode(stream_id, wire_code);
-    }
-
     pub fn sendDrain(self: *WebTransportServerStream) (session_mod.Error || webtransport_mod.Error)!void {
         var buf: [16]u8 = undefined;
         const n = try webtransport_mod.encodeDrainSession(&buf);

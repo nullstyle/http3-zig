@@ -437,9 +437,8 @@ pub const WebTransportClientStream = struct {
     }
 
     /// Opens a new client-initiated WebTransport unidirectional stream and
-    /// writes the WebTransport stream prefix. Returns the underlying QUIC
-    /// stream id for subsequent `writeStream` / `finishStream` /
-    /// `resetStream` calls.
+    /// writes the WebTransport stream prefix. Returns the typed
+    /// `WebTransportStream` handle that owns the substream verbs.
     pub fn openUniStream(self: *WebTransportClientStream) session_mod.Error!session_mod.WebTransportStream {
         const stream_id = try self.writer.client.session.openWebTransportUniStream(self.sessionId());
         return self.streamHandle(stream_id, .uni);
@@ -466,34 +465,6 @@ pub const WebTransportClientStream = struct {
             .stream_id = stream_id,
             .kind = kind,
         };
-    }
-
-    pub fn writeStream(
-        self: *WebTransportClientStream,
-        stream_id: u64,
-        bytes: []const u8,
-    ) session_mod.Error!void {
-        try self.writer.client.session.writeWebTransportStream(stream_id, bytes);
-    }
-
-    pub fn finishStream(self: *WebTransportClientStream, stream_id: u64) session_mod.Error!void {
-        try self.writer.client.session.finishWebTransportStream(stream_id);
-    }
-
-    pub fn resetStream(
-        self: *WebTransportClientStream,
-        stream_id: u64,
-        app_error_code: u32,
-    ) session_mod.Error!void {
-        try self.writer.client.session.resetWebTransportStream(stream_id, app_error_code);
-    }
-
-    pub fn resetStreamWithCode(
-        self: *WebTransportClientStream,
-        stream_id: u64,
-        wire_code: u64,
-    ) session_mod.Error!void {
-        try self.writer.client.session.resetWebTransportStreamWithCode(stream_id, wire_code);
     }
 
     /// Sends a `DRAIN_WEBTRANSPORT_SESSION` capsule on the CONNECT stream;
@@ -535,7 +506,7 @@ pub const WebTransportClientStream = struct {
     /// into the per-session flow-control state. Call this when
     /// iterating capsules out of `response_updated.body()` events for
     /// the CONNECT stream — the session uses the resulting state to
-    /// gate `writeStream` / `openUniStream` / `openBidiStream`.
+    /// gate `WebTransportStream.write` / `openUniStream` / `openBidiStream`.
     /// Capsules outside the WebTransport family are ignored.
     pub fn observeCapsule(
         self: *WebTransportClientStream,

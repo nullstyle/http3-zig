@@ -2026,7 +2026,7 @@ test "WebTransport: send-side buffered cap reports backpressure and drains" {
 // WebTransport flow-control enforcement (draft-ietf-webtrans-http3 §5.6)
 // ============================================================================
 
-test "WebTransport: writeStream is gated by peer's WT_MAX_DATA limit" {
+test "WebTransport: substream writes are gated by peer's WT_MAX_DATA limit" {
     const allocator = std.testing.allocator;
     const h3_settings: http3_zig.Settings = .{
         .enable_connect_protocol = true,
