@@ -257,7 +257,9 @@ pub fn responseAccepted(fields: []const qpack.FieldLine) bool {
 /// datagrams enabled, and the draft-15 `SETTINGS_WT_ENABLED` codepoint
 /// (`0x2c7cf000`) sent with a non-zero value.
 pub fn peerEnabled(s: settings_mod.Settings) bool {
-    return peerEnabledFor(s, .{ .draft16 = true });
+    // Historical single-arg form: evaluates SERVER-advertised settings
+    // against a modern-only local set.
+    return peerEnabledFor(s, .{ .draft16 = true }, .server);
 }
 
 /// Validates that the given local settings are sufficient to bootstrap a
@@ -336,11 +338,21 @@ pub fn resolveDraft(local: WtDraftSet, peer: settings_mod.Settings) ?WtDraft {
     return null;
 }
 
-/// Era-aware peer gate: the RFC 9220 + RFC 9297 prerequisites apply to
-/// every era (Chrome and Firefox both advertise them), plus at least one
-/// common draft era.
-pub fn peerEnabledFor(s: settings_mod.Settings, local: WtDraftSet) bool {
-    if (!s.enable_connect_protocol) return false;
+/// Era-aware peer gate. The RFC 9297 datagram prerequisite is
+/// symmetric (both peers advertise `H3_DATAGRAM`; Chrome and Firefox
+/// do). The RFC 9220 `SETTINGS_ENABLE_CONNECT_PROTOCOL` advertisement
+/// is SERVER-side only — it tells the client it may send extended
+/// CONNECT — so it is required only when the settings under evaluation
+/// came from a server. Real browser CLIENTS never send it (quiche sets
+/// `allow_extended_connect_` for servers only); requiring it of them
+/// rejected every shipping Chrome — a bug our own harness client
+/// masked by advertising it unnecessarily.
+pub fn peerEnabledFor(
+    s: settings_mod.Settings,
+    local: WtDraftSet,
+    peer_role: protocol.Role,
+) bool {
+    if (peer_role == .server and !s.enable_connect_protocol) return false;
     if (!s.h3_datagram) return false;
     return resolveDraft(local, s) != null;
 }
@@ -1023,23 +1035,33 @@ test "resolveDraft picks the newest common era; disabled and zero-valued eras do
     try std.testing.expectEqual(@as(?WtDraft, null), resolveDraft(.{}, .{ .wt_enabled = true }));
 }
 
-test "peerEnabledFor requires the prerequisites in every era" {
+test "peerEnabledFor: datagram prerequisite is symmetric; extended CONNECT is server-side only" {
     const legacy_only: WtDraftSet = .{ .draft02 = true };
+    // A server's settings must carry ENABLE_CONNECT_PROTOCOL...
     try std.testing.expect(peerEnabledFor(.{
         .enable_connect_protocol = true,
         .h3_datagram = true,
         .wt_draft02 = true,
-    }, legacy_only));
+    }, legacy_only, .server));
     try std.testing.expect(!peerEnabledFor(.{
         .enable_connect_protocol = false,
         .h3_datagram = true,
         .wt_draft02 = true,
-    }, legacy_only));
+    }, legacy_only, .server));
+    // ...but a CLIENT's must not be required to (Chrome never sends it).
+    try std.testing.expect(peerEnabledFor(.{
+        .h3_datagram = true,
+        .wt_draft02 = true,
+    }, legacy_only, .client));
+    // The datagram prerequisite stays symmetric.
     try std.testing.expect(!peerEnabledFor(.{
         .enable_connect_protocol = true,
         .h3_datagram = false,
         .wt_draft02 = true,
-    }, legacy_only));
+    }, legacy_only, .server));
+    try std.testing.expect(!peerEnabledFor(.{
+        .wt_draft02 = true,
+    }, legacy_only, .client));
 }
 
 test "eraProfile: tokens, headers, and capability bits match the verified browser behavior" {

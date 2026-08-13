@@ -1,0 +1,163 @@
+name: wt-browser-interop
+
+on:
+  push:
+  schedule:
+    # Sunday 08:30 UTC, after the H3 interop cadence.
+    - cron: "30 8 * * 0"
+  workflow_dispatch:
+
+# ADVISORY browser legs: shipped Chrome / Firefox against the in-tree WT
+# echo server over real sockets. This is the only place the browser-era
+# layer (draft-02 SETTINGS bootstrap, CLOSE-capsule teardown) meets an
+# actual browser engine; the runner additionally requires the server to
+# log era=draft02, because a silent era change is a regression even when
+# the echo still passes. The per-push real-socket HARD GATE remains
+# wt-interop-self-test.yml (its draft-02 client leg mirrors this wire
+# shape with in-tree binaries only).
+#
+# PROMOTION CRITERION: promote the chrome job to a hard gate (drop
+# `continue-on-error`) after two consecutive green workflow_dispatch runs
+# post-landing. The firefox job is workflow_dispatch-gated until it has
+# two green runs; lift its `if:` with the same criterion.
+#
+# DEMOTION RULE (pre-agreed, not a debate): two failures within a week
+# for causes not attributable to http3-zig (browser rollout breakage,
+# runner infrastructure) -> restore `continue-on-error: true` in a
+# one-line commit naming the cause; re-promote with the same criterion
+# once the cause clears.
+jobs:
+  chrome:
+    name: WT browser interop (Chrome stable vs http3-zig server)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    continue-on-error: true
+    steps:
+      - name: Checkout http3-zig
+        uses: actions/checkout@v7
+
+      - name: Set up mise (zig master + project tools)
+        uses: jdx/mise-action@v4
+        with:
+          install: true
+          cache: true
+
+      - name: Cache Zig packages
+        uses: actions/cache@v4
+        with:
+          path: zig-pkg
+          key: zig-pkg-${{ hashFiles('build.zig.zon') }}
+          restore-keys: zig-pkg-
+
+      # GitHub's tarball/raw endpoints flake (504s, DNS) often enough to fail
+      # real runs. Prefetch the full dependency tree with retries so a bad
+      # window costs seconds, not a red CI run; the cache above makes even
+      # that rare.
+      - name: Prefetch Zig dependencies (retry on network flake)
+        run: |
+          for i in 1 2 3 4 5; do
+            if zig build --fetch; then exit 0; fi
+            echo "fetch attempt $i failed; retrying in $((i * 10))s"
+            sleep $((i * 10))
+          done
+          echo "::error::dependency prefetch failed after 5 attempts"
+          exit 1
+
+      - name: Build the WT echo server
+        run: zig build external-wt-server
+
+      - name: Set up Chrome (stable)
+        id: setup-chrome
+        uses: browser-actions/setup-chrome@v2
+        with:
+          chrome-version: stable
+
+      - name: Run the Chrome leg (advisory; one automatic retry)
+        env:
+          CHROME_BIN: ${{ steps.setup-chrome.outputs.chrome-path }}
+          WT_BROWSER_LOG_DIR: ${{ runner.temp }}/browser-logs
+        run: |
+          if bash interop/browser_wt/run_chrome.sh; then exit 0; fi
+          echo "first attempt failed; retrying once after 10s"
+          sleep 10
+          bash interop/browser_wt/run_chrome.sh
+
+      - name: Upload browser interop logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: wt-browser-chrome-${{ github.run_id }}
+          path: ${{ runner.temp }}/browser-logs
+          if-no-files-found: ignore
+          retention-days: 14
+
+  firefox:
+    # Dispatch-gated until two green runs (see promotion criterion above).
+    if: github.event_name == 'workflow_dispatch'
+    name: WT browser interop (Firefox latest vs http3-zig server)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    continue-on-error: true
+    steps:
+      - name: Checkout http3-zig
+        uses: actions/checkout@v7
+
+      - name: Set up mise (zig master + project tools)
+        uses: jdx/mise-action@v4
+        with:
+          install: true
+          cache: true
+
+      - name: Cache Zig packages
+        uses: actions/cache@v4
+        with:
+          path: zig-pkg
+          key: zig-pkg-${{ hashFiles('build.zig.zon') }}
+          restore-keys: zig-pkg-
+
+      # GitHub's tarball/raw endpoints flake (504s, DNS) often enough to fail
+      # real runs. Prefetch the full dependency tree with retries so a bad
+      # window costs seconds, not a red CI run; the cache above makes even
+      # that rare.
+      - name: Prefetch Zig dependencies (retry on network flake)
+        run: |
+          for i in 1 2 3 4 5; do
+            if zig build --fetch; then exit 0; fi
+            echo "fetch attempt $i failed; retrying in $((i * 10))s"
+            sleep $((i * 10))
+          done
+          echo "::error::dependency prefetch failed after 5 attempts"
+          exit 1
+
+      - name: Build the WT echo server
+        run: zig build external-wt-server
+
+      - name: Set up Firefox (latest)
+        id: setup-firefox
+        uses: browser-actions/setup-firefox@v1
+        with:
+          firefox-version: latest
+
+      # certutil injects cert trust into the fresh NSS profile (Firefox
+      # has no SPKI-allowlist flag).
+      - name: Install certutil (libnss3-tools)
+        run: sudo apt-get update && sudo apt-get install -y libnss3-tools
+
+      - name: Run the Firefox leg (advisory; one automatic retry)
+        env:
+          FIREFOX_BIN: ${{ steps.setup-firefox.outputs.firefox-path }}
+          WT_BROWSER_LOG_DIR: ${{ runner.temp }}/browser-logs
+        run: |
+          if bash interop/browser_wt/run_firefox.sh; then exit 0; fi
+          echo "first attempt failed; retrying once after 10s"
+          sleep 10
+          bash interop/browser_wt/run_firefox.sh
+
+      - name: Upload browser interop logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: wt-browser-firefox-${{ github.run_id }}
+          path: ${{ runner.temp }}/browser-logs
+          if-no-files-found: ignore
+          retention-days: 14

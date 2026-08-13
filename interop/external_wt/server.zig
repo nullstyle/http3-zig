@@ -192,7 +192,10 @@ fn runServer(allocator: std.mem.Allocator, io: std.Io, options: Options) !void {
                     .initial_max_stream_data_uni = 1024 * 1024,
                     .initial_max_streams_bidi = 128,
                     .initial_max_streams_uni = 128,
-                    .max_udp_payload_size = 1200,
+                    .max_udp_payload_size = 65527, // RFC default — Chrome sends 1250-byte
+                    // Initials (quiche kDefaultMaxPacketSize); the old 1200 pin made the
+                    // transport close before the handshake, the exact bug class the
+                    // client-side harness fixed once before.
                     .active_connection_id_limit = 8,
                     .max_datagram_frame_size = 1200,
                 };

@@ -17,10 +17,11 @@ const exchangePairSettings = fixt.exchangePairSettings;
 const H3Pair = fixt.H3Pair;
 const pumpH3 = fixt.pumpH3;
 
-/// A browser-shaped client: draft-02 bootstrap only, prerequisites
-/// advertised (Chrome and Firefox both send all three).
+/// A browser-shaped client: draft-02 bootstrap + H3_DATAGRAM and
+/// nothing else — real browser CLIENTS do NOT send
+/// ENABLE_CONNECT_PROTOCOL (that's a server-side advertisement, RFC
+/// 9220), so this fixture keeps the server's gate honest about it.
 const legacy_client_settings: http3_zig.Settings = .{
-    .enable_connect_protocol = true,
     .h3_datagram = true,
     .wt_draft02 = true,
 };

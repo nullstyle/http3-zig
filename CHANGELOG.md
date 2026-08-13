@@ -191,6 +191,22 @@ breaking changes; see notes per release.
   on it) now returns `error.UnknownWebTransportSession` when invoked on a
   stream id that is unknown or carries no WebTransport session
   association, instead of silently writing unmetered bytes.
+- **Real-browser WebTransport interop, verified.** Headless Chrome 151
+  establishes a WebTransport session against the in-tree echo server,
+  negotiates the draft-02 era, completes a content-verified datagram
+  echo and uni-stream echo, and closes cleanly with the CLOSE capsule —
+  run locally via `just wt-browser-chrome` (in-run P-256 cert, the
+  WPT-style SPKI-flag recipe) and in CI as the advisory
+  `wt-browser-interop` workflow (Chrome per-push; Firefox
+  dispatch-gated; promotion criterion + demotion rule in the header).
+  First contact caught two real bugs, both fixed: the echo server's
+  1200-byte `max_udp_payload_size` dropped Chrome's 1250-byte Initials
+  (now the RFC default), and the WT peer gate wrongly required
+  `SETTINGS_ENABLE_CONNECT_PROTOCOL` from CLIENTS — that advertisement
+  is server-side only (RFC 9220), browsers never send it, and our own
+  harness client had masked the bug by advertising it unnecessarily
+  (`peerEnabledFor` is now role-aware and the browser-shaped test
+  fixtures omit it so the gate stays honest).
 - Added `Config.max_wt_sessions` — the established-session cap the
   modern draft expects applications to enforce at accept time
   (`Session.checkWebTransportSessionCapacity`, called by

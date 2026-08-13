@@ -1881,6 +1881,7 @@ pub const Client = struct {
         if (!webtransport_mod.peerEnabledFor(
             peer,
             webtransport_mod.localEras(self.session.local_settings),
+            .server,
         )) return webtransport_mod.Error.PeerDidNotEnableWebTransport;
         const era = self.session.webTransportNegotiatedDraft() orelse .draft16;
         const profile = webtransport_mod.eraProfile(era);

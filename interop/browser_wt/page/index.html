@@ -1,0 +1,189 @@
+<!doctype html>
+<!--
+  Browser-side half of the WebTransport browser interop leg.
+
+  Served by control_server.py; drives a real browser WebTransport
+  session against the in-tree echo server and POSTs a JSON verdict
+  back to /result so the shell runner can grade the run without
+  webdriver machinery.
+
+  Query params:
+    wt    (required) WebTransport URL, e.g. https://127.0.0.1:4433/wt-browser
+    hash  (optional) base64 SHA-256 of the server cert (DER) for
+          serverCertificateHashes. UNUSED IN CI - the CI recipe trusts the
+          cert via --ignore-certificate-errors-spki-list (Chrome) or an NSS
+          db (Firefox) because serverCertificateHashes failures are opaque.
+          It exists for the manual recipe: an in-run P-256 cert with <=14
+          days validity (both are hard serverCertificateHashes requirements)
+          plus ?hash=<base64 sha-256 of the DER cert> lets the page connect
+          with zero browser flags.
+-->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>WebTransport browser interop</title>
+</head>
+<body>
+  <h1>WebTransport browser interop</h1>
+  <pre id="log">starting...</pre>
+  <script>
+    "use strict";
+
+    const logLines = [];
+    const logEl = document.getElementById("log");
+    function note(msg) {
+      logLines.push(msg);
+      // Mirror into the page so a headed run is debuggable by eyeball.
+      logEl.textContent = logLines.join("\n");
+    }
+
+    // Every phase races a 10s watchdog: a wedged phase must not stall the
+    // page silently past the runner's own wall clock - we want the FAIL
+    // verdict (with the phase name) posted, not a runner-side timeout.
+    function withTimeout(name, promise, ms = 10000) {
+      let timer;
+      const watchdog = new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error(name + ": timed out after " + ms + "ms")), ms);
+      });
+      return Promise.race([promise, watchdog]).finally(() => clearTimeout(timer));
+    }
+
+    function b64ToBytes(b64) {
+      const bin = atob(b64);
+      const out = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+      return out;
+    }
+
+    function bytesEqual(a, b) {
+      if (a.length !== b.length) return false;
+      for (let i = 0; i < a.length; i++) {
+        if (a[i] !== b[i]) return false;
+      }
+      return true;
+    }
+
+    async function readToEof(stream) {
+      const reader = stream.getReader();
+      const chunks = [];
+      let total = 0;
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        chunks.push(value);
+        total += value.length;
+      }
+      const out = new Uint8Array(total);
+      let off = 0;
+      for (const chunk of chunks) {
+        out.set(chunk, off);
+        off += chunk.length;
+      }
+      return out;
+    }
+
+    async function run() {
+      const enc = new TextEncoder();
+      const params = new URLSearchParams(location.search);
+      const url = params.get("wt");
+      if (!url) throw new Error("missing required ?wt= query param");
+
+      const opts = {};
+      const hash = params.get("hash");
+      if (hash) {
+        opts.serverCertificateHashes = [{ algorithm: "sha-256", value: b64ToBytes(hash) }];
+        note("using serverCertificateHashes (manual recipe)");
+      }
+
+      note("connecting: " + url);
+      const wt = new WebTransport(url, opts);
+      await withTimeout("session ready", wt.ready);
+      note("session ready");
+
+      // Phase: datagram echo. Datagrams are lossy by contract, so a single
+      // send racing the server's session bring-up can vanish legitimately;
+      // re-send the ping once a second inside the watchdog window rather
+      // than flaking the whole leg on one dropped packet.
+      const ping = enc.encode("browser-ping");
+      await withTimeout("datagram echo", (async () => {
+        const writer = wt.datagrams.writable.getWriter();
+        const reader = wt.datagrams.readable.getReader();
+        let resend;
+        try {
+          await writer.write(ping);
+          resend = setInterval(() => { writer.write(ping).catch(() => {}); }, 1000);
+          const { value, done } = await reader.read();
+          if (done) throw new Error("datagram readable ended before echo");
+          if (!bytesEqual(value, ping)) {
+            throw new Error("datagram echo mismatch: got " + value.length + " bytes");
+          }
+        } finally {
+          clearInterval(resend);
+          writer.releaseLock();
+          reader.releaseLock();
+        }
+      })());
+      note("datagram echo ok");
+
+      // Phase: uni-stream echo. Echo contract: for each client uni stream
+      // the server opens a server uni stream carrying the same bytes.
+      const streamPayload = enc.encode("browser-stream");
+      await withTimeout("uni-stream echo", (async () => {
+        const out = await wt.createUnidirectionalStream();
+        const writer = out.getWriter();
+        await writer.write(streamPayload);
+        await writer.close();
+
+        const incoming = wt.incomingUnidirectionalStreams.getReader();
+        let echoStream;
+        try {
+          const { value, done } = await incoming.read();
+          if (done) throw new Error("incomingUnidirectionalStreams ended before echo stream");
+          echoStream = value;
+        } finally {
+          incoming.releaseLock();
+        }
+        const echoed = await readToEof(echoStream);
+        if (!bytesEqual(echoed, streamPayload)) {
+          throw new Error("uni-stream echo mismatch: got " + echoed.length + " bytes");
+        }
+      })());
+      note("uni-stream echo ok");
+
+      // Phase: clean close. This lands as a CLOSE capsule on the server -
+      // the how-browsers-close path the leg exists to exercise.
+      await withTimeout("clean close", (async () => {
+        wt.close({ closeCode: 0, reason: "done" });
+        await wt.closed;
+      })());
+      note("closed cleanly");
+    }
+
+    async function main() {
+      let pass = false;
+      try {
+        await run();
+        pass = true;
+        note("PASS");
+      } catch (err) {
+        note("FAIL: " + (err && err.stack ? err.stack : err));
+      }
+      // Verdict goes back over plain HTTP in both outcomes; the runner
+      // greps the control server's log, so a missing POST reads as a
+      // setup failure (exit 2), not a false pass.
+      try {
+        await fetch("/result", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ pass, log: logLines.slice() }),
+        });
+        note("result posted (pass=" + pass + ")");
+      } catch (err) {
+        note("result POST failed: " + err);
+      }
+    }
+
+    main();
+  </script>
+</body>
+</html>

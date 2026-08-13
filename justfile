@@ -77,6 +77,14 @@ fuzz-codecs:
 fuzz-smoke:
     zig build run-fuzz-smoke
 
+wt-browser-chrome:
+    zig build external-wt-server
+    bash interop/browser_wt/run_chrome.sh
+
+wt-browser-firefox:
+    zig build external-wt-server
+    bash interop/browser_wt/run_firefox.sh
+
 fmt:
     zig fmt build.zig src tests interop examples fuzz
 

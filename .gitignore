@@ -12,6 +12,7 @@ zig-pkg/
 # but easy to commit by accident with `git add interop/`).
 interop/external_wt/server_go/server_go
 interop/external_wt/server_python/__pycache__/
+interop/browser_wt/__pycache__/
 interop/external_wt/server_python/.venv/
 
 # CHANGELOG / release scratch

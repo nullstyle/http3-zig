@@ -170,7 +170,7 @@ fn runHarness(allocator: std.mem.Allocator, io: std.Io, options: Options) !void 
             .qpack_max_table_capacity = 256,
             .qpack_blocked_streams = 4,
             .h3_datagram = true,
-            .enable_connect_protocol = true,
+            .enable_connect_protocol = std.mem.eql(u8, options.era, "modern"),
             .wt_enabled = std.mem.eql(u8, options.era, "modern"),
             .wt_draft02 = std.mem.eql(u8, options.era, "draft02"),
             .wt_draft07_max_sessions = if (std.mem.eql(u8, options.era, "draft07")) @as(?u64, 4) else null,
