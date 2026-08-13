@@ -462,6 +462,11 @@ pub const FieldEvent = struct {
     stream_id: u64,
     kind: message_mod.Kind,
     fields: []qpack.FieldLine,
+    /// Server-side, `kind == .request` only: any of this request stream's
+    /// bytes arrived in 0-RTT packets (sticky, `Connection.
+    /// streamArrivedInEarlyData`). Mirrors the datagram provenance flag.
+    /// Always false client-side and for non-request kinds.
+    arrived_in_early_data: bool = false,
 };
 
 pub const DataEvent = struct {
@@ -1487,6 +1492,13 @@ pub const Session = struct {
     /// information at most once via `Event.early_data`.
     pub fn earlyDataStatus(self: *Session) quic.EarlyDataStatus {
         return self.quic.earlyDataStatus();
+    }
+
+    /// Server-side request provenance: any of this stream's bytes arrived
+    /// in 0-RTT packets (`Connection.streamArrivedInEarlyData`; sticky).
+    /// Null when the transport no longer tracks the stream.
+    pub fn requestArrivedInEarlyData(self: *const Session, stream_id: u64) ?bool {
+        return self.quic.streamArrivedInEarlyData(stream_id);
     }
 
     /// Emit the at-most-once `early_data` event when the transport has
@@ -4291,12 +4303,16 @@ pub const Session = struct {
     ) Error!void {
         const out: Event = switch (event) {
             .headers => |fields| blk: {
-                if (self.role == .server and kind == .request)
+                var in_early_data = false;
+                if (self.role == .server and kind == .request) {
                     self.applyRequestPriorityOnHeaders(stream_id, fields);
+                    in_early_data = self.quic.streamArrivedInEarlyData(stream_id) orelse false;
+                }
                 break :blk .{ .headers = .{
                     .stream_id = stream_id,
                     .kind = kind,
                     .fields = try cloneFields(self.allocator, fields),
+                    .arrived_in_early_data = in_early_data,
                 } };
             },
             .interim_headers => |fields| .{ .interim_headers = .{
@@ -5357,6 +5373,7 @@ pub const Session = struct {
                 .frame_type = protocol.FrameType.headers,
                 .bytes = fieldsOwnedBytes(headers.fields),
                 .count = headers.fields.len,
+                .early_data = headers.arrived_in_early_data,
             }),
             .interim_headers => |headers| self.trace(.{
                 .name = .headers_received,

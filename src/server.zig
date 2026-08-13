@@ -2,6 +2,8 @@
 
 const std = @import("std");
 const boringssl = @import("boringssl");
+const quic = @import("quic");
+const earlydata = @import("earlydata.zig");
 const capsule_mod = @import("capsule.zig");
 const datagram_mod = @import("datagram.zig");
 const errors_mod = @import("errors.zig");
@@ -42,6 +44,35 @@ pub fn initTlsContext(
     if (options.keylog_callback) |callback| try ctx.setKeylogCallback(callback);
     try ctx.loadCertChainAndKey(cert_chain_pem, private_key_pem);
     return ctx;
+}
+
+/// Early-data application context for quic's 0-RTT ticket digest
+/// (`quic.Server.Config.early_data_application_context`): the http3-zig
+/// prefix plus this server's canonical SETTINGS bytes, so a ticket only
+/// resumes 0-RTT against byte-identical H3 settings (RFC 9114 §7.2.4.2
+/// ¶3-¶4; `earlydata.applicationContext`). The SAME settings value must
+/// feed `Session.init` on the resumed connection — one settings constant,
+/// two consumers, or accepted-0-RTT clients will (correctly) close with
+/// H3_SETTINGS_ERROR.
+pub fn earlyDataApplicationContext(
+    dst: []u8,
+    settings: settings_mod.Settings,
+) earlydata.Error![]u8 {
+    return earlydata.applicationContext(dst, settings);
+}
+
+/// Raw-`Connection` variant of the wrapper path: build and install the
+/// H3-aware early-data context (transport params + "h3" ALPN + settings
+/// digest) on a server connection before its handshake. `context_buf`
+/// needs `earlydata.applicationContextLen(settings)` bytes.
+pub fn installEarlyDataContext(
+    conn: *quic.Connection,
+    params: quic.tls.TransportParams,
+    settings: settings_mod.Settings,
+    context_buf: []u8,
+) !void {
+    const ctx = try earlydata.applicationContext(context_buf, settings);
+    _ = try conn.setEarlyDataContextForParams(params, protocol.alpn_h3, ctx);
 }
 
 pub const Headers = struct {
