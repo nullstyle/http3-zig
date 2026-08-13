@@ -4,7 +4,8 @@
 //! ```sh
 //! zig build examples
 //! ./zig-out/bin/http3-zig-udp-server &
-//! ./zig-out/bin/http3-zig-udp-client --insecure [target] [--sni host] [--path /]
+//! ./zig-out/bin/http3-zig-udp-client --insecure [target] [--sni host] [--path /] \
+//!     [--session-cache <path>]
 //! ```
 //!
 //! The shape to copy for your own client:
@@ -19,25 +20,38 @@
 //!  3. `quic.transport.runUdpClient` owns the socket and the
 //!     advance/receive/tick loop; ALL application logic lives in the
 //!     `on_iteration` hook, on the loop thread.
-//!  4. The request is sent only after `handshakeDone()` — http3-zig has
-//!     no blessed 0-RTT request path yet, so sending H3 requests before
-//!     the handshake is established is undefined.
+//!  4. Without a stored ticket the request is sent only after
+//!     `handshakeDone()`. With `--session-cache <path>` the client does
+//!     0-RTT (RFC 9114 §7.2.4.2): the first run earns a session ticket
+//!     (`earlydata.TicketBinder` pairs the quic resumption envelope
+//!     with the server's SETTINGS into an `H3RS` file), and later runs
+//!     resume from it — staging the GET BEFORE the first `advance()` so
+//!     it rides the 0-RTT flight coalesced with the ClientHello.
 //!
-//! Flow: wait for the handshake, send `GET <path>`, assemble the
-//! response with `ClientRunner`, print status + body, close cleanly
-//! with H3_NO_ERROR (which exits the loop).
+//! Flow: send `GET <path>` (staged in 0-RTT, or after the handshake),
+//! assemble the response with `ClientRunner`, print status + body,
+//! close cleanly with H3_NO_ERROR (which exits the loop).
 
 const std = @import("std");
 const http3_zig = @import("http3_zig");
 const quic = @import("quic");
 
+const earlydata = http3_zig.earlydata;
+
 pub const default_target = "127.0.0.1:4433";
+
+/// Cap on the stored `H3RS` envelope size — a resumption envelope is a
+/// ticket plus settings, so anything bigger than this is not ours.
+const max_session_cache_bytes = 64 * 1024;
 
 const Options = struct {
     target: []const u8 = default_target,
     sni: []const u8 = "localhost",
     path: []const u8 = "/",
     insecure: bool = false,
+    /// `H3RS` envelope file for 0-RTT: read to resume, written after
+    /// every fetch that captured a fresh ticket. Null = 1-RTT only.
+    session_cache: ?[]const u8 = null,
 };
 
 /// Transport parameters this client advertises. Same H3-suitable shape
@@ -61,6 +75,14 @@ fn transportParams() quic.tls.TransportParams {
     };
 }
 
+/// `quic.Client.Config.new_session_callback` trampoline: latch the quic
+/// resumption envelope into the `TicketBinder` (the bytes are borrowed
+/// only for the duration of the call; the binder copies them out).
+fn captureTicket(user_data: ?*anyopaque, resumption_state: []const u8) void {
+    const binder: *earlydata.TicketBinder = @ptrCast(@alignCast(user_data.?));
+    binder.onSessionTicket(resumption_state) catch {};
+}
+
 /// The client's whole application: a small state machine advanced once
 /// per loop iteration by `onIteration`.
 const FetchFlow = struct {
@@ -75,6 +97,11 @@ const FetchFlow = struct {
     /// since loop start). Erroring out stops `runUdpClient` and
     /// propagates to the caller.
     deadline_us: u64,
+    /// Non-null with `--session-cache`: latches the peer SETTINGS half
+    /// of the `H3RS` envelope (the ticket half arrives via
+    /// `captureTicket` on the transport's callback).
+    binder: ?*earlydata.TicketBinder = null,
+    /// Pre-set true when the request was staged in the 0-RTT flight.
     request_sent: bool = false,
     /// Set once the response completes; body/status stay owned by the
     /// runner, so `run` can validate them after the loop exits.
@@ -90,10 +117,11 @@ const FetchFlow = struct {
         if (flow.done) return;
         if (now_us > flow.deadline_us) return error.RequestTimedOut;
 
-        // No blessed H3 0-RTT/early-data request path exists yet: wait
-        // for 1-RTT before opening the request stream. (The session's
-        // drain consumes `pollEvent`, so the latched `handshakeDone()`
-        // query is the signal to use here, not the one-shot event.)
+        // 1-RTT path: wait for the handshake before opening the request
+        // stream. (The session's drain consumes `pollEvent`, so the
+        // latched `handshakeDone()` query is the signal to use here, not
+        // the one-shot event.) The 0-RTT path staged the request before
+        // the first advance instead, so this gate never fires there.
         if (!flow.request_sent) {
             if (!client.conn.handshakeDone()) return;
             const request = try flow.h3_client.request(flow.allocator, .{
@@ -114,6 +142,21 @@ const FetchFlow = struct {
             switch (try flow.runner.observe(event)) {
                 .response_complete => |response| {
                     if (flow.response == null) flow.response = response;
+                },
+                // Capture half of the ticket flow: the server's SETTINGS
+                // are what a future 0-RTT run must comply with (§7.2.4.2
+                // ¶5), so they go into the envelope beside the ticket.
+                .settings => |settings| if (flow.binder) |binder| binder.onPeerSettings(settings),
+                // At-most-once 0-RTT disposition. On rejection nothing is
+                // required of us: quic replays the staged request
+                // verbatim at 1-RTT and the remembered settings are
+                // discarded (§7.2.4.2 ¶7).
+                .early_data => |early| switch (early.status) {
+                    .accepted => std.debug.print("[client] 0-RTT accepted\n", .{}),
+                    .rejected => std.debug.print(
+                        "[client] 0-RTT rejected ({s}); request completed at 1-RTT\n",
+                        .{early.reason},
+                    ),
                 },
                 .goaway => |id| std.debug.print("[client] goaway observed (id={d})\n", .{id}),
                 .connection_closed => |closed| {
@@ -154,6 +197,31 @@ pub fn run(
 ) !void {
     const alpn = [_][]const u8{"h3"};
 
+    // 0-RTT capture half (any run with `--session-cache`): the binder
+    // pairs the quic NewSessionTicket envelope with the server's
+    // SETTINGS, in whichever order they arrive, into the `H3RS`
+    // envelope persisted below.
+    var binder = earlydata.TicketBinder.init(allocator);
+    defer binder.deinit();
+
+    // 0-RTT resume half: a stored envelope means this run can stage the
+    // GET in the first flight. `decode` borrows from `stored`, so the
+    // buffer stays alive for the whole run.
+    var stored: ?[]u8 = null;
+    defer if (stored) |bytes| allocator.free(bytes);
+    var resumed: ?earlydata.Decoded = null;
+    if (options.session_cache) |path| {
+        if (std.Io.Dir.cwd().readFileAlloc(io, path, allocator, .limited(max_session_cache_bytes))) |bytes| {
+            stored = bytes;
+            resumed = try earlydata.decode(bytes);
+        } else |err| switch (err) {
+            // First run against this cache path: no ticket yet — do a
+            // normal 1-RTT fetch and earn one below.
+            error.FileNotFound => {},
+            else => return err,
+        }
+    }
+
     var client = try quic.Client.connect(.{
         .allocator = allocator,
         .server_name = options.sni,
@@ -162,6 +230,14 @@ pub fn run(
         // Default posture verifies against the system trust store;
         // `--insecure` opts out for the demo server's self-signed cert.
         .insecure_skip_verify = options.insecure,
+        // Resumption: the wrapper installs the ticket, enables early
+        // data, and bounds 0-RTT sends by the remembered peer transport
+        // parameters — no manual `setEarlyDataEnabled` needed.
+        .resumption_state = if (resumed) |decoded| decoded.quic_resumption_state else null,
+        // Ticket capture: servers may issue fresh NewSessionTickets on
+        // every connection (including resumed ones); latest wins.
+        .new_session_callback = if (options.session_cache != null) captureTicket else null,
+        .new_session_user_data = if (options.session_cache != null) @as(?*anyopaque, &binder) else null,
     });
     defer client.deinit();
 
@@ -172,6 +248,10 @@ pub fn run(
         http3_zig.SessionConfig.production(.{}),
     );
     defer session.deinit();
+    // §7.2.4.2 ¶5: comply with the ticket-issuing connection's SETTINGS
+    // until the resumed connection's real SETTINGS arrive. Must land
+    // before any SETTINGS exchange, so: right after init.
+    if (resumed) |decoded| try session.rememberPeerSettings(decoded.settings);
 
     var h3_client = http3_zig.Client.init(&session);
     var runner = http3_zig.ClientRunner.init(allocator);
@@ -184,13 +264,33 @@ pub fn run(
     }
     var endpoint = http3_zig.TransportEndpoint.withSession(client.conn, &session, &events);
 
+    // 0-RTT staging: the H3 control stream (SETTINGS) and the request
+    // must be queued BEFORE the first `advance()` — only then does the
+    // first flight coalesce ClientHello + 0-RTT stream data. Stage only
+    // idempotent requests here: transport anti-replay protects the
+    // connection, not your application semantics (RFC 9470 territory).
+    var request_staged = false;
+    if (resumed != null) {
+        try session.start();
+        const request = try h3_client.request(allocator, .{
+            .authority = options.sni,
+            .path = options.path,
+        });
+        request_staged = true;
+        std.debug.print(
+            "[client] resuming session; staged GET {s} on stream {d} in the 0-RTT flight\n",
+            .{ options.path, request.stream_id },
+        );
+    }
+
     // Client bootstrap: run the handshake state machine once so the
     // first ClientHello is queued for the wire — on a real network
     // there is no inbound packet to bootstrap from (`Client.connect`
-    // defers this so 0-RTT data could be staged first). `runUdpClient`
-    // performs the same call itself, so this is redundant here, but it
-    // is THE step an open-coded client loop must not forget; loopback
-    // examples rely on the in-process peer shim instead.
+    // defers this so 0-RTT data could be staged first, as above).
+    // `runUdpClient` performs the same call itself, so this is
+    // redundant here, but it is THE step an open-coded client loop must
+    // not forget; loopback examples rely on the in-process peer shim
+    // instead.
     try endpoint.advance();
 
     std.debug.print(
@@ -207,6 +307,8 @@ pub fn run(
         .authority = options.sni,
         .path = options.path,
         .deadline_us = timeout_us,
+        .binder = if (options.session_cache != null) &binder else null,
+        .request_sent = request_staged,
     };
     try quic.transport.runUdpClient(&client, .{
         .target = options.target,
@@ -224,6 +326,21 @@ pub fn run(
     if (!std.mem.eql(u8, reader.status() orelse "", "200")) return error.UnexpectedStatus;
     if (expect_body) |expected| {
         if (!std.mem.eql(u8, reader.body(), expected)) return error.UnexpectedBody;
+    }
+
+    // Persist the fresh `H3RS` envelope, overwriting any previous one —
+    // the embedder owns the origin-keyed store, and a flat file per
+    // target is the simplest correct one.
+    if (options.session_cache) |path| {
+        if (try binder.tryEncode(allocator)) |envelope| {
+            defer allocator.free(envelope);
+            try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = path, .data = envelope });
+            std.debug.print("[client] session cache written to {s} ({d} bytes)\n", .{ path, envelope.len });
+        } else {
+            // A 0-RTT exchange can complete before a fresh ticket
+            // arrives; the stored envelope (if any) stays as-is.
+            std.debug.print("[client] no fresh session ticket captured; cache unchanged\n", .{});
+        }
     }
 
     std.debug.print("[client] closed cleanly\n", .{});
@@ -245,6 +362,8 @@ pub fn main(init: std.process.Init) !void {
             options.sni = args.next() orelse return error.MissingSni;
         } else if (std.mem.eql(u8, arg, "--path")) {
             options.path = args.next() orelse return error.MissingPath;
+        } else if (std.mem.eql(u8, arg, "--session-cache")) {
+            options.session_cache = args.next() orelse return error.MissingSessionCachePath;
         } else {
             options.target = arg;
         }

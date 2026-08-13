@@ -20,6 +20,14 @@ for TLS 1.3 / ALPN configuration.
 | CONNECT-UDP / MASQUE | RFC 9298 |
 | WebTransport | **draft-ietf-webtrans-http3-15** (`SETTINGS_WT_ENABLED = 0x2c7cf000`) |
 
+**0-RTT:** HTTP/3 early data (RFC 9114 §7.2.4.2) is supported end-to-end —
+remembered-SETTINGS capture/resume on the client (`http3_zig.earlydata`),
+an equality-digest settings context on the server, and verbatim 1-RTT
+replay of rejected flights. Recipe in the
+[embedding guide](docs/embedding-guide.md)'s 0-RTT section; the surface is
+Unstable-tier while it settles
+([API_STABILITY](docs/API_STABILITY.md)).
+
 **License:** Apache 2.0 — see [`LICENSE`](LICENSE).
 **Security:** disclosure policy in [`SECURITY.md`](SECURITY.md).
 **Changelog:** [`CHANGELOG.md`](CHANGELOG.md).

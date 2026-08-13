@@ -75,6 +75,24 @@ breaking changes; see notes per release.
   new connections — BoringSSL up-refs `SSL_CTX` per `SSL_new`, so live
   connections finish on the old one — with
   `quic_zig.Server.replaceTlsContext` as the integrated wrapper path).
+- **Added HTTP/3 early data (0-RTT, RFC 9114 §7.2.4.2)** — the library's
+  largest previously-named capability gap. Client: `http3_zig.earlydata`
+  pairs quic's resumption envelope with remembered peer SETTINGS (`H3RS`
+  envelope + `TicketBinder`; the embedder owns the origin-keyed store);
+  `Session.rememberPeerSettings` installs them; requests staged before the
+  first `advance()` ship in the 0-RTT flight; the at-most-once
+  `Event.early_data` reports accepted/rejected (rejection needs no app
+  action — the transport replays staged data verbatim at 1-RTT, a pinned
+  mutual contract with quic). Accepted-0-RTT SETTINGS are validated
+  against the remembered ones (`H3_SETTINGS_ERROR` on any ¶5/¶6
+  reduction). Server: `early_data_application_context` digests the
+  canonical H3 SETTINGS into the ticket (compatible-iff-identical, the
+  conservative ¶3 posture), with `server.earlyDataApplicationContext` /
+  `installEarlyDataContext` helpers and request provenance
+  (`FieldEvent.arrived_in_early_data`,
+  `Session.requestArrivedInEarlyData`). v1 restrictions, by design:
+  QPACK stays static until real SETTINGS arrive and extended CONNECT is
+  denied in early data — WT/WebSocket/MASQUE bootstrap at 1-RTT.
 - Added the typed `WebTransportStream` substream handle — a plain value
   returned by the WT facades' `openUniStream`/`openBidiStream` with
   `write`/`finish`/`reset`/`resetWithCode`/`sendState`/`canBuffer`, plus

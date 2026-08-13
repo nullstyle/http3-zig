@@ -6,6 +6,7 @@
 //! ```sh
 //! zig build examples
 //! ./zig-out/bin/http3-zig-udp-server                # listens on 127.0.0.1:4433
+//! ./zig-out/bin/http3-zig-udp-server --enable-0rtt  # + accept 0-RTT early data
 //! ./zig-out/bin/http3-zig-udp-client --insecure     # GETs / against it
 //! ```
 //!
@@ -41,6 +42,11 @@
 //!     `openRequestStreamCount() == 0` or a drain deadline), and only
 //!     then flips the loop's shutdown flag so `runUdpServer` queues
 //!     CONNECTION_CLOSE on every slot and drains its own grace window.
+//!  6. `--enable-0rtt` opts into 0-RTT early data (RFC 9114 §7.2.4.2):
+//!     an anti-replay tracker gates ticket reuse at the TLS layer, and
+//!     the early-data application context digests this server's H3
+//!     SETTINGS into the ticket so 0-RTT only resumes against
+//!     byte-identical settings.
 //!
 //! Serving model: requests are assembled with `ServerRunner` (owned
 //! request lifecycle state that survives the drain batch) — the blessed
@@ -97,6 +103,16 @@ fn transportParams() quic.tls.TransportParams {
         .active_connection_id_limit = 8,
         .max_datagram_frame_size = 1200,
     };
+}
+
+/// The one H3 session configuration every accepted connection uses.
+/// Hoisted because its `settings` value has two consumers that MUST
+/// agree byte-for-byte: the per-slot `Session.init` below, and (with
+/// `--enable-0rtt`) the early-data application context digested into
+/// session tickets — drift between them and accepted-0-RTT clients
+/// would (correctly) close with H3_SETTINGS_ERROR.
+fn sessionConfig() http3_zig.SessionConfig {
+    return http3_zig.SessionConfig.production(.{});
 }
 
 /// Per-connection application state, allocated on the first sight of a
@@ -251,7 +267,7 @@ pub const App = struct {
                 app.allocator,
                 .server,
                 slot.conn,
-                http3_zig.SessionConfig.production(.{}),
+                sessionConfig(),
             ),
             .facade = undefined,
             .runner = http3_zig.ServerRunner.init(app.allocator),
@@ -302,6 +318,17 @@ pub const App = struct {
         const method = request.method() orelse "GET";
         const path = request.path() orelse "/";
 
+        // 0-RTT provenance (sticky per stream; only ever true under
+        // `--enable-0rtt`). This demo serves only idempotent GETs, so
+        // logging is all it needs — an application with side effects
+        // gates them on this flag instead.
+        if (state.session.requestArrivedInEarlyData(request.stream_id) orelse false) {
+            std.debug.print(
+                "[server] conn {d}: request on stream {d} arrived in early data (0-RTT)\n",
+                .{ state.slot_id, request.stream_id },
+            );
+        }
+
         // Routing is application space — keep it a visible branch on
         // the request path.
         var status: []const u8 = undefined;
@@ -330,6 +357,12 @@ pub const App = struct {
     }
 };
 
+pub const ServeOptions = struct {
+    /// Accept 0-RTT early data (`--enable-0rtt`). Off by default so the
+    /// demo's baseline matches quic's secure default (`.disabled`).
+    enable_0rtt: bool = false,
+};
+
 /// Run the HTTP/3 server until `request_shutdown` flips and the GOAWAY
 /// drain completes (or the loop fails). Factored out of `main` so
 /// `udp_smoke.zig` can drive the identical loop on a background thread.
@@ -339,6 +372,16 @@ pub fn serve(
     listen: []const u8,
     request_shutdown: *const std.atomic.Value(bool),
 ) !void {
+    return serveWithOptions(allocator, io, listen, request_shutdown, .{});
+}
+
+pub fn serveWithOptions(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    listen: []const u8,
+    request_shutdown: *const std.atomic.Value(bool),
+    options: ServeOptions,
+) !void {
     var loop_shutdown = std.atomic.Value(bool).init(false);
     var app: App = .{
         .allocator = allocator,
@@ -347,7 +390,7 @@ pub fn serve(
     };
     const alpn = [_][]const u8{"h3"};
 
-    var server = try quic.Server.init(.{
+    var config: quic.Server.Config = .{
         .allocator = allocator,
         .tls_cert_pem = cert_pem,
         .tls_key_pem = key_pem,
@@ -355,9 +398,36 @@ pub fn serve(
         .transport_params = transportParams(),
         .on_connection_will_close = App.onConnectionWillClose,
         .on_connection_will_close_user_data = &app,
-    });
+    };
+
+    // 0-RTT opt-in. The tracker gives each resumed ticket a single-use
+    // window at the TLS layer (RFC 9001 §5.6 leaves replay defense to
+    // the application; a replayed ticket silently completes at 1-RTT
+    // instead). `.without_replay_protection` also exists — greppable by
+    // design — but a replay tracker is the posture to copy.
+    var tracker: quic.tls.anti_replay.AntiReplayTracker = undefined;
+    var early_data_context_buf: [256]u8 = undefined;
+    if (options.enable_0rtt) {
+        tracker = try quic.tls.anti_replay.AntiReplayTracker.init(allocator, .{});
+        config.early_data = .{ .with_anti_replay = &tracker };
+        // Digest this server's canonical H3 SETTINGS into the ticket:
+        // BoringSSL compares the context for equality on resumption, so
+        // 0-RTT only resumes against byte-identical settings (§7.2.4.2
+        // ¶3-¶4) — the SAME `sessionConfig()` value the per-slot
+        // Sessions serve.
+        config.early_data_application_context = try http3_zig.server.earlyDataApplicationContext(
+            &early_data_context_buf,
+            sessionConfig().settings,
+        );
+    }
+    // Declared before `server` below so the tracker (and context buf)
+    // outlive it — the Server borrows both.
+    defer if (options.enable_0rtt) tracker.deinit();
+
+    var server = try quic.Server.init(config);
     defer server.deinit();
 
+    if (options.enable_0rtt) std.debug.print("[server] 0-RTT enabled (anti-replay tracker armed)\n", .{});
     std.debug.print("[server] HTTP/3 server listening on {s} (ALPN h3)\n", .{listen});
 
     try quic.transport.runUdpServer(&server, .{
@@ -390,7 +460,16 @@ pub fn main(init: std.process.Init) !void {
     var args = try std.process.Args.Iterator.initAllocator(init.minimal.args, allocator);
     defer args.deinit();
     _ = args.next(); // program name
-    const listen = args.next() orelse default_addr;
+
+    var listen: []const u8 = default_addr;
+    var enable_0rtt = false;
+    while (args.next()) |arg| {
+        if (std.mem.eql(u8, arg, "--enable-0rtt")) {
+            enable_0rtt = true;
+        } else {
+            listen = arg;
+        }
+    }
 
     if (builtin.os.tag != .windows) {
         const act: std.posix.Sigaction = .{
@@ -402,5 +481,5 @@ pub fn main(init: std.process.Init) !void {
         std.debug.print("[server] Ctrl-C to shut down gracefully (GOAWAY drain)\n", .{});
     }
 
-    try serve(allocator, io, listen, &sigint_flag);
+    try serveWithOptions(allocator, io, listen, &sigint_flag, .{ .enable_0rtt = enable_0rtt });
 }

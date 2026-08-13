@@ -365,13 +365,68 @@ if 0-RTT must survive rotation).
 
 ## 0-RTT
 
-quic 0.12.0 supports 0-RTT end-to-end at the transport layer: server-side
-enablement via `Server.Config.early_data` (`.disabled` / `.with_anti_replay`
-/ `.without_replay_protection`, plus `early_data_application_context`) and
-client-side resumption with rejection recovery
-(`Client.Config.resumption_state` / `new_session_callback`). http3-zig has **no blessed
-0-RTT request path yet**: early data at the HTTP/3 layer is not supported or
-tested, and sending requests before the transport reports
-`handshakeDone()` is undefined — the client examples gate the first request
-on it. Tracked as future work; until then, treat 0-RTT as
-transport-resumption-only (faster handshakes, no early requests).
+http3-zig supports HTTP/3 early data end-to-end (RFC 9114 §7.2.4.2) on top
+of quic 0.12.0's transport 0-RTT. The pieces live in `http3_zig.earlydata`
+(pure codec + validation; you own the origin-keyed store) plus a handful of
+session/server surfaces.
+
+**Client — capture (first connection):** pair the two halves with
+`earlydata.TicketBinder` — the quic resumption envelope arrives via
+`quic.Client.Config.new_session_callback` (possibly several times; the
+binder keeps the latest) and the peer's SETTINGS via the `peer_settings`
+event, in either order. Once `binder.ready()`, persist
+`binder.tryEncode(allocator)` under the origin.
+
+**Client — resume:** `earlydata.decode` the stored envelope, then:
+
+```zig
+// 1. Transport resumption:
+var client = try quic.Client.connect(.{
+    .resumption_state = decoded.quic_resumption_state,
+    // ...
+});
+// 2. H3 session + remembered settings (client role, before any exchange):
+var h3 = http3_zig.Session.init(allocator, .client, client.conn, .{});
+try h3.rememberPeerSettings(decoded.settings);
+// 3. Stage requests BEFORE the first endpoint.advance() — they ship in
+//    the 0-RTT flight coalesced with the ClientHello:
+const request = try h3_client.request(allocator, .{ .authority = ..., .path = "/" });
+// 4. Now advance() and run the loop as usual.
+```
+
+The at-most-once `Event.early_data` reports the outcome (`.accepted` /
+`.rejected`, with BoringSSL's reason string); `Session.earlyDataStatus()`
+is the polling twin. **On rejection nothing is required of you**: the
+transport retransmits the staged stream data verbatim at 1-RTT on the same
+stream ids (a pinned, mutual contract with quic), and the remembered
+settings are discarded (§7.2.4.2 ¶7). The event exists so applications
+with non-idempotent semantics can `cancelRequest` affected streams — the
+usual guidance applies: stage only idempotent requests in early data
+(RFC 9470 territory), since transport-level anti-replay protects the
+connection, not your application semantics.
+
+**What early requests may use (v1):** plain requests with bodies and
+trailers, `MAX_PUSH_ID`, and request-stream DATAGRAMs (the datagram gates
+honor remembered `H3_DATAGRAM`, RFC 9297 §2.1.1). QPACK is forced
+static/literal until the real SETTINGS arrive, and **extended CONNECT is
+denied in early data** (WebTransport/WebSocket/MASQUE bootstrap waits for
+1-RTT) — both restrictions exist so the verbatim 1-RTT replay of a
+rejected flight is protocol-valid under any server configuration.
+
+**Server:** enable transport early data
+(`quic.Server.Config.early_data = .with_anti_replay(&tracker)` — or
+`.without_replay_protection`, greppable by design) and set
+`early_data_application_context =
+server.earlyDataApplicationContext(buf, settings)`. The context digests
+your canonical H3 SETTINGS into the ticket, and BoringSSL compares it for
+equality on resumption — so 0-RTT only resumes against byte-identical
+settings, which is what §7.2.4.2 ¶3-¶4 require (the conservative reading:
+even a raised limit re-handshakes at 1-RTT). **One settings value, two
+consumers**: the same `Settings` must feed both the context and the
+resumed connection's `Session.init`, or accepted-0-RTT clients will
+(correctly) close with `H3_SETTINGS_ERROR`. Raw-`Connection` embedders use
+`server.installEarlyDataContext`. Request provenance surfaces as
+`FieldEvent.arrived_in_early_data` and
+`Session.requestArrivedInEarlyData(stream_id)` — gate any
+non-idempotent server-side effects on it if you accept early data without
+a replay tracker.

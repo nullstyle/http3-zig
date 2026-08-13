@@ -49,6 +49,16 @@ but changes will be deliberate, called out in `CHANGELOG.md`, and kept minimal.
 
 ### Unstable / evolving — usable, but expect movement
 
+- **HTTP/3 early data (0-RTT).** The whole surface is new in the post-0.4.9
+  cycle and lands Unstable: `http3_zig.earlydata` (H3RS envelope codec,
+  `validateRememberedSettings`, `applicationContext`, `TicketBinder`),
+  `Session.rememberPeerSettings` / `earlyDataStatus` /
+  `requestArrivedInEarlyData`, `Event.early_data` /
+  `FieldEvent.arrived_in_early_data`, and the `server.earlyData*` helpers.
+  The v1 restrictions (static QPACK pre-SETTINGS, no extended CONNECT in
+  early data) are contract, not accident — they keep quic's verbatim
+  1-RTT replay of rejected flights protocol-valid. Expect ergonomic
+  movement (not wire changes) as real embedders use it.
 - **Evolving extensions.** WebTransport over HTTP/3 (Track-to-RFC, pinned to
   `draft-ietf-webtrans-http3-15`) and the MASQUE CONNECT-UDP surface
   (`Masque*`, `ConnectUdp*` — Experimental / Unstable-with-SLA: RFC 9298 +
