@@ -88,4 +88,13 @@ wt-browser-firefox:
 fmt:
     zig fmt build.zig src tests interop examples fuzz
 
-check: fmt test
+# Compile every out-of-test binary target. `zig build test` does NOT
+# build these, so a signature change in src/ can pass the whole test
+# suite and still break CI at the interop/example build step (this bit
+# us on 5ee87e1: a role parameter added to `peerEnabledFor` left the
+# external-wt client uncompiled locally and red in CI).
+build-all:
+    zig build external-wt-client external-wt-server external-h3-client curl-h3-server
+    zig build examples
+
+check: fmt test build-all

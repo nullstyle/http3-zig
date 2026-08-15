@@ -218,6 +218,10 @@ fn runHarness(allocator: std.mem.Allocator, io: std.Io, options: Options) !void 
     if (!http3_zig.webtransport.peerEnabledFor(
         h3.peer_settings.?,
         http3_zig.webtransport.localEras(h3.local_settings),
+        // The peer is the interop SERVER: its settings must carry
+        // ENABLE_CONNECT_PROTOCOL (RFC 9220 makes that a server-side
+        // advertisement).
+        .server,
     )) {
         std.debug.print("external_wt: peer SETTINGS do not advertise WebTransport\n", .{});
         return error.PeerDidNotEnableWebTransport;
