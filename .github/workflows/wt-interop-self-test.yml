@@ -133,7 +133,10 @@ jobs:
           WT_INTEROP_URL: "https://127.0.0.1:${{ env.WT_ERA_SERVER_PORT }}/wt-era-self-test"
         run: |
           set -euo pipefail
-          ./zig-out/bin/http3-zig-external-wt-client --era draft02 --max-time-ms 15000 \
+          # 2>&1 is load-bearing: the harness binaries report through
+          # std.debug.print (stderr) — a bare `| tee` captures only
+          # stdout and the assertions below then grep an empty file.
+          ./zig-out/bin/http3-zig-external-wt-client --era draft02 --max-time-ms 15000 2>&1 \
             | tee "${{ runner.temp }}/wt-era-client.log"
           grep -q "OBSERVED negotiated era=draft02" "${{ runner.temp }}/wt-era-client.log" || {
             echo "::error::client did not negotiate the draft-02 era"
