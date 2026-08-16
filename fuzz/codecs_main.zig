@@ -21,13 +21,34 @@ pub fn main(init: std.process.Init) !void {
     while (args.next()) |path| {
         const bytes = try std.Io.Dir.cwd().readFileAlloc(io, path, allocator, .limited(max_input_bytes));
         defer allocator.free(bytes);
-        try codecs.runTarget(allocator, target, bytes);
+        // Per-input GPA: decode-path leaks fail the run instead of
+        // passing invisibly (a bare SafeAllocator discards leak counts).
+        var input_gpa: std.heap.DebugAllocator(.{ .safety = true }) = .init;
+        codecs.runTarget(input_gpa.allocator(), target, bytes) catch |err| {
+            _ = input_gpa.deinit();
+            return err;
+        };
+        switch (input_gpa.deinit()) {
+            .ok => {},
+            .leak => {
+                std.debug.print("LEAK detected for {s}\n", .{path});
+                return error.FuzzLeakDetected;
+            },
+        }
         cases += 1;
     }
 
     if (cases == 0) {
         for (codecs.smokeInputs()) |input| {
-            try codecs.runTarget(allocator, target, input);
+            var input_gpa: std.heap.DebugAllocator(.{ .safety = true }) = .init;
+            codecs.runTarget(input_gpa.allocator(), target, input) catch |err| {
+                _ = input_gpa.deinit();
+                return err;
+            };
+            switch (input_gpa.deinit()) {
+                .ok => {},
+                .leak => return error.FuzzLeakDetected,
+            }
             cases += 1;
         }
     }
@@ -42,6 +63,8 @@ fn usage() void {
         \\         qpack-field-static qpack-field-literal qpack-field-dynamic
         \\         qpack-encoder-instruction qpack-decoder-instruction
         \\         websocket-frame websocket-message masque
+        \\         webtransport webtransport-session
+        \\         earlydata priority stream
         \\
     , .{});
 }

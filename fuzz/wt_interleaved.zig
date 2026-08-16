@@ -160,13 +160,15 @@ pub fn run(allocator: std.mem.Allocator, bytes: []const u8) !void {
     // fully propagate before the invariant check.
     try harness.drainToQuiescence();
 
-    // Invariants. Both peers have or have-not seen a connection-level
-    // close depending on whether any opcode deliberately triggered one.
-    // The harness tracks the deliberate-close flag.
-    if (!harness.deliberate_close) {
-        if (harness.pair.client_h3.lastCloseError() != null) return error.UnexpectedClientClose;
-        if (harness.pair.server_h3.lastCloseError() != null) return error.UnexpectedServerClose;
-    }
+    // Invariants. NO opcode in this harness deliberately closes the
+    // connection — session CLOSE / CONNECT FIN are session-level
+    // teardowns that must leave the connection alive — so a
+    // connection-level close after ANY input is a bug. (The old
+    // deliberate_close flag was set by the session-level ops and
+    // suppressed this check for the whole input, masking exactly the
+    // bug it claims to detect.)
+    if (harness.pair.client_h3.lastCloseError() != null) return error.UnexpectedClientClose;
+    if (harness.pair.server_h3.lastCloseError() != null) return error.UnexpectedServerClose;
 
     // Every session that the harness ever issued a CLOSE or FINISH on
     // should ultimately end up in `.none` on both sides.
@@ -297,11 +299,6 @@ const Harness = struct {
     // Per-session bookkeeping for the invariant check.
     session_explicitly_ended: [max_sessions]bool,
 
-    /// True once any opcode has deliberately torn the connection /
-    /// session down with a close-style operation. Suppresses the
-    /// "unexpected close" invariant.
-    deliberate_close: bool = false,
-
     client_runner: http3_zig.ClientRunner,
     server_runner: http3_zig.ServerRunner,
     client_events: std.ArrayList(http3_zig.session.Event),
@@ -341,7 +338,6 @@ const Harness = struct {
         self.server_sessions = .empty;
         self.streams = .empty;
         self.session_explicitly_ended = @splat(false);
-        self.deliberate_close = false;
         self.client_runner = http3_zig.ClientRunner.init(allocator);
         self.server_runner = http3_zig.ServerRunner.init(allocator);
         self.client_events = .empty;
@@ -660,7 +656,8 @@ const Harness = struct {
             },
         }
         if (session_idx < max_sessions) self.session_explicitly_ended[session_idx] = true;
-        self.deliberate_close = true;
+        // Session-level CLOSE: the CONNECTION must survive — see the
+        // unconditional connection-close invariant in run().
     }
 
     fn opFinishSession(self: *Harness, c: *Cursor, side: Side) !void {
@@ -681,7 +678,7 @@ const Harness = struct {
             },
         }
         if (session_idx < max_sessions) self.session_explicitly_ended[session_idx] = true;
-        self.deliberate_close = true;
+        // CONNECT FIN: session-level teardown, not a connection close.
     }
 
     fn opResetStream(self: *Harness, c: *Cursor, side: Side) !void {

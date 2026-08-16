@@ -139,7 +139,11 @@ jobs:
         run: |
           run_fuzz() {
             set +e
-            timeout 30m zig build test --fuzz 2>&1 | tee fuzz-nightly.log
+            # ReleaseSafe: keeps safety checks (panics/UB fire) while
+            # regaining compiler optimization — Debug fuzzing ran at a
+            # fraction of the executions/sec the 30-minute budget could
+            # deliver.
+            timeout 30m zig build test -Doptimize=ReleaseSafe --fuzz 2>&1 | tee fuzz-nightly.log
             status=${PIPESTATUS[0]}
             set -e
             if [ "$status" -eq 124 ]; then return 0; fi

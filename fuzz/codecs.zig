@@ -26,6 +26,9 @@ pub const Target = enum {
     masque,
     webtransport,
     webtransport_session,
+    earlydata,
+    priority,
+    stream,
 };
 
 pub const concrete_targets = [_]Target{
@@ -45,6 +48,9 @@ pub const concrete_targets = [_]Target{
     .masque,
     .webtransport,
     .webtransport_session,
+    .earlydata,
+    .priority,
+    .stream,
 };
 
 const smoke_inputs = [_][]const u8{
@@ -85,6 +91,9 @@ pub fn targetName(target: Target) []const u8 {
         .masque => "masque",
         .webtransport => "webtransport",
         .webtransport_session => "webtransport-session",
+        .earlydata => "earlydata",
+        .priority => "priority",
+        .stream => "stream",
     };
 }
 
@@ -106,6 +115,9 @@ pub fn targetFromName(name: []const u8) ?Target {
     if (std.mem.eql(u8, name, "masque")) return .masque;
     if (std.mem.eql(u8, name, "webtransport")) return .webtransport;
     if (std.mem.eql(u8, name, "webtransport-session") or std.mem.eql(u8, name, "webtransport_session")) return .webtransport_session;
+    if (std.mem.eql(u8, name, "earlydata") or std.mem.eql(u8, name, "early_data")) return .earlydata;
+    if (std.mem.eql(u8, name, "priority")) return .priority;
+    if (std.mem.eql(u8, name, "stream") or std.mem.eql(u8, name, "stream-type")) return .stream;
     return null;
 }
 
@@ -132,7 +144,22 @@ pub fn runTarget(allocator: std.mem.Allocator, target: Target, input: []const u8
         .masque => fuzzMasque(allocator, input),
         .webtransport => fuzzWebTransport(input),
         .webtransport_session => fuzzWebTransportSession(allocator, input),
+        .earlydata => fuzzEarlyData(input),
+        .priority => fuzzPriority(input),
+        .stream => fuzzStreamType(input),
     }
+}
+
+fn fuzzEarlyData(input: []const u8) void {
+    if (http3_zig.earlydata.decode(input)) |_| {} else |_| {}
+}
+
+fn fuzzPriority(input: []const u8) void {
+    if (http3_zig.Priority.parse(input)) |_| {} else |_| {}
+}
+
+fn fuzzStreamType(input: []const u8) void {
+    if (http3_zig.stream.decodeType(input)) |_| {} else |_| {}
 }
 
 fn fuzzFrame(input: []const u8) void {

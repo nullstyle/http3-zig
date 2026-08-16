@@ -78,11 +78,24 @@ pub fn main(init: std.process.Init) !void {
             };
             defer allocator.free(bytes);
 
-            codecs.runTarget(allocator, target, bytes) catch |err| {
+            // Per-input GPA: decode-path leaks fail the run instead of
+            // passing invisibly (a bare SafeAllocator discards leak
+            // counts).
+            var input_gpa: std.heap.DebugAllocator(.{ .safety = true }) = .init;
+            codecs.runTarget(input_gpa.allocator(), target, bytes) catch |err| {
+                _ = input_gpa.deinit();
                 try stdout.print("  {s}/{s}: target raised {s}\n", .{ name, entry.name, @errorName(err) });
                 fails += 1;
                 continue;
             };
+            switch (input_gpa.deinit()) {
+                .ok => {},
+                .leak => {
+                    try stdout.print("  {s}/{s}: LEAK detected\n", .{ name, entry.name });
+                    fails += 1;
+                    continue;
+                },
+            }
             cases += 1;
         }
 

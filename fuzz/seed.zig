@@ -30,7 +30,36 @@ pub fn main(init: std.process.Init) !void {
     const root_arg = args.next() orelse "fuzz/corpus";
 
     const cwd = std.Io.Dir.cwd();
-    cwd.deleteTree(io, root_arg) catch {};
+    // Preserve curated corpora that have no seeder — in particular
+    // fuzz/corpus/wt-interleaved/'s 57 hand-written state-machine
+    // seeds, which a whole-root deleteTree used to destroy. Delete and
+    // reseed only the codec-target subdirectories.
+    const codec_target_dirs = [_][]const u8{
+        "frame",
+        "settings",
+        "capsule",
+        "datagram",
+        "qpack-integer",
+        "qpack-huffman",
+        "qpack-field-static",
+        "qpack-field-literal",
+        "qpack-field-dynamic",
+        "qpack-encoder-instruction",
+        "qpack-decoder-instruction",
+        "websocket-frame",
+        "websocket-message",
+        "masque",
+        "webtransport",
+        "webtransport-session",
+        "earlydata",
+        "priority",
+        "stream",
+    };
+    var dir_path_buf: [256]u8 = undefined;
+    for (codec_target_dirs) |target| {
+        const dir_path = try std.fmt.bufPrint(&dir_path_buf, "{s}/{s}", .{ root_arg, target });
+        cwd.deleteTree(io, dir_path) catch {};
+    }
     try cwd.createDirPath(io, root_arg);
 
     const root = try cwd.openDir(io, root_arg, .{});
@@ -55,6 +84,9 @@ pub fn main(init: std.process.Init) !void {
     try seedMasque(io, root, &buf);
     try seedWebTransport(io, root, &buf);
     try seedWebTransportSession(io, root, &buf);
+    try seedEarlyData(allocator, io, root, &buf);
+    try seedPriority(io, root, &buf);
+    try seedStreamType(io, root, &buf);
 
     var stdout_buf: [256]u8 = undefined;
     var stdout_writer = std.Io.File.stdout().writer(io, &stdout_buf);
@@ -867,4 +899,50 @@ fn seedWebTransportSession(io: std.Io, root: std.Io.Dir, buf: []u8) !void {
         p += try http3_zig.webtransport.encodeMaxData(buf[p..], 4096);
         try writeSeed(io, root, "webtransport-session", "12-blocked-then-grant", buf[0..p]);
     }
+}
+
+// ---------------------------------------------------------------- earlydata
+
+fn seedEarlyData(allocator: std.mem.Allocator, io: std.Io, root: std.Io.Dir, buf: []u8) !void {
+    _ = allocator;
+    try writeSeed(io, root, "earlydata", "01-empty", "");
+    try writeSeed(io, root, "earlydata", "02-bad-magic", "NOT!");
+
+    // 03-valid-minimal — settings + empty QUIC envelope.
+    const n = try http3_zig.earlydata.encode(buf, settingsAll(), &.{});
+    try writeSeed(io, root, "earlydata", "03-valid-minimal", buf[0..n]);
+
+    // 04-truncated-header — magic prefix but no fixed header.
+    try writeSeed(io, root, "earlydata", "04-truncated-header", "\x00\x00\x00\x00\x00");
+}
+
+// ---------------------------------------------------------------- priority
+
+fn seedPriority(io: std.Io, root: std.Io.Dir, buf: []u8) !void {
+    _ = buf;
+    try writeSeed(io, root, "priority", "01-empty", "");
+    try writeSeed(io, root, "priority", "02-u7", "u=7");
+    try writeSeed(io, root, "priority", "03-u2-i", "u=2, i");
+    try writeSeed(io, root, "priority", "04-whitespace", " u=1 , i ");
+    try writeSeed(io, root, "priority", "05-garbage", "banana");
+    try writeSeed(io, root, "priority", "06-bad-urgency", "u=9");
+    try writeSeed(io, root, "priority", "07-long", "u=3, i, i, i, i, i");
+}
+
+// ---------------------------------------------------------------- stream type
+
+fn seedStreamType(io: std.Io, root: std.Io.Dir, buf: []u8) !void {
+    try writeSeed(io, root, "stream", "01-empty", "");
+
+    var n = try http3_zig.stream.encodeType(buf, http3_zig.protocol.StreamType.control);
+    try writeSeed(io, root, "stream", "02-control", buf[0..n]);
+
+    n = try http3_zig.stream.encodeType(buf, http3_zig.protocol.StreamType.push);
+    try writeSeed(io, root, "stream", "03-push", buf[0..n]);
+
+    n = try http3_zig.stream.encodeType(buf, http3_zig.protocol.StreamType.webtransport_uni_stream);
+    try writeSeed(io, root, "stream", "04-webtransport-uni", buf[0..n]);
+
+    // 05-truncated-varint — 0xfe announces a 2-byte varint that never lands.
+    try writeSeed(io, root, "stream", "05-truncated-varint", "\xfe");
 }
