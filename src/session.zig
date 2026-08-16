@@ -178,6 +178,11 @@ pub const Error = quic.conn.state.Error ||
         /// from the underlying connection — gives the application a
         /// clean signal to stop driving the session and tear it down.
         SessionClosed,
+        /// `drain` was re-entered (typically from inside the
+        /// observability trace callback, which runs synchronously
+        /// mid-drain). The nested call is refused — stream state is
+        /// mid-mutation and a re-entrant drain would corrupt it.
+        ReentrantDrain,
     };
 
 pub const ProductionOptions = struct {
@@ -679,25 +684,28 @@ pub const OpenRequestStream = struct {
 };
 
 /// Iterator over in-flight request streams; see
-/// `Session.openRequestStreams`. Borrows the session's stream table:
-/// iterate to completion before calling anything that can create or
-/// reclaim streams (`drain`, `openRequest`, …). Rejecting or resetting
-/// mid-iteration is safe today but collect-then-act is the robust
-/// pattern — see the embedding guide's "Request deadlines" section.
+/// `Session.openRequestStreams`. A SNAPSHOT taken at construction
+/// time: iteration never touches the live stream table, so
+/// interleaving `drain` / `openRequest` cannot invalidate it (the
+/// named streams may close mid-iteration; callers already tolerate
+/// that). Up to `capacity` streams are captured; beyond that
+/// `truncated` is set and the surplus remains for the next call —
+/// deadline sweeps converge over successive drains.
 pub const OpenRequestStreamIterator = struct {
-    session: *const Session,
-    inner: std.AutoHashMapUnmanaged(u64, *StreamState).Iterator,
+    pub const capacity = 128;
+
+    streams: [capacity]OpenRequestStream = undefined,
+    len: usize = 0,
+    pos: usize = 0,
+    /// True when more open request streams existed than `capacity`
+    /// could capture — call `openRequestStreams` again after acting
+    /// on this batch.
+    truncated: bool = false,
 
     pub fn next(self: *OpenRequestStreamIterator) ?OpenRequestStream {
-        while (self.inner.next()) |entry| {
-            const state = entry.value_ptr.*;
-            if (!self.session.isOpenRequestState(state)) continue;
-            return .{
-                .stream_id = state.id,
-                .last_event_us = state.last_event_us,
-            };
-        }
-        return null;
+        if (self.pos >= self.len) return null;
+        defer self.pos += 1;
+        return self.streams[self.pos];
     }
 };
 
@@ -1565,6 +1573,11 @@ pub const Session = struct {
     next_push_id: u64 = 0,
     shutdown_state: ShutdownState = .active,
     last_close_error: ?errors_mod.ConnectionError = null,
+    /// Re-entrancy latches (see `drain` and `trace`): the
+    /// observability callback runs user code synchronously mid-drain,
+    /// and re-entry would corrupt in-flight stream state.
+    in_drain: bool = false,
+    in_trace_callback: bool = false,
     metrics_counters: observability_mod.Metrics = .{},
 
     qpack_encoder_table: qpack.DynamicTable,
@@ -1627,7 +1640,10 @@ pub const Session = struct {
             .qpack_encoder_table = qpack.DynamicTable.init(allocator, config.qpack_encoder_table_capacity),
             .qpack_decoder_table = qpack.DynamicTable.init(
                 allocator,
-                @intCast(config.settings.qpack_max_table_capacity),
+                // Checked: on 32-bit targets a u64 capacity above usize
+                // would panic; clamp to the addressable maximum instead.
+                std.math.cast(usize, config.settings.qpack_max_table_capacity) orelse
+                    std.math.maxInt(usize),
             ),
             .qpack_encoder_state = qpack.QpackEncoderState.init(allocator, 0),
             .qpack_decoder_state = qpack.QpackDecoderState.init(allocator, config.settings.qpack_blocked_streams),
@@ -3399,10 +3415,30 @@ pub const Session = struct {
     /// iterator, compare `last_event_us` against the loop's current
     /// `now_us`, and `rejectRequest` / `resetResponse` (server) or
     /// `cancelRequest` / `resetRequest` (client) the expired ones. The
-    /// iterator borrows the session's stream table — do not interleave
-    /// with calls that create or reclaim streams (`drain`, `openRequest`).
+    /// Snapshot of the open request streams and their last-event times,
+    /// for per-request deadline enforcement: walk the iterator, compare
+    /// `last_event_us` against the loop's current `now_us`, and
+    /// `rejectRequest` / `resetResponse` (server) or `cancelRequest` /
+    /// `resetRequest` (client) the expired ones. The snapshot never
+    /// touches the live table during iteration, so `drain` /
+    /// `openRequest` may interleave safely.
     pub fn openRequestStreams(self: *const Session) OpenRequestStreamIterator {
-        return .{ .session = self, .inner = self.streams.iterator() };
+        var out = OpenRequestStreamIterator{};
+        var it = self.streams.iterator();
+        while (it.next()) |entry| {
+            const state = entry.value_ptr.*;
+            if (!self.isOpenRequestState(state)) continue;
+            if (out.len == out.streams.len) {
+                out.truncated = true;
+                break;
+            }
+            out.streams[out.len] = .{
+                .stream_id = state.id,
+                .last_event_us = state.last_event_us,
+            };
+            out.len += 1;
+        }
+        return out;
     }
 
     pub fn lastCloseError(self: *const Session) ?errors_mod.ConnectionError {
@@ -3501,6 +3537,13 @@ pub const Session = struct {
     }
 
     pub fn drain(self: *Session, events: *std.ArrayList(Event)) Error!void {
+        // Re-entrancy latch: the observability trace callback runs
+        // synchronously mid-drain (stream state mid-mutation), so a
+        // callback that calls back into drain would corrupt the
+        // session. The nested drain is refused explicitly.
+        if (self.in_drain) return Error.ReentrantDrain;
+        self.in_drain = true;
+        defer self.in_drain = false;
         var budget = self.drainBudget();
         try self.drainConnectionEvents(events, &budget);
         try self.drainDatagrams(events, &budget);
@@ -6558,6 +6601,13 @@ pub const Session = struct {
 
     fn trace(self: *Session, event: observability_mod.TraceEvent) void {
         self.metrics_counters.observe(event);
+        // A trace emitted from inside the user's own emit callback is
+        // suppressed — the callback runs arbitrary user code mid-drain
+        // and nested emits would recurse (see the drain re-entrancy
+        // latch for the harder failure mode).
+        if (self.in_trace_callback) return;
+        self.in_trace_callback = true;
+        defer self.in_trace_callback = false;
         self.config.observability.emit(event);
     }
 

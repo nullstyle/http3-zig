@@ -274,7 +274,9 @@ fn readEncoderStringAlloc(
     const huffman_encoded = (src[pos.*] & huffman_mask) != 0;
     const len = try decodeEncoderInteger(src[pos.*..], prefix_bits);
     pos.* += len.bytes_read;
-    const len_usize: usize = @intCast(len.value);
+    // Checked cast: on 32-bit targets a wire varint can exceed usize —
+    // such a string can never be satisfied by any buffer.
+    const len_usize = std.math.cast(usize, len.value) orelse return error.InsufficientBytes;
     if (src.len - pos.* < len_usize) return error.InsufficientBytes;
     const encoded = src[pos.* .. pos.* + len_usize];
     pos.* += len_usize;

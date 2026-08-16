@@ -291,6 +291,7 @@ pub fn codeForError(err: anyerror) u64 {
         error.InsertCountOverflow,
         error.ReferenceCountOverflow,
         error.InvalidRole,
+        error.ReentrantDrain,
         error.MissingStream,
         error.WrongMessageKind,
         => protocol.ErrorCode.internal_error,

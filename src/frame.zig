@@ -1,5 +1,6 @@
 //! HTTP/3 frame codec.
 
+const std = @import("std");
 const quic = @import("quic");
 const protocol = @import("protocol.zig");
 const settings_mod = @import("settings.zig");
@@ -70,7 +71,6 @@ pub fn peekHeader(src: []const u8) ?Header {
 }
 
 test "peekHeader reads type+length without the payload; null when incomplete" {
-    const std = @import("std");
     var buf: [16]u8 = undefined;
     var n: usize = 0;
     n += try varint.encode(buf[n..], protocol.FrameType.headers);
@@ -181,7 +181,10 @@ pub fn decode(src: []const u8) Error!Decoded {
     pos += typ_dec.bytes_read;
     const len_dec = try varint.decode(src[pos..]);
     pos += len_dec.bytes_read;
-    const len: usize = @intCast(len_dec.value);
+    // Checked cast: on 32-bit targets a wire varint can exceed usize —
+    // such a frame can never be satisfied by any buffer, so it is a
+    // frame error rather than a panic.
+    const len = std.math.cast(usize, len_dec.value) orelse return Error.ValueTooLarge;
     if (src.len - pos < len) return Error.InsufficientBytes;
     const payload = src[pos .. pos + len];
     pos += len;
@@ -229,7 +232,6 @@ fn decodeSingleVarintPayload(payload: []const u8) Error!u64 {
 }
 
 test "DATA frame round-trip" {
-    const std = @import("std");
     var buf: [64]u8 = undefined;
     const n = try encode(&buf, .{ .data = "hello" });
     const d = try decode(buf[0..n]);
@@ -241,7 +243,6 @@ test "DATA frame round-trip" {
 }
 
 test "frame iterator walks concatenated frames" {
-    const std = @import("std");
     var buf: [128]u8 = undefined;
     var pos: usize = 0;
     pos += try encode(buf[pos..], .{ .headers = "abc" });

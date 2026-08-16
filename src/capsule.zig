@@ -55,7 +55,9 @@ pub fn decode(src: []const u8) Error!Decoded {
     const len_dec = try varint.decode(src[pos..]);
     pos += len_dec.bytes_read;
 
-    const value_len: usize = @intCast(len_dec.value);
+    // Checked cast: on 32-bit targets a wire varint can exceed usize —
+    // such a capsule can never be satisfied by any buffer.
+    const value_len = std.math.cast(usize, len_dec.value) orelse return error.InsufficientBytes;
     if (src.len - pos < value_len) return error.InsufficientBytes;
     return .{
         .capsule = .{

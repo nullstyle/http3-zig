@@ -725,7 +725,9 @@ fn readStringAlloc(
     const huffman_encoded = (src[pos.*] & huffman_mask) != 0;
     const len = try integer.decode(src[pos.*..], prefix_bits);
     pos.* += len.bytes_read;
-    const len_usize: usize = @intCast(len.value);
+    // Checked cast: on 32-bit targets a wire varint can exceed usize —
+    // such a string can never be satisfied by the section buffer.
+    const len_usize = std.math.cast(usize, len.value) orelse return Error.MalformedFieldSection;
     if (src.len - pos.* < len_usize) return Error.MalformedFieldSection;
     const encoded = src[pos.* .. pos.* + len_usize];
     pos.* += len_usize;
@@ -765,14 +767,14 @@ fn decodeStaticOnlyFieldSection(
             if ((first & 0x40) == 0) return Error.DynamicTableUnsupported;
             const index = try integer.decode(src[pos..], 6);
             pos += index.bytes_read;
-            const entry = static_table.get(@intCast(index.value)) orelse return Error.InvalidStaticIndex;
+            const entry = static_table.get(std.math.cast(usize, index.value) orelse return Error.InvalidStaticIndex) orelse return Error.InvalidStaticIndex;
             try appendCopiedField(&fields, allocator, &budget, entry.name, entry.value, false);
         } else if ((first & 0xc0) == 0x40) {
             if ((first & 0x10) == 0) return Error.DynamicTableUnsupported;
             const sensitive = (first & 0x20) != 0;
             const index = try integer.decode(src[pos..], 4);
             pos += index.bytes_read;
-            const entry = static_table.get(@intCast(index.value)) orelse return Error.InvalidStaticIndex;
+            const entry = static_table.get(std.math.cast(usize, index.value) orelse return Error.InvalidStaticIndex) orelse return Error.InvalidStaticIndex;
             try appendCopiedNameField(
                 &fields,
                 allocator,
