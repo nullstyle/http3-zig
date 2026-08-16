@@ -2,6 +2,7 @@ name: wt-interop
 
 on:
   push:
+    branches: [main]
   schedule:
     # Sunday 06:30 UTC — keep the weekly cadence as a backstop so a
     # quiet branch still gets exercised. Per-push runs are the

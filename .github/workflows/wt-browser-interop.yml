@@ -2,6 +2,7 @@ name: wt-browser-interop
 
 on:
   push:
+    branches: [main]
   schedule:
     # Sunday 08:30 UTC, after the H3 interop cadence.
     - cron: "30 8 * * 0"

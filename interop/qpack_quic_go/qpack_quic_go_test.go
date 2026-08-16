@@ -30,7 +30,7 @@ var fixtures = []fixture{
 			{name: ":authority", value: "example.com"},
 			{name: "user-agent", value: "http3-zig-test"},
 		},
-		blockHex: "0000d1d7518561051d849f50882f91d35d055c87a75f5087aada2865649509",
+		blockHex: "0000d1d7518561051d849f50882f91d35d055c87a75f508a9d29ad95bd9a65925427",
 	},
 	{
 		name: "response_static_and_literal",

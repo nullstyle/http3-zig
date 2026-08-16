@@ -3,6 +3,8 @@ name: h3-interop
 on:
   push:
     branches: [main]
+  pull_request:
+    branches: [main]
   schedule:
     # Sunday 07:30 UTC, after the WT matrix cadence but before nightly fuzz.
     - cron: "30 7 * * 0"
@@ -172,3 +174,24 @@ jobs:
           path: ${{ runner.temp }}/external-h3
           if-no-files-found: ignore
           retention-days: 14
+
+  # QPACK cross-implementation check: the Go harness decodes field
+  # sections the in-tree QPACK encoder produced (and vice versa) against
+  # quic-go's qpack package. Previously only runnable locally via
+  # `just qpack-interop`; folding it into the per-push/weekly cadence
+  # catches encoder/decoder drift in both directions.
+  qpack-go:
+    name: QPACK interop (http3-zig fixtures vs quic-go)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout http3-zig
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          cache-dependency-path: interop/qpack_quic_go/go.sum
+
+      - name: Run the Go QPACK cross-check
+        run: cd interop/qpack_quic_go && go test -v

@@ -448,3 +448,48 @@ test "public API smoke: stable embedding surface compiles" {
     try std.testing.expectEqualStrings("h3", H.protocol.alpn_h3);
     try std.testing.expect(std.mem.indexOfScalar(u8, H.version(), '.') != null);
 }
+
+test "public API smoke: core signatures are pinned" {
+    // @TypeOf pins: arity, parameter, and return-type drift on the core
+    // embedding surface fails the build here instead of compiling
+    // silently (the symbol-existence checks above can't see it).
+    const H = http3_zig;
+    comptime {
+        try std.testing.expectEqual(
+            @TypeOf(H.Session.init),
+            fn (std.mem.Allocator, H.protocol.Role, *H.quic.Connection, H.SessionConfig) H.Session,
+        );
+        try std.testing.expectEqual(
+            @TypeOf(H.Session.drain),
+            fn (*H.Session, *std.ArrayList(H.session.Event)) H.session.Error!void,
+        );
+        try std.testing.expectEqual(
+            @TypeOf(H.Session.openRequest),
+            fn (*H.Session, []const H.FieldLine) H.session.Error!u64,
+        );
+        try std.testing.expectEqual(
+            @TypeOf(H.Session.close),
+            fn (*H.Session, u64, []const u8) void,
+        );
+        try std.testing.expectEqual(
+            @TypeOf(H.Session.sendGoaway),
+            fn (*H.Session, u64) H.session.Error!void,
+        );
+        try std.testing.expectEqual(
+            @TypeOf(H.Session.openRequestStreams),
+            fn (*const H.Session) H.OpenRequestStreamIterator,
+        );
+        try std.testing.expectEqual(
+            @TypeOf(H.Client.init),
+            fn (*H.Session) H.Client,
+        );
+        try std.testing.expectEqual(
+            @TypeOf(H.Client.startRequest),
+            fn (*H.Client, std.mem.Allocator, H.RequestHeadOptions) H.session.Error!H.RequestWriter,
+        );
+        try std.testing.expectEqual(
+            @TypeOf(H.Server.init),
+            fn (*H.Session) H.Server,
+        );
+    }
+}
