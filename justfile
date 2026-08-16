@@ -86,7 +86,8 @@ wt-browser-firefox:
     bash interop/browser_wt/run_firefox.sh
 
 fmt:
-    zig fmt build.zig src tests interop examples fuzz
+    # Mirror the CI gate exactly: every tracked .zig/.zon file.
+    git ls-files -z '*.zig' '*.zon' | xargs -0 zig fmt --check
 
 # Compile every out-of-test binary target. `zig build test` does NOT
 # build these, so a signature change in src/ can pass the whole test
@@ -96,5 +97,8 @@ fmt:
 build-all:
     zig build external-wt-client external-wt-server external-h3-client curl-h3-server
     zig build examples
+    zig build fuzz-codecs fuzz-corpus fuzz-wt-interleaved seed-fuzz-corpus
+    zig build qpack-dynamic-fixtures install-wt-interop-matrix
+    zig build bench-build mem-profile-build wt-load-build
 
 check: fmt test build-all

@@ -66,6 +66,14 @@ jobs:
         timeout-minutes: 30
         run: zig build test --summary all
 
+      # `zig build test` does NOT compile the out-of-test binaries
+      # (examples/interop/fuzz); a signature change in src/ can pass
+      # the whole suite and still ship broken binaries (the 5ee87e1
+      # regression). The release gate compiles them all.
+      - name: zig build examples (out-of-test binaries gate)
+        timeout-minutes: 20
+        run: zig build examples --summary all
+
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

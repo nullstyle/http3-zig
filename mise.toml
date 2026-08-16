@@ -1,9 +1,10 @@
 [tools]
-# Zig 0.17 is unreleased, so we track master — matching quic-zig (the
-# transport dependency), which http3-zig must build against. Last build
-# verified green (test + ReleaseSafe + conformance + mem-profile):
-# 0.17.0-dev.1683+5ceec001b, the floor recorded in build.zig.zon's
-# minimum_zig_version. Bump both together after re-verifying on a newer
-# master.
-zig = "master"
+# Zig 0.17 is unreleased, so the toolchain pin is an exact dev build
+# rather than a floating master — builds must be reproducible, and a
+# floating toolchain let any upstream commit break local and CI
+# together. The pinned build is the one verified green (test +
+# ReleaseSafe + conformance + mem-profile) and matches the floor
+# recorded in build.zig.zon's minimum_zig_version. Bump both together
+# after re-verifying on a newer master.
+zig = "0.17.0-dev.1683+5ceec001b"
 just = "1.49.0"

@@ -113,8 +113,9 @@ jobs:
       - name: zig build test
         run: zig build test -Doptimize=${{ matrix.optimize }} -Dtarget=${{ matrix.target }} --summary all
 
-      - name: zig build conformance
-        run: zig build conformance -Doptimize=${{ matrix.optimize }} -Dtarget=${{ matrix.target }} --summary all
+      # `zig build test` already depends on run_conformance_tests —
+      # the standalone conformance step doubled the RFC-suite runtime
+      # across the matrix and was removed.
 
       - name: zig build run-examples
         if: matrix.os == 'ubuntu-latest' && matrix.optimize == 'Debug'

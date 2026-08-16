@@ -48,6 +48,17 @@ pub fn build(b: *std.Build) void {
     http3_zig_mod.addImport("boringssl", boringssl_mod);
     http3_zig_mod.addImport("build_options", h3_build_options_mod);
 
+    // Compile the library as an artifact so a bare `zig build`
+    // actually compiles the library (and installs libhttp3_zig.a to
+    // zig-out/lib) — previously the default install step was empty
+    // and reported success without compiling anything.
+    const lib = b.addLibrary(.{
+        .name = "http3_zig",
+        .root_module = http3_zig_mod,
+        .linkage = .static,
+    });
+    b.installArtifact(lib);
+
     // Export the exact module instances http3_zig itself links against.
     // The public API is quic-typed (`Session.init` takes a
     // `*quic.Connection`; TLS helpers take `boringssl.tls.Context`),
