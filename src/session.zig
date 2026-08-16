@@ -3581,6 +3581,22 @@ pub const Session = struct {
                 const rr = try self.quic.streamReadFin(stream_id, tmp);
                 if (rr.fin) state.quic_recv_fin_seen = true;
                 if (rr.n == 0) break;
+                // Enforce declared-length caps as soon as the frame header
+                // is fully buffered, before the payload lands in rx — a
+                // peer declaring a huge frame must not pin rx up to the
+                // QUIC flow-control window (see checkIncomingFrameLength).
+                self.checkIncomingFrameHeader(state, tmp[0..rr.n]) catch |err| {
+                    if (errors_mod.classify(err).scope == .stream) {
+                        if (self.messageStreamKind(state)) |kind| {
+                            if (kind != .push) {
+                                self.failMessageStream(state, kind, err, events, &budget);
+                                return;
+                            }
+                        }
+                    }
+                    self.closeForError(err);
+                    return err;
+                };
                 try state.rx.appendSlice(self.allocator, tmp[0..rr.n]);
             }
 
@@ -4476,6 +4492,83 @@ pub const Session = struct {
     /// large, and bounded by QUIC flow control plus the application body
     /// budget. Callers peek the header via `frame_mod.peekHeader` and call
     /// this before `frame_mod.decode`.
+    /// The message kind for a stream that carries HTTP messages — either
+    /// already classified or inferable from stream shape and role. Null
+    /// for control, QPACK, WT, unknown, and pre-classification streams.
+    fn messageStreamKind(self: *const Session, state: *const StreamState) ?message_mod.Kind {
+        if (state.message_decoder) |decoder| return decoder.kind;
+        if (stream_mod.isUnidirectional(state.id)) return null;
+        if (state.bidi_kind == .webtransport) return null;
+        if (state.control_validator != null) return null;
+        if (!stream_mod.isClientInitiated(state.id)) return null;
+        return switch (self.role) {
+            .server => .request,
+            .client => .response,
+        };
+    }
+
+    /// Enforces the declared-length caps (checkIncomingFrameLength) as
+    /// soon as a frame header is fully buffered — BEFORE its payload is
+    /// appended to rx — so a peer cannot pin rx up to the QUIC
+    /// flow-control window by declaring a huge frame. Skips streams whose
+    /// leading bytes are not HTTP frames (WT marker/type, QPACK streams,
+    /// unknown uni types) and waits out the leading varints (bounded to
+    /// a few bytes). Once rx already holds 32 bytes, processState's own
+    /// peekHeader path owns the check.
+    fn checkIncomingFrameHeader(
+        self: *const Session,
+        state: *const StreamState,
+        incoming: []const u8,
+    ) Error!void {
+        if (state.rx.items.len >= 32) return;
+
+        var buf: [32]u8 = undefined;
+        var n: usize = 0;
+        const rx_take = @min(state.rx.items.len, buf.len);
+        @memcpy(buf[0..rx_take], state.rx.items[0..rx_take]);
+        n = rx_take;
+        const in_take = @min(incoming.len, buf.len - n);
+        @memcpy(buf[n..][0..in_take], incoming[0..in_take]);
+        n += in_take;
+        const src = buf[0..n];
+        if (src.len == 0) return;
+
+        var offset: usize = 0;
+        if (stream_mod.isUnidirectional(state.id)) {
+            const kind = if (state.uni_kind) |k| k else blk: {
+                const d = varint.decode(src) catch return;
+                break :blk stream_mod.kindFromType(d.value);
+            };
+            switch (kind) {
+                .control => {
+                    offset = if (state.uni_kind == null) (varint.decode(src) catch return).bytes_read else 0;
+                },
+                .push => {
+                    if (state.uni_kind == null) {
+                        const d = varint.decode(src) catch return;
+                        const pid = varint.decode(src[d.bytes_read..]) catch return;
+                        offset = d.bytes_read + pid.bytes_read;
+                    } else if (state.push_id == null) {
+                        const pid = varint.decode(src) catch return;
+                        offset = pid.bytes_read;
+                    }
+                },
+                .qpack_encoder, .qpack_decoder, .webtransport_uni, .unknown => return,
+            }
+        } else {
+            // WT bidi streams begin with the 0x41 marker, not a frame
+            // header; classify conservatively before processBidiState
+            // has had a chance to set bidi_kind.
+            if (state.bidi_kind == .webtransport) return;
+            if (src[0] == protocol.FrameType.webtransport_bidi_stream) return;
+        }
+
+        if (offset > src.len) return;
+        if (frame_mod.peekHeader(src[offset..])) |hdr| {
+            try self.checkIncomingFrameLength(hdr.frame_type, hdr.length);
+        }
+    }
+
     fn checkIncomingFrameLength(self: *const Session, frame_type: u64, declared_len: u64) Error!void {
         if (frame_type == protocol.FrameType.data) return;
 
@@ -4742,6 +4835,14 @@ pub const Session = struct {
         while (state.rx.items.len > 0) {
             if (frame_mod.peekHeader(state.rx.items)) |hdr| {
                 self.checkIncomingFrameLength(hdr.frame_type, hdr.length) catch |err| {
+                    if (errors_mod.classify(err).scope == .stream) {
+                        if (self.messageStreamKind(state)) |kind| {
+                            if (kind != .push) {
+                                self.failMessageStream(state, kind, err, events, budget);
+                                return;
+                            }
+                        }
+                    }
                     self.closeForError(err);
                     return err;
                 };
@@ -4756,6 +4857,12 @@ pub const Session = struct {
                 .headers => |block| blk: {
                     if (self.config.max_field_section_size) |max| {
                         if (block.len > max) {
+                            if (self.messageStreamKind(state)) |kind| {
+                                if (kind != .push) {
+                                    self.failMessageStream(state, kind, error.HeaderSectionTooLarge, events, budget);
+                                    return;
+                                }
+                            }
                             self.closeForError(error.HeaderSectionTooLarge);
                             return error.HeaderSectionTooLarge;
                         }
@@ -4853,10 +4960,7 @@ pub const Session = struct {
                         self.closeForError(err);
                         return err;
                     };
-                    if (messageFrameEventOwnedPayloadBytes(decoded.frame)) |owned_payload_bytes| {
-                        try budget.reserve(owned_payload_bytes);
-                    }
-                    break :blk decoder.observe(self.allocator, decoded.frame) catch |err| {
+                    const observed = decoder.observe(self.allocator, decoded.frame) catch |err| {
                         if (errors_mod.classify(err).scope == .stream and decoder.kind != .push) {
                             self.failMessageStream(state, decoder.kind, err, events, budget);
                             return;
@@ -4864,6 +4968,24 @@ pub const Session = struct {
                         self.closeForError(err);
                         return err;
                     };
+                    // The WT CONNECT body path (capsule ingestion) reserves
+                    // per emitted capsule event inside
+                    // ingestWebTransportCapsuleBytes; reserving the raw DATA
+                    // payload here would falsely trip max_event_payload_size
+                    // on a large capsule batch. Oversized plain DATA is
+                    // split into chunked events at emission, which reserves
+                    // per chunk — reserving the whole payload here would
+                    // re-throw EventPayloadTooLarge every drain and
+                    // livelock the stream.
+                    const wt_body = self.isWebTransportConnectBody(state, decoder.kind);
+                    const oversize = budget.max_payload_size != null and
+                        (messageFrameEventOwnedPayloadBytes(decoded.frame) orelse 0) > budget.max_payload_size.?;
+                    if (!wt_body and !oversize) {
+                        if (messageFrameEventOwnedPayloadBytes(decoded.frame)) |owned_payload_bytes| {
+                            try budget.reserve(owned_payload_bytes);
+                        }
+                    }
+                    break :blk observed;
                 },
             };
             if (maybe_event) |message_event| {
@@ -4880,6 +5002,23 @@ pub const Session = struct {
                         // The CONNECT stream was message-error aborted:
                         // stop processing it (no compact — rx is dead).
                         .stream_failed => return,
+                    }
+                } else if (message_event == .data and
+                    budget.max_payload_size != null and
+                    message_event.data.len > budget.max_payload_size.?)
+                {
+                    // A single DATA frame larger than max_event_payload_size
+                    // is split into chunked events so the stream makes
+                    // progress instead of livelocking against the per-event
+                    // cap (each drain would re-reserve and re-throw).
+                    var pos: usize = 0;
+                    while (pos < message_event.data.len) {
+                        const chunk_len = @min(message_event.data.len - pos, budget.max_payload_size.?);
+                        try budget.reserve(chunk_len);
+                        try self.appendReservedMessageEvent(events, state.id, decoder.kind, .{
+                            .data = message_event.data[pos .. pos + chunk_len],
+                        });
+                        pos += chunk_len;
                     }
                 } else {
                     try self.appendReservedMessageEvent(events, state.id, decoder.kind, message_event);
@@ -5071,8 +5210,22 @@ pub const Session = struct {
             return;
         }
 
+        // RFC 9114 §7.1: a cleanly terminated stream whose last frame is
+        // truncated is a connection error of type H3_FRAME_ERROR.
+        // processState consumes every complete frame, so rx residue at
+        // FIN is a partial frame (or, on push streams, a partial
+        // push-id varint).
+        if (state.message_decoder != null and state.rx.items.len > 0) {
+            self.closeForError(error.InsufficientBytes);
+            return error.InsufficientBytes;
+        }
+
         const message_kind = if (state.message_decoder) |*decoder| blk: {
             decoder.finish() catch |err| {
+                if (errors_mod.classify(err).scope == .stream and decoder.kind != .push) {
+                    self.failMessageStream(state, decoder.kind, err, events, budget);
+                    return;
+                }
                 self.closeForError(err);
                 return err;
             };

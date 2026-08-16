@@ -116,7 +116,9 @@ test "session rejects an oversized HEADERS declared length before buffering the 
     // Server enforces a 64 KiB field-section cap. Pre-0.4-hardening this cap
     // only fired AFTER the whole HEADERS payload was reassembled, so a peer
     // could pin up to the QUIC stream window in rx first. The cap must now be
-    // enforced on the DECLARED length, before any payload arrives.
+    // enforced on the DECLARED length, before any payload arrives — and, per
+    // RFC 9114 §4.1.2, the oversized message is refused per-stream rather
+    // than killing the connection.
     var pair: H3Pair = undefined;
     try pair.initStarted(allocator, .{}, .{ .max_field_section_size = 65536 });
     defer pair.deinit();
@@ -129,9 +131,8 @@ test "session rejects an oversized HEADERS declared length before buffering the 
     try writeVarint(&pair.client, stream_id, http3_zig.protocol.FrameType.headers);
     try writeVarint(&pair.client, stream_id, 200_000);
 
-    try expectPairH3Error(allocator, &pair, error.HeaderSectionTooLarge);
-    try std.testing.expectEqual(http3_zig.session.ShutdownState.closed, pair.server_h3.shutdownState());
-    try expectLastCloseCode(&pair.server_h3, http3_zig.protocol.ErrorCode.message_error);
+    try expectServerRequestRejected(allocator, &pair, stream_id, http3_zig.protocol.ErrorCode.message_error);
+    try std.testing.expectEqual(http3_zig.session.ShutdownState.active, pair.server_h3.shutdownState());
 }
 
 test "session rejects an oversized non-DATA frame via max_incoming_frame_length [DoS]" {
@@ -475,9 +476,10 @@ test "session enforces max field section size on decoded request headers" {
     try std.testing.expect(block_n > 4);
     try writeFrame(&pair.client, stream_id, .{ .headers = block[0..block_n] });
 
-    try expectPairH3Error(allocator, &pair, error.HeaderSectionTooLarge);
-    try std.testing.expectEqual(http3_zig.session.ShutdownState.closed, pair.server_h3.shutdownState());
-    try expectLastCloseCode(&pair.server_h3, http3_zig.protocol.ErrorCode.message_error);
+    // RFC 9114 §4.1.2 / §4.2.2: the oversized message is refused
+    // per-stream with H3_MESSAGE_ERROR; the connection survives.
+    try expectServerRequestRejected(allocator, &pair, stream_id, http3_zig.protocol.ErrorCode.message_error);
+    try std.testing.expectEqual(http3_zig.session.ShutdownState.active, pair.server_h3.shutdownState());
 }
 
 test "session enforces decoded field-line count budget" {
