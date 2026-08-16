@@ -49,6 +49,18 @@ pub fn validateTrailers(fields: []const FieldLine) Error!void {
 /// Errors:
 /// - `InvalidContentLength` if the value is non-decimal, negative, overflows
 ///   u64, or if multiple `content-length` headers carry different values.
+/// True when the request method is HEAD (RFC 9110 §9.3.2): the
+/// corresponding response never has content, so a non-zero
+/// Content-Length on it is legal even with zero DATA bytes.
+pub fn isHeadRequest(fields: []const FieldLine) bool {
+    for (fields) |field| {
+        if (std.mem.eql(u8, field.name, ":method")) {
+            return std.mem.eql(u8, field.value, "HEAD");
+        }
+    }
+    return false;
+}
+
 pub fn parseContentLength(fields: []const FieldLine) Error!?u64 {
     var seen: ?u64 = null;
     for (fields) |field| {

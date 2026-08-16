@@ -45,6 +45,10 @@ pub const EncodeOptions = struct {
 pub const DecodeOptions = struct {
     max_field_section_size: ?u64 = null,
     enable_connect_protocol: bool = false,
+    /// Response decoder belongs to a HEAD request (RFC 9110 §9.3.2):
+    /// the response never has content, so a non-zero Content-Length
+    /// is legal even with zero DATA bytes.
+    is_head_request: bool = false,
 };
 
 pub const Event = union(enum) {
@@ -162,6 +166,11 @@ pub const Decoder = struct {
     /// initial HEADERS section. Compared to `expected_body_len` at trailer
     /// arrival and at `finish()`.
     body_bytes: u64 = 0,
+    /// False for responses that are defined as never having content
+    /// (RFC 9114 §4.1.2): 204/304 statuses and responses to HEAD
+    /// requests. The content-length equality checks are skipped for
+    /// them — a non-zero Content-Length with no DATA is legal.
+    has_content: bool = true,
 
     pub fn init(kind: Kind, options: DecodeOptions) Decoder {
         return .{
@@ -186,8 +195,10 @@ pub const Decoder = struct {
                 if (self.seen_trailers) return Error.DataAfterTrailers;
                 self.body_bytes = std.math.add(u64, self.body_bytes, bytes.len) catch
                     return Error.ContentLengthMismatch;
-                if (self.expected_body_len) |expected| {
-                    if (self.body_bytes > expected) return Error.ContentLengthMismatch;
+                if (self.has_content) {
+                    if (self.expected_body_len) |expected| {
+                        if (self.body_bytes > expected) return Error.ContentLengthMismatch;
+                    }
                 }
                 return .{ .data = bytes };
             },
@@ -270,6 +281,7 @@ pub const Decoder = struct {
                 return .{ .interim_headers = fields };
             }
 
+            self.has_content = messageHasContent(self.kind, self.options, fields);
             self.expected_body_len = try headers_mod.parseContentLength(fields);
             self.seen_headers = true;
             return .{ .headers = fields };
@@ -277,9 +289,12 @@ pub const Decoder = struct {
         try headers_mod.validateTrailers(fields);
         // RFC 9114 §4.1.2: at trailer arrival, the body is complete. If a
         // content-length was advertised, the accumulated body length must
-        // match exactly.
-        if (self.expected_body_len) |expected| {
-            if (self.body_bytes != expected) return Error.ContentLengthMismatch;
+        // match exactly — except for responses defined as never having
+        // content, where a non-zero Content-Length is legal.
+        if (self.has_content) {
+            if (self.expected_body_len) |expected| {
+                if (self.body_bytes != expected) return Error.ContentLengthMismatch;
+            }
         }
         self.seen_trailers = true;
         return .{ .trailers = fields };
@@ -306,9 +321,13 @@ pub const Decoder = struct {
         if (!self.seen_headers) return Error.MissingHeaders;
         // RFC 9114 §4.1.2: an under-length body (DATA bytes < advertised
         // content-length) is just as malformed as an over-length body. The
-        // over-length case is already caught at observe-time.
-        if (self.expected_body_len) |expected| {
-            if (self.body_bytes != expected) return Error.ContentLengthMismatch;
+        // over-length case is already caught at observe-time. Responses
+        // defined as never having content (204/304, HEAD) skip the check:
+        // a non-zero Content-Length with no DATA is legal for them.
+        if (self.has_content) {
+            if (self.expected_body_len) |expected| {
+                if (self.body_bytes != expected) return Error.ContentLengthMismatch;
+            }
         }
     }
 };
@@ -377,6 +396,23 @@ fn frameContext(kind: Kind) stream_mod.FrameContext {
 /// pseudo-headers per RFC 9114 §4.3.2 puts `:status` at the front of
 /// the section; we accept it anywhere among the pseudo-headers but
 /// require its first character to be ASCII '1'.
+/// RFC 9114 §4.1.2 / RFC 9110: responses defined as never having
+/// content — 204/304 statuses and responses to HEAD requests — may
+/// carry a non-zero Content-Length with zero DATA bytes.
+fn messageHasContent(kind: Kind, options: DecodeOptions, fields: []const qpack.FieldLine) bool {
+    if (kind != .response) return true;
+    if (options.is_head_request) return false;
+    for (fields) |field| {
+        if (std.mem.eql(u8, field.name, ":status")) {
+            if (std.mem.eql(u8, field.value, "204") or std.mem.eql(u8, field.value, "304")) {
+                return false;
+            }
+            break;
+        }
+    }
+    return true;
+}
+
 fn isInterim(fields: []const qpack.FieldLine) bool {
     for (fields) |field| {
         if (std.mem.eql(u8, field.name, ":status")) {

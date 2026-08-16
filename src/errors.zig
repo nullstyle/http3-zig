@@ -242,6 +242,10 @@ pub fn codeForError(err: anyerror) u64 {
         error.InconsistentPushPromise => protocol.ErrorCode.general_protocol_error,
         error.InvalidDatagramStream => protocol.ErrorCode.id_error,
         error.RequestBlockedByGoaway => protocol.ErrorCode.request_rejected,
+        // RFC 9114 §4.1 ¶14: a client-initiated stream that terminates
+        // without a complete request aborts its response stream with
+        // H3_REQUEST_INCOMPLETE.
+        error.RequestIncomplete => protocol.ErrorCode.request_incomplete,
         error.PushNotEnabled,
         error.PushLimitExceeded,
         => protocol.ErrorCode.id_error,

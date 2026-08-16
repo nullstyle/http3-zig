@@ -306,9 +306,15 @@ pub const Config = struct {
     /// Optional cap on decoded QPACK field-line count per field section.
     max_field_lines: ?usize = null,
     /// Optional cap on decoded field names/values plus field-line storage per
-    /// QPACK field section. This is separate from `max_field_section_size`,
-    /// which limits encoded HEADERS payload bytes.
+    /// QPACK field section. Only consulted when `max_field_section_size` is
+    /// unset — RFC 9114 §4.2.2 ties the settings-facing limit to DECODED
+    /// bytes (name + value + 32 per field), so `max_field_section_size`
+    /// drives the decode budget whenever it is set.
     max_decoded_field_section_bytes: ?usize = null,
+    /// Advertised as SETTINGS_MAX_FIELD_SECTION_SIZE and enforced per
+    /// RFC 9114 §4.2.2 on the DECODED field section (name + value + 32
+    /// bytes per field). The read-loop declared-length pre-gate applies
+    /// 2x slack because Huffman encoding can expand a section ~1.6x.
     max_field_section_size: ?u64 = null,
     /// Optional cap on the DECLARED length of an incoming non-DATA HTTP/3
     /// frame (SETTINGS/GOAWAY/CANCEL_PUSH/MAX_PUSH_ID/PRIORITY_UPDATE and
@@ -1828,6 +1834,12 @@ pub const Session = struct {
 
         _ = try self.quic.openNextBidi();
         const state = try self.ensureMessageState(id, .response, .request);
+        // RFC 9114 §4.1.2 / RFC 9110 §9.3.2: a response to HEAD never
+        // has content — mark the decoder so a non-zero Content-Length
+        // with zero DATA bytes is accepted instead of rejected.
+        if (headers_mod.isHeadRequest(fields)) {
+            state.message_decoder.?.options.is_head_request = true;
+        }
         const encoder = try self.ensureEncoder(state, .request);
         try self.writeHeadersWithEncoder(id, encoder, fields);
         self.trace(.{
@@ -4590,17 +4602,20 @@ pub const Session = struct {
     fn checkIncomingFrameLength(self: *const Session, frame_type: u64, declared_len: u64) Error!void {
         if (frame_type == protocol.FrameType.data) return;
 
-        // HEADERS / PUSH_PROMISE: the field section cannot exceed
-        // max_field_section_size; enforce it on the declared length here,
-        // matching the post-decode guard on decodeFieldSectionForStream.
+        // HEADERS / PUSH_PROMISE: the field section size limit applies
+        // to the DECODED size (RFC 9114 §4.2.2: name + value + 32 bytes
+        // per field), enforced exactly by the QPACK decode budget. The
+        // declared-length check here is only a receive-buffer DoS
+        // pre-gate, so it allows 2x slack: Huffman encoding can expand
+        // a section to ~1.6x its decoded size.
         if (frame_type == protocol.FrameType.headers) {
             if (self.config.max_field_section_size) |max| {
-                if (declared_len > max) return Error.HeaderSectionTooLarge;
+                if (declared_len > max *| 2) return Error.HeaderSectionTooLarge;
             }
         } else if (frame_type == protocol.FrameType.push_promise) {
             if (self.config.max_field_section_size) |max| {
                 // payload = push_id varint (<= 8 bytes) + field section.
-                if (declared_len > max +| 8) return Error.HeaderSectionTooLarge;
+                if (declared_len > max *| 2 +| 8) return Error.HeaderSectionTooLarge;
             }
         }
 
@@ -4873,18 +4888,12 @@ pub const Session = struct {
 
             const maybe_event = switch (decoded.frame) {
                 .headers => |block| blk: {
-                    if (self.config.max_field_section_size) |max| {
-                        if (block.len > max) {
-                            if (self.messageStreamKind(state)) |kind| {
-                                if (kind != .push) {
-                                    self.failMessageStream(state, kind, error.HeaderSectionTooLarge, events, budget);
-                                    return;
-                                }
-                            }
-                            self.closeForError(error.HeaderSectionTooLarge);
-                            return error.HeaderSectionTooLarge;
-                        }
-                    }
+                    // Note: the size limit is enforced on the DECODED
+                    // field section by the QPACK decode budget (RFC 9114
+                    // §4.2.2) — the encoded `block.len` is not the right
+                    // metric (Huffman can expand it ~1.6x) and is only
+                    // bounded here by the read-loop declared-length
+                    // pre-gate with 2x slack.
                     const decoded_fields = self.decodeFieldSectionForStream(state.id, block) catch |err| {
                         if (err == error.RequiredInsertCountNotReady) {
                             state.blocked_on_qpack = true;
@@ -5240,6 +5249,16 @@ pub const Session = struct {
 
         const message_kind = if (state.message_decoder) |*decoder| blk: {
             decoder.finish() catch |err| {
+                // RFC 9114 §4.1 ¶14: a request that terminates without
+                // a complete message aborts its response stream with
+                // H3_REQUEST_INCOMPLETE (MissingHeaders / under-length
+                // body at FIN), not H3_MESSAGE_ERROR.
+                if (self.role == .server and decoder.kind == .request and
+                    (err == error.MissingHeaders or err == error.ContentLengthMismatch))
+                {
+                    self.failMessageStream(state, decoder.kind, error.RequestIncomplete, events, budget);
+                    return;
+                }
                 if (errors_mod.classify(err).scope == .stream and decoder.kind != .push) {
                     self.failMessageStream(state, decoder.kind, err, events, budget);
                     return;
@@ -5560,9 +5579,18 @@ pub const Session = struct {
     }
 
     fn qpackDecodeOptions(self: *const Session) qpack.FieldSectionDecodeOptions {
+        // RFC 9114 §4.2.2: SETTINGS_MAX_FIELD_SECTION_SIZE limits the
+        // DECODED size (name + value + 32 bytes per field), so the
+        // decode budget is driven by max_field_section_size whenever it
+        // is set; max_decoded_field_section_bytes remains the fallback
+        // for callers that left the settings-facing knob unset.
+        const max_decoded: ?usize = if (self.config.max_field_section_size) |max|
+            std.math.cast(usize, max)
+        else
+            self.config.max_decoded_field_section_bytes;
         return .{
             .max_field_lines = self.config.max_field_lines,
-            .max_decoded_bytes = self.config.max_decoded_field_section_bytes,
+            .max_decoded_bytes = max_decoded,
         };
     }
 
@@ -6490,12 +6518,12 @@ pub const Session = struct {
     fn validatePriorityPushId(self: *const Session, push_id: u64) Error!void {
         const max_push_id = self.peer_max_push_id orelse return Error.InvalidPriorityTarget;
         if (push_id > max_push_id) return Error.InvalidPriorityTarget;
-        // RFC 9218 §7.2: PRIORITY_UPDATE for a push id the server hasn't
-        // promised yet (push_id >= self.next_push_id) is BUFFERED, not
-        // rejected. The hint persists in `push_priorities` and is
-        // consulted when `startPush` later assigns that id. We still
-        // reject `push_id > peer_max_push_id` because that's an
-        // out-of-bounds violation by the peer, independent of timing.
+        // RFC 9218 §7.2: a PRIORITY_UPDATE (0xF0701) MUST reference a
+        // promised push stream — a push id greater than the maximum or
+        // one that has not yet been promised is a connection error of
+        // type H3_ID_ERROR. (`push_priorities` still buffers hints for
+        // ids that ARE promised but whose push stream has not opened.)
+        if (push_id >= self.next_push_id) return Error.InvalidPriorityTarget;
     }
 
     fn stopReceivingPushIfOpen(self: *Session, push_id: u64) void {

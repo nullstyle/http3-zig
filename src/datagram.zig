@@ -55,6 +55,11 @@ pub fn encodeWithContext(
 
 pub fn decode(src: []const u8) Error!Decoded {
     const quarter = try varint.decode(src);
+    // RFC 9297 §2.1: the largest legal QUIC stream id is 2^62-1, so a
+    // Quarter Stream ID above 2^60-1 cannot map to a stream and MUST be
+    // an H3_DATAGRAM_ERROR (the session maps decode errors to it). The
+    // bound also keeps `quarter.value * 4` overflow-free.
+    if (quarter.value > (@as(u64, 1) << 60) - 1) return error.InvalidDatagramStream;
     const stream_id = quarter.value * 4;
     return .{
         .stream_id = stream_id,

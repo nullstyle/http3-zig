@@ -1247,6 +1247,76 @@ test "MUST accept body whose length matches content-length [RFC9114 §4.1.2 ¶?]
     try std.testing.expectEqual(@as(usize, 3), events.items.len);
 }
 
+// ---------------------------------------------------------------- §4.1.2 bodiless responses
+
+test "MUST accept non-zero content-length on a 204 response [RFC9114 §4.1.2 ¶?]" {
+    // §4.1.2: "A response that is defined as never having content, even
+    // when a Content-Length is present, can have a non-zero Content-Length
+    // header field even though no content is included in DATA frames."
+    const allocator = std.testing.allocator;
+    const fields = [_]FieldLine{
+        .{ .name = ":status", .value = "204" },
+        .{ .name = "content-length", .value = "10" },
+    };
+
+    var buf: [128]u8 = undefined;
+    var enc = MessageEncoder.init(.response, .{});
+    const pos = try enc.encodeHeaders(buf[0..], &fields);
+
+    var dec = MessageDecoder.init(.response, .{});
+    var events = std.ArrayList(message.Event).empty;
+    defer {
+        for (events.items) |e| e.deinit(allocator);
+        events.deinit(allocator);
+    }
+    try dec.observeBytes(allocator, buf[0..pos], &events);
+    try dec.finish();
+}
+
+test "MUST accept non-zero content-length on a 304 response [RFC9114 §4.1.2 ¶?]" {
+    const allocator = std.testing.allocator;
+    const fields = [_]FieldLine{
+        .{ .name = ":status", .value = "304" },
+        .{ .name = "content-length", .value = "42" },
+    };
+
+    var buf: [128]u8 = undefined;
+    var enc = MessageEncoder.init(.response, .{});
+    const pos = try enc.encodeHeaders(buf[0..], &fields);
+
+    var dec = MessageDecoder.init(.response, .{});
+    var events = std.ArrayList(message.Event).empty;
+    defer {
+        for (events.items) |e| e.deinit(allocator);
+        events.deinit(allocator);
+    }
+    try dec.observeBytes(allocator, buf[0..pos], &events);
+    try dec.finish();
+}
+
+test "MUST accept non-zero content-length on a HEAD response [RFC9114 §4.1.2 ¶?]" {
+    // RFC 9110 §9.3.2: a response to HEAD never has content, so the
+    // decoder is marked is_head_request and skips the equality check.
+    const allocator = std.testing.allocator;
+    const fields = [_]FieldLine{
+        .{ .name = ":status", .value = "200" },
+        .{ .name = "content-length", .value = "100" },
+    };
+
+    var buf: [128]u8 = undefined;
+    var enc = MessageEncoder.init(.response, .{});
+    const pos = try enc.encodeHeaders(buf[0..], &fields);
+
+    var dec = MessageDecoder.init(.response, .{ .is_head_request = true });
+    var events = std.ArrayList(message.Event).empty;
+    defer {
+        for (events.items) |e| e.deinit(allocator);
+        events.deinit(allocator);
+    }
+    try dec.observeBytes(allocator, buf[0..pos], &events);
+    try dec.finish();
+}
+
 // ---------------------------------------------------------------- §4.3.1 empty :authority
 
 test "MUST reject an explicitly-present empty :authority [RFC9114 §4.3.1 ¶?]" {

@@ -79,7 +79,10 @@ const DecodeBudget = struct {
         if (self.max_field_lines) |max| {
             if (self.field_lines >= max) return error.TooManyFieldLines;
         }
-        const field_bytes = @sizeOf(FieldLine) + name.len + value.len;
+        // RFC 9114 §4.2.2: the size of a field list counts the
+        // uncompressed name and value plus an overhead of 32 bytes per
+        // field — match the RFC's accounting exactly.
+        const field_bytes = 32 + name.len + value.len;
         if (self.max_decoded_bytes) |max| {
             if (field_bytes > max or self.decoded_bytes > max - field_bytes) {
                 return error.DecodedFieldSectionTooLarge;
@@ -822,6 +825,13 @@ fn decodeDynamicFieldSectionBody(
                 const entry = static_table.get(static_index) orelse return error.InvalidStaticIndex;
                 break :static .{ .name = entry.name, .value = entry.value };
             } else dynamic: {
+                // RFC 9204 §2.2.3: a reference to an entry with absolute
+                // index >= the declared Required Insert Count is invalid.
+                // Relative index r resolves to absolute Base - 1 - r.
+                if (index.value >= prefix.base) return error.InvalidDynamicIndex;
+                if (prefix.base - 1 - index.value >= prefix.required_insert_count) {
+                    return error.InvalidDynamicIndex;
+                }
                 const entry = table.getRelative(prefix.base, index.value) orelse return error.InvalidDynamicIndex;
                 break :dynamic .{ .name = entry.name, .value = entry.value };
             };
@@ -834,6 +844,10 @@ fn decodeDynamicFieldSectionBody(
                 const static_index = std.math.cast(usize, index.value) orelse return error.InvalidStaticIndex;
                 break :static (static_table.get(static_index) orelse return error.InvalidStaticIndex).name;
             } else dynamic: {
+                if (index.value >= prefix.base) return error.InvalidDynamicIndex;
+                if (prefix.base - 1 - index.value >= prefix.required_insert_count) {
+                    return error.InvalidDynamicIndex;
+                }
                 break :dynamic (table.getRelative(prefix.base, index.value) orelse return error.InvalidDynamicIndex).name;
             };
             try appendCopiedNameField(
@@ -847,12 +861,16 @@ fn decodeDynamicFieldSectionBody(
         } else if ((first & 0xf0) == 0x10) {
             const index = try integer.decode(src[pos..], 4);
             pos += index.bytes_read;
+            const absolute = std.math.add(u64, prefix.base, index.value) catch return error.InvalidDynamicIndex;
+            if (absolute >= prefix.required_insert_count) return error.InvalidDynamicIndex;
             const entry = table.getPostBase(prefix.base, index.value) orelse return error.InvalidDynamicIndex;
             try appendCopiedField(&fields, allocator, &budget, entry.name, entry.value, false);
         } else if ((first & 0xf0) == 0) {
             const sensitive = (first & 0x08) != 0;
             const index = try integer.decode(src[pos..], 3);
             pos += index.bytes_read;
+            const absolute = std.math.add(u64, prefix.base, index.value) catch return error.InvalidDynamicIndex;
+            if (absolute >= prefix.required_insert_count) return error.InvalidDynamicIndex;
             const entry = table.getPostBase(prefix.base, index.value) orelse return error.InvalidDynamicIndex;
             try appendCopiedNameField(
                 &fields,

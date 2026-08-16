@@ -945,25 +945,23 @@ test "PRIORITY_UPDATE for unopened request stream is buffered, not rejected [RFC
     try std.testing.expect(applied.incremental);
 }
 
-test "PRIORITY_UPDATE for unpromised push id is buffered, not rejected [RFC9218 §7.2]" {
-    // §7.2 push-side companion: "If a server receives a
-    // PRIORITY_UPDATE for a push that has not yet been promised, it
-    // ... SHOULD buffer the priority signal." Mirrors the request-
-    // stream test above but for a push id that hasn't yet been
-    // emitted by the server. The client must have advertised
-    // MAX_PUSH_ID so push is enabled at all.
+test "PRIORITY_UPDATE for unpromised push id closes with H3_ID_ERROR [RFC9218 §7.2]" {
+    // §7.2: "The push-stream variant of PRIORITY_UPDATE (type=0xF0701)
+    // MUST reference a promised push stream. If a server receives a
+    // PRIORITY_UPDATE ... with a push ID ... that has not yet been
+    // promised, this MUST be treated as a connection error of type
+    // H3_ID_ERROR."
     const allocator = std.testing.allocator;
 
     var pair: fixture.H3Pair = undefined;
-    // Client opt-in: advertise MAX_PUSH_ID = 8 so the server side will
-    // accept push ids 0..=8.
+    // Client opt-in: advertise MAX_PUSH_ID = 8 so push ids 0..=8 are
+    // in range — the unpromised check is what must fire.
     try pair.initStarted(allocator, .{ .max_push_id = 8 }, .{});
     defer pair.deinit();
     try fixture.exchangePairSettings(allocator, &pair);
 
-    // Push id 5 is within MAX_PUSH_ID and the server hasn't promised
-    // anything yet (`next_push_id == 0`). Per §7.2 the hint must be
-    // buffered, not rejected.
+    // Push id 5 is within MAX_PUSH_ID but the server hasn't promised
+    // anything yet (`next_push_id == 0`) — H3_ID_ERROR connection close.
     const future_push_id: u64 = 5;
     try fixture.writeFrame(&pair.client, pair.client_h3.control_stream_id.?, .{
         .priority_update_push = .{
@@ -971,17 +969,9 @@ test "PRIORITY_UPDATE for unpromised push id is buffered, not rejected [RFC9218 
             .priority_field_value = "u=2,i",
         },
     });
-    try fixture.pumpQuiet(allocator, &pair, 64);
-
-    // §7.2 "MUST NOT close": server stays active, no close error.
-    try std.testing.expectEqual(http3_zig.ShutdownState.active, pair.server_h3.shutdownState());
-    try std.testing.expect(pair.server_h3.lastCloseError() == null);
-
-    // §7.2 SHOULD-buffer: the priority survives in `push_priorities`
-    // and is observable via `priorityForPush`.
-    const stored = pair.server_h3.priorityForPush(future_push_id) orelse return error.MissingPriority;
-    try std.testing.expectEqual(@as(u3, 2), stored.urgency);
-    try std.testing.expect(stored.incremental);
+    try fixture.expectPairH3Error(allocator, &pair, error.InvalidPriorityTarget);
+    try std.testing.expectEqual(http3_zig.ShutdownState.closed, pair.server_h3.shutdownState());
+    try fixture.expectLastCloseCode(&pair.server_h3, http3_zig.protocol.ErrorCode.id_error);
 }
 
 test "NORMATIVE empty PRIORITY_UPDATE Priority Field Value applies the parameter defaults [RFC9218 §7 ¶3]" {
