@@ -26,6 +26,7 @@ const expectLastCloseCode = fixt.expectLastCloseCode;
 const fieldValue = fixt.fieldValue;
 const H3Pair = fixt.H3Pair;
 const expectPairH3Error = fixt.expectPairH3Error;
+const expectServerRequestRejected = fixt.expectServerRequestRejected;
 const exchangePairSettings = fixt.exchangePairSettings;
 const openGetAndAwaitServerHeaders = fixt.openGetAndAwaitServerHeaders;
 const sendRawH3Datagram = fixt.sendRawH3Datagram;
@@ -246,7 +247,9 @@ test "session rejects peer QPACK capacity above advertised limit" {
     );
     try expectPairH3Error(allocator, &pair, error.CapacityTooLarge);
     try std.testing.expectEqual(http3_zig.session.ShutdownState.closed, pair.server_h3.shutdownState());
-    try expectLastCloseCode(&pair.server_h3, http3_zig.protocol.ErrorCode.qpack_decompression_failed);
+    // RFC 9204 §3.2.2: unapplyable encoder instructions are
+    // QPACK_ENCODER_STREAM_ERROR, not QPACK_DECOMPRESSION_FAILED.
+    try expectLastCloseCode(&pair.server_h3, http3_zig.protocol.ErrorCode.qpack_encoder_stream_error);
 }
 
 test "session rejects peer QPACK insert larger than dynamic table capacity" {
@@ -278,7 +281,9 @@ test "session rejects peer QPACK insert larger than dynamic table capacity" {
     );
     try expectPairH3Error(allocator, &pair, error.EntryTooLarge);
     try std.testing.expectEqual(http3_zig.session.ShutdownState.closed, pair.server_h3.shutdownState());
-    try expectLastCloseCode(&pair.server_h3, http3_zig.protocol.ErrorCode.qpack_decompression_failed);
+    // RFC 9204 §4.3.1: an insert larger than the table capacity is
+    // QPACK_ENCODER_STREAM_ERROR, not QPACK_DECOMPRESSION_FAILED.
+    try expectLastCloseCode(&pair.server_h3, http3_zig.protocol.ErrorCode.qpack_encoder_stream_error);
 }
 
 test "session rejects invalid peer QPACK decoder feedback" {
@@ -441,9 +446,10 @@ test "session rejects malformed request pseudo headers" {
     };
     try writeHeadersFrame(&pair.client, stream_id, &bad_fields);
 
-    try expectPairH3Error(allocator, &pair, error.PseudoHeaderAfterRegular);
-    try std.testing.expectEqual(http3_zig.session.ShutdownState.closed, pair.server_h3.shutdownState());
-    try expectLastCloseCode(&pair.server_h3, http3_zig.protocol.ErrorCode.message_error);
+    // RFC 9114 §4.1.2: a malformed request is a STREAM error — the
+    // stream is reset with H3_MESSAGE_ERROR and the connection stays up.
+    try expectServerRequestRejected(allocator, &pair, stream_id, http3_zig.protocol.ErrorCode.message_error);
+    try std.testing.expectEqual(http3_zig.session.ShutdownState.active, pair.server_h3.shutdownState());
 }
 
 test "session enforces max field section size on decoded request headers" {
@@ -493,7 +499,8 @@ test "session enforces decoded field-line count budget" {
     };
     try writeHeadersFrame(&pair.client, stream_id, &fields);
 
-    try expectPairH3Error(allocator, &pair, error.TooManyFieldLines);
-    try std.testing.expectEqual(http3_zig.session.ShutdownState.closed, pair.server_h3.shutdownState());
-    try expectLastCloseCode(&pair.server_h3, http3_zig.protocol.ErrorCode.message_error);
+    // RFC 9114 §4.2.2 policy limits refuse the individual message, not
+    // the connection: stream reset with H3_MESSAGE_ERROR.
+    try expectServerRequestRejected(allocator, &pair, stream_id, http3_zig.protocol.ErrorCode.message_error);
+    try std.testing.expectEqual(http3_zig.session.ShutdownState.active, pair.server_h3.shutdownState());
 }

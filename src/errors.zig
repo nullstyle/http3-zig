@@ -110,7 +110,11 @@ pub fn applicationError(code: u64) ApplicationError {
         protocol.ErrorCode.request_rejected => known(code, "H3_REQUEST_REJECTED", .request, .stream),
         protocol.ErrorCode.request_cancelled => known(code, "H3_REQUEST_CANCELLED", .request, .stream),
         protocol.ErrorCode.request_incomplete => known(code, "H3_REQUEST_INCOMPLETE", .request, .stream),
-        protocol.ErrorCode.message_error => known(code, "H3_MESSAGE_ERROR", .message, .connection),
+        // RFC 9114 §4.1.2: a malformed request or response is a STREAM
+        // error of type H3_MESSAGE_ERROR — the offending stream is reset
+        // and the connection survives. (Push-stream message errors keep
+        // connection scope at their call site; see processMessageState.)
+        protocol.ErrorCode.message_error => known(code, "H3_MESSAGE_ERROR", .message, .stream),
         protocol.ErrorCode.connect_error => known(code, "H3_CONNECT_ERROR", .connect, .stream),
         protocol.ErrorCode.version_fallback => known(code, "H3_VERSION_FALLBACK", .general, .connection),
         protocol.ErrorCode.qpack_decompression_failed => known(code, "QPACK_DECOMPRESSION_FAILED", .qpack, .connection),
@@ -149,6 +153,15 @@ pub fn codeForError(err: anyerror) u64 {
         // (singular) above and stays H3_SETTINGS_ERROR per §7.2.4 ¶5.
         error.DuplicateSettings,
         error.FrameUnexpected,
+        // RFC 9114 §4.1 ¶7: an invalid sequence of frames — DATA before
+        // any HEADERS, a second HEADERS frame, or HEADERS/DATA after the
+        // trailing HEADERS — is a connection error of type
+        // H3_FRAME_UNEXPECTED, not a message error. RFC 9114 §7.2.5 ¶10:
+        // a server receiving a PUSH_PROMISE frame treats it the same way.
+        error.DataBeforeHeaders,
+        error.DuplicateHeaders,
+        error.DataAfterTrailers,
+        error.UnexpectedPushPromise,
         => protocol.ErrorCode.frame_unexpected,
         error.InvalidFramePayload,
         error.InsufficientBytes,
@@ -164,11 +177,6 @@ pub fn codeForError(err: anyerror) u64 {
         error.ExcessivePendingWebTransportSessions,
         => protocol.ErrorCode.excess_load,
         error.HeaderSectionTooLarge,
-        error.DataBeforeHeaders,
-        error.DuplicateHeaders,
-        error.DataAfterTrailers,
-        error.UnexpectedPushPromise,
-        error.InconsistentPushPromise,
         error.MissingHeaders,
         error.EmptyFieldName,
         error.UppercaseFieldName,
@@ -184,6 +192,9 @@ pub fn codeForError(err: anyerror) u64 {
         error.ForbiddenTrailerField,
         error.DecodedFieldSectionTooLarge,
         error.TooManyFieldLines,
+        // RFC 9114 §4.3.1: a request whose :authority and Host differ is
+        // malformed — H3_MESSAGE_ERROR, stream-scoped per §4.1.2.
+        error.AuthorityHostMismatch,
         => protocol.ErrorCode.message_error,
         error.HuffmanUnsupported,
         error.InvalidHuffmanCode,
@@ -195,14 +206,19 @@ pub fn codeForError(err: anyerror) u64 {
         error.MalformedFieldSection,
         error.InvalidStaticIndex,
         error.InvalidDynamicIndex,
-        error.EntryTooLarge,
-        error.CapacityTooLarge,
         error.InvalidRequiredInsertCount,
         error.RequiredInsertCountTooLarge,
         error.RequiredInsertCountNotReady,
         error.BlockedStreamLimitExceeded,
         => protocol.ErrorCode.qpack_decompression_failed,
-        error.MalformedEncoderInstruction => protocol.ErrorCode.qpack_encoder_stream_error,
+        error.MalformedEncoderInstruction,
+        // RFC 9204 §3.2.2 / §4.3.1: an encoder instruction that cannot be
+        // applied — capacity above the advertised limit, or an entry
+        // larger than the current capacity — is a connection error of type
+        // QPACK_ENCODER_STREAM_ERROR, not QPACK_DECOMPRESSION_FAILED.
+        error.EntryTooLarge,
+        error.CapacityTooLarge,
+        => protocol.ErrorCode.qpack_encoder_stream_error,
         error.MalformedDecoderInstruction,
         error.InsertCountIncrementZero,
         error.UnexpectedSectionAcknowledgment,
@@ -220,6 +236,10 @@ pub fn codeForError(err: anyerror) u64 {
         error.InvalidPushId,
         error.InvalidPriorityTarget,
         => protocol.ErrorCode.id_error,
+        // RFC 9114 §7.2.5 ¶6: duplicate PUSH_PROMISE field sections that
+        // do not match exactly are a connection error of type
+        // H3_GENERAL_PROTOCOL_ERROR.
+        error.InconsistentPushPromise => protocol.ErrorCode.general_protocol_error,
         error.InvalidDatagramStream => protocol.ErrorCode.id_error,
         error.RequestBlockedByGoaway => protocol.ErrorCode.request_rejected,
         error.PushNotEnabled,
@@ -418,6 +438,8 @@ test "local causes map to close codes and cause categories" {
     const headers = classify(error.ConnectionSpecificField);
     try std.testing.expectEqual(protocol.ErrorCode.message_error, headers.application.code);
     try std.testing.expectEqual(Category.message, headers.category);
+    // RFC 9114 §4.1.2: malformed messages are stream-scoped.
+    try std.testing.expectEqual(Scope.stream, headers.scope);
 
     const oom = classify(error.OutOfMemory);
     try std.testing.expectEqual(protocol.ErrorCode.internal_error, oom.application.code);
@@ -430,6 +452,7 @@ test "local causes map to close codes and cause categories" {
     const decoded_fields = classify(error.DecodedFieldSectionTooLarge);
     try std.testing.expectEqual(protocol.ErrorCode.message_error, decoded_fields.application.code);
     try std.testing.expectEqual(Category.resource, decoded_fields.category);
+    try std.testing.expectEqual(Scope.stream, decoded_fields.scope);
 
     const capsule = classify(error.CapsuleTooLarge);
     try std.testing.expectEqual(protocol.ErrorCode.internal_error, capsule.application.code);

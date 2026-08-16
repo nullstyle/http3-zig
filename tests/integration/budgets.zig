@@ -26,6 +26,7 @@ const expectLastCloseCode = fixt.expectLastCloseCode;
 const fieldValue = fixt.fieldValue;
 const H3Pair = fixt.H3Pair;
 const expectPairH3Error = fixt.expectPairH3Error;
+const expectServerRequestRejected = fixt.expectServerRequestRejected;
 const exchangePairSettings = fixt.exchangePairSettings;
 const openGetAndAwaitServerHeaders = fixt.openGetAndAwaitServerHeaders;
 const sendRawH3Datagram = fixt.sendRawH3Datagram;
@@ -198,9 +199,10 @@ test "production session config advertises limits and enforces caps" {
     };
     try writeHeadersFrame(&pair.client, stream_id, &fields);
 
-    try expectPairH3Error(allocator, &pair, error.TooManyFieldLines);
-    try std.testing.expectEqual(http3_zig.session.ShutdownState.closed, pair.server_h3.shutdownState());
-    try expectLastCloseCode(&pair.server_h3, http3_zig.protocol.ErrorCode.message_error);
+    // RFC 9114 §4.2.2 policy limits refuse the individual message, not
+    // the connection: stream reset with H3_MESSAGE_ERROR.
+    try expectServerRequestRejected(allocator, &pair, stream_id, http3_zig.protocol.ErrorCode.message_error);
+    try std.testing.expectEqual(http3_zig.session.ShutdownState.active, pair.server_h3.shutdownState());
 }
 
 test "session caps concurrent peer-opened streams via max_concurrent_peer_streams" {

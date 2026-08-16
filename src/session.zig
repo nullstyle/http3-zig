@@ -604,9 +604,15 @@ pub const StreamResetEvent = struct {
     kind: ?message_mod.Kind = null,
     error_code: u64,
     final_size: u64,
+    /// `.local` only for client-side malformed-response aborts
+    /// (RFC 9114 §4.1.2); peer resets keep the default.
+    source: errors_mod.Source = .peer,
 
     pub fn errorInfo(self: StreamResetEvent) errors_mod.StreamError {
-        return errors_mod.peerStreamError(self.stream_id, self.error_code, self.final_size);
+        return switch (self.source) {
+            .peer => errors_mod.peerStreamError(self.stream_id, self.error_code, self.final_size),
+            .local => errors_mod.localStreamError(self.stream_id, self.error_code, self.final_size),
+        };
     }
 };
 
@@ -1020,14 +1026,19 @@ pub const Event = union(enum) {
     /// Role: both
     stream_finished: StreamFinishedEvent,
     /// A bidi or peer-uni stream was reset by the peer. Carries the
-    /// peer's RESET_STREAM error code and final size.
+    /// peer's RESET_STREAM error code and final size. On the client
+    /// side, a locally detected malformed response (RFC 9114 §4.1.2)
+    /// also surfaces here with `source == .local` and
+    /// `error_code == H3_MESSAGE_ERROR`.
     ///
     /// Role: both
     stream_reset: StreamResetEvent,
     /// The session refused an incoming request via STOP_SENDING with
-    /// `H3_REQUEST_REJECTED` (RFC 9114 §4.1.2). Only servers reject
-    /// requests this way — emitted by `Session.rejectRequest` and by
-    /// the post-GOAWAY auto-reject path.
+    /// `H3_REQUEST_REJECTED` (RFC 9114 §4.1.2), or aborted a malformed
+    /// request with `H3_MESSAGE_ERROR` (RFC 9114 §4.1.2 — the
+    /// `error_code` field carries whichever code applied). Only servers
+    /// reject requests this way — emitted by `Session.rejectRequest`,
+    /// the post-GOAWAY auto-reject path, and the malformed-request path.
     ///
     /// Role: server
     request_rejected: RequestRejectedEvent,
@@ -4754,12 +4765,21 @@ pub const Session = struct {
                             state.blocked_on_qpack = true;
                             return;
                         }
+                        if (errors_mod.classify(err).scope == .stream and decoder.kind != .push) {
+                            self.failMessageStream(state, decoder.kind, err, events, budget);
+                            return;
+                        }
                         self.closeForError(err);
                         return err;
                     };
                     var fields_to_free: ?[]qpack.FieldLine = decoded_fields.fields;
                     errdefer if (fields_to_free) |fields| qpack.freeFieldSection(self.allocator, fields);
                     decoder.validateOwnedFieldLines(decoded_fields.fields) catch |err| {
+                        if (errors_mod.classify(err).scope == .stream and decoder.kind != .push) {
+                            qpack.freeFieldSection(self.allocator, decoded_fields.fields);
+                            self.failMessageStream(state, decoder.kind, err, events, budget);
+                            return;
+                        }
                         self.closeForError(err);
                         return err;
                     };
@@ -4768,6 +4788,13 @@ pub const Session = struct {
                         self.allocator,
                         decoded_fields.fields,
                     ) catch |err| {
+                        // observeOwnedFieldLines takes ownership and frees
+                        // the section on error — do not double-free here.
+                        fields_to_free = null;
+                        if (errors_mod.classify(err).scope == .stream and decoder.kind != .push) {
+                            self.failMessageStream(state, decoder.kind, err, events, budget);
+                            return;
+                        }
                         self.closeForError(err);
                         return err;
                     };
@@ -4830,6 +4857,10 @@ pub const Session = struct {
                         try budget.reserve(owned_payload_bytes);
                     }
                     break :blk decoder.observe(self.allocator, decoded.frame) catch |err| {
+                        if (errors_mod.classify(err).scope == .stream and decoder.kind != .push) {
+                            self.failMessageStream(state, decoder.kind, err, events, budget);
+                            return;
+                        }
                         self.closeForError(err);
                         return err;
                     };
@@ -6592,6 +6623,47 @@ pub const Session = struct {
         switch (self.role) {
             .client => try validateClientBidiStreamId(id),
             .server => {},
+        }
+    }
+
+    /// RFC 9114 §4.1.2: a malformed request or response is a STREAM error
+    /// of type H3_MESSAGE_ERROR — reset the offending stream and keep the
+    /// connection alive. Push-stream message errors keep connection scope
+    /// (callers dispatch on `decoder.kind`). Emits `request_rejected`
+    /// (server role) or `stream_reset` (client role) so the refusal is
+    /// never silent. The reset itself is durable; only the notification
+    /// event may be lost to drain-budget exhaustion.
+    fn failMessageStream(
+        self: *Session,
+        state: *StreamState,
+        kind: message_mod.Kind,
+        err: anyerror,
+        events: *std.ArrayList(Event),
+        budget: *DrainBudget,
+    ) void {
+        const code = errors_mod.codeForError(err);
+        self.resetStream(state.id, code) catch {};
+        state.recv_finished = true;
+        state.locally_rejected = true;
+        state.rx.clearRetainingCapacity();
+
+        budget.reserve(0) catch return;
+        switch (self.role) {
+            .server => self.appendReservedEvent(events, .{
+                .request_rejected = .{
+                    .stream_id = state.id,
+                    .error_code = code,
+                },
+            }) catch {},
+            .client => self.appendReservedEvent(events, .{
+                .stream_reset = .{
+                    .stream_id = state.id,
+                    .kind = kind,
+                    .error_code = code,
+                    .final_size = 0,
+                    .source = .local,
+                },
+            }) catch {},
         }
     }
 

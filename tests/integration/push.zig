@@ -690,7 +690,9 @@ test "session rejects duplicate PUSH_PROMISE with inconsistent fields" {
 
     try expectPairH3Error(allocator, &pair, error.InconsistentPushPromise);
     try std.testing.expectEqual(http3_zig.session.ShutdownState.closed, pair.client_h3.shutdownState());
-    try expectLastCloseCode(&pair.client_h3, http3_zig.protocol.ErrorCode.message_error);
+    // RFC 9114 §7.2.5 ¶6: mismatched duplicate PUSH_PROMISE sections are
+    // a connection error of type H3_GENERAL_PROTOCOL_ERROR.
+    try expectLastCloseCode(&pair.client_h3, http3_zig.protocol.ErrorCode.general_protocol_error);
 }
 
 test "client push policy auto-cancels promised resources" {

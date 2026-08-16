@@ -584,10 +584,40 @@ test "NORMATIVE classify(InvalidLength) maps to H3_FRAME_ERROR [RFC9114 §8.1 ¶
     try std.testing.expectEqual(errors.Category.frame, c.category);
 }
 
-test "NORMATIVE classify(DataAfterTrailers) maps to H3_MESSAGE_ERROR [RFC9114 §4.1 ¶14]" {
-    // §4.1 ¶14: trailers terminate the message; further DATA is malformed.
+test "NORMATIVE classify(DataAfterTrailers) maps to H3_FRAME_UNEXPECTED [RFC9114 §4.1 ¶7]" {
+    // §4.1 ¶7: an invalid sequence of frames — DATA after the trailing
+    // HEADERS among them — is a connection error of type
+    // H3_FRAME_UNEXPECTED, not a message error.
     const c = errors.classify(error.DataAfterTrailers);
-    try std.testing.expectEqual(ErrorCode.message_error, c.application.code);
+    try std.testing.expectEqual(ErrorCode.frame_unexpected, c.application.code);
+}
+
+test "NORMATIVE classify(DataBeforeHeaders) maps to H3_FRAME_UNEXPECTED [RFC9114 §4.1 ¶7]" {
+    // §4.1 ¶7: DATA before any HEADERS frame is an invalid frame
+    // sequence and a connection error of type H3_FRAME_UNEXPECTED.
+    const c = errors.classify(error.DataBeforeHeaders);
+    try std.testing.expectEqual(ErrorCode.frame_unexpected, c.application.code);
+}
+
+test "NORMATIVE classify(DuplicateHeaders) maps to H3_FRAME_UNEXPECTED [RFC9114 §4.1 ¶7]" {
+    // §4.1 ¶7: a second HEADERS frame after the message's trailing
+    // HEADERS is an invalid frame sequence — H3_FRAME_UNEXPECTED.
+    const c = errors.classify(error.DuplicateHeaders);
+    try std.testing.expectEqual(ErrorCode.frame_unexpected, c.application.code);
+}
+
+test "NORMATIVE classify(UnexpectedPushPromise) maps to H3_FRAME_UNEXPECTED [RFC9114 §7.2.5 ¶10]" {
+    // §7.2.5 ¶10: a server receiving a PUSH_PROMISE frame treats it as
+    // a connection error of type H3_FRAME_UNEXPECTED.
+    const c = errors.classify(error.UnexpectedPushPromise);
+    try std.testing.expectEqual(ErrorCode.frame_unexpected, c.application.code);
+}
+
+test "NORMATIVE classify(InconsistentPushPromise) maps to H3_GENERAL_PROTOCOL_ERROR [RFC9114 §7.2.5 ¶6]" {
+    // §7.2.5 ¶6: duplicate PUSH_PROMISE field sections that differ are
+    // a connection error of type H3_GENERAL_PROTOCOL_ERROR.
+    const c = errors.classify(error.InconsistentPushPromise);
+    try std.testing.expectEqual(ErrorCode.general_protocol_error, c.application.code);
 }
 
 test "NORMATIVE classify(DuplicatePseudoHeader) maps to H3_MESSAGE_ERROR [RFC9114 §4.3 ¶?]" {
@@ -710,8 +740,9 @@ test "NORMATIVE ConnectionError.reason prefers the cause name when present [RFC9
 
 test "NORMATIVE all non-request HTTP/3 codes default to connection scope [RFC9114 §8.1 ¶?]" {
     // §8.1: all defined HTTP/3 codes other than the request-stream trio
-    // (REJECTED / CANCELLED / INCOMPLETE) plus H3_CONNECT_ERROR (stream
-    // for CONNECT semantics) default to connection scope.
+    // (REJECTED / CANCELLED / INCOMPLETE), H3_CONNECT_ERROR (stream for
+    // CONNECT semantics), and H3_MESSAGE_ERROR (stream per §4.1.2)
+    // default to connection scope.
     const connection_codes = [_]u64{
         ErrorCode.no_error, // application/connection — see specific test
         ErrorCode.general_protocol_error,
@@ -724,7 +755,6 @@ test "NORMATIVE all non-request HTTP/3 codes default to connection scope [RFC911
         ErrorCode.id_error,
         ErrorCode.settings_error,
         ErrorCode.missing_settings,
-        ErrorCode.message_error,
         ErrorCode.version_fallback,
         ErrorCode.qpack_decompression_failed,
         ErrorCode.qpack_encoder_stream_error,
@@ -740,4 +770,9 @@ test "NORMATIVE all non-request HTTP/3 codes default to connection scope [RFC911
             try std.testing.expectEqual(errors.Scope.connection, a.default_scope);
         }
     }
+}
+
+test "NORMATIVE H3_MESSAGE_ERROR defaults to stream scope [RFC9114 §4.1.2 ¶?]" {
+    const a = errors.applicationError(ErrorCode.message_error);
+    try std.testing.expectEqual(errors.Scope.stream, a.default_scope);
 }

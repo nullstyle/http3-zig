@@ -302,6 +302,55 @@ pub fn expectPairH3Error(allocator: std.mem.Allocator, pair: *H3Pair, expected: 
     );
 }
 
+/// Asserts the server reset a single malformed request (RFC 9114 §4.1.2)
+/// with the given error code, emitting `request_rejected` while the
+/// connection itself stays active.
+pub fn expectServerRequestRejected(
+    allocator: std.mem.Allocator,
+    pair: *H3Pair,
+    stream_id: u64,
+    code: u64,
+) !void {
+    var client_events: std.ArrayList(http3_zig.session.Event) = .empty;
+    defer {
+        clearSessionEvents(allocator, &client_events);
+        client_events.deinit(allocator);
+    }
+    var server_events: std.ArrayList(http3_zig.session.Event) = .empty;
+    defer {
+        clearSessionEvents(allocator, &server_events);
+        server_events.deinit(allocator);
+    }
+
+    var now_us: u64 = 1_000_000;
+    var iters: u32 = 0;
+    while (iters < 20_000) : (iters += 1) {
+        try pumpH3(
+            &pair.client,
+            &pair.server,
+            &pair.client_h3,
+            &pair.server_h3,
+            &client_events,
+            &server_events,
+            &now_us,
+        );
+        for (server_events.items) |event| {
+            switch (event) {
+                .request_rejected => |rejected| {
+                    if (rejected.stream_id == stream_id) {
+                        try std.testing.expectEqual(code, rejected.error_code);
+                        return;
+                    }
+                },
+                else => {},
+            }
+        }
+        clearSessionEvents(allocator, &client_events);
+        clearSessionEvents(allocator, &server_events);
+    }
+    return error.ExpectedRequestRejected;
+}
+
 pub fn exchangePairSettings(allocator: std.mem.Allocator, pair: *H3Pair) !void {
     var client_events: std.ArrayList(http3_zig.session.Event) = .empty;
     defer {
