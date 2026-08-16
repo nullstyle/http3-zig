@@ -4,7 +4,7 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    const boringssl_dep = b.dependency("boringssl_zig", .{
+    const boringssl_dep = b.dependency("boringssl", .{
         .target = target,
         .optimize = optimize,
     });
@@ -19,10 +19,11 @@ pub fn build(b: *std.Build) void {
     // quic module here (to share http3-zig's boringssl instance across
     // the diamond, see build.zig.zon), we must supply that module too or a
     // reference to quic.version() fails to compile. Value is cosmetic —
-    // http3-zig never calls version() — but must match the quic tag
-    // pinned in build.zig.zon; tools/check-boringssl-pin.sh lints this.
+    // http3-zig never calls version() — but must match the quic version
+    // pinned in build.zig.zon; tools/check-boringssl-pin.sh lints this
+    // on tag pins (bare-SHA pins skip the check).
     const quic_build_options = b.addOptions();
-    quic_build_options.addOption([]const u8, "version", "0.13.0");
+    quic_build_options.addOption([]const u8, "version", "0.13.1");
     const quic_build_options_mod = quic_build_options.createModule();
 
     // Single-source http3-zig's own version() from build.zig.zon so it can
@@ -718,7 +719,7 @@ pub fn build(b: *std.Build) void {
     // optimize. See `docs/memory-profile.md` for the published
     // numbers.
     const mem_profile_optimize: std.builtin.OptimizeMode = .ReleaseSafe;
-    const boringssl_safe_dep = b.dependency("boringssl_zig", .{
+    const boringssl_safe_dep = b.dependency("boringssl", .{
         .target = target,
         .optimize = mem_profile_optimize,
     });
@@ -783,7 +784,7 @@ pub fn build(b: *std.Build) void {
     // iteration regardless of the optimize mode — the load test
     // returns explicit error tags rather than relying on `assert`.
     const wt_load_optimize: std.builtin.OptimizeMode = .ReleaseFast;
-    const boringssl_release_dep = b.dependency("boringssl_zig", .{
+    const boringssl_release_dep = b.dependency("boringssl", .{
         .target = target,
         .optimize = wt_load_optimize,
     });

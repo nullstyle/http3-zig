@@ -146,6 +146,16 @@ breaking changes; see notes per release.
 
 ### Changed
 
+- **boringssl repinned to the renamed `boringssl` package identity and
+  quic to the repin series (bare SHA 681d4bc)** — the package is
+  `.boringssl` now (dependency key, package name, and module name all
+  `boringssl`; repo still nullstyle/boringssl-zig), carrying the
+  `SSL_get_client_random` binding quic-zig's 0-RTT anti-replay hook
+  needs for SHA256(ticket || client_random) identities. Both entries
+  match quic-zig's byte-for-byte, so the diamond dedupes to one
+  boringssl instance and `boringssl.tls.Context` type identity holds.
+  Repin both to release tags once quic-zig/boringssl-zig cut the next
+  tags.
 - **quic dependency bumped v0.12.0 → v0.13.0** (all additive; wire
   behavior and defaults unchanged). Adoptions: the at-most-once
   `Event.early_data` is now driven by quic's one-shot

@@ -71,10 +71,10 @@ http3_zon=${1:-build.zig.zon}
 
 quic_url=$(extract_dep_field quic url "$http3_zon") ||
     die "could not read quic.url from $http3_zon"
-http3_boringssl_url=$(extract_dep_field boringssl_zig url "$http3_zon") ||
-    die "could not read boringssl_zig.url from $http3_zon"
-http3_boringssl_hash=$(extract_dep_field boringssl_zig hash "$http3_zon") ||
-    die "could not read boringssl_zig.hash from $http3_zon"
+http3_boringssl_url=$(extract_dep_field boringssl url "$http3_zon") ||
+    die "could not read boringssl.url from $http3_zon"
+http3_boringssl_hash=$(extract_dep_field boringssl hash "$http3_zon") ||
+    die "could not read boringssl.hash from $http3_zon"
 
 if [ "${QUIC_BUILD_ZON:-}" ]; then
     quic_zon=$QUIC_BUILD_ZON
@@ -87,14 +87,14 @@ else
     curl -fsSL "$raw_url" -o "$quic_zon"
 fi
 
-quic_boringssl_url=$(extract_dep_field boringssl_zig url "$quic_zon") ||
-    die "could not read boringssl_zig.url from $quic_zon"
-quic_boringssl_hash=$(extract_dep_field boringssl_zig hash "$quic_zon") ||
-    die "could not read boringssl_zig.hash from $quic_zon"
+quic_boringssl_url=$(extract_dep_field boringssl url "$quic_zon") ||
+    die "could not read boringssl.url from $quic_zon"
+quic_boringssl_hash=$(extract_dep_field boringssl hash "$quic_zon") ||
+    die "could not read boringssl.hash from $quic_zon"
 
 if [ "$http3_boringssl_url" != "$quic_boringssl_url" ] ||
     [ "$http3_boringssl_hash" != "$quic_boringssl_hash" ]; then
-    printf 'boringssl_zig pin mismatch between http3-zig and pinned quic-zig\n' >&2
+    printf 'boringssl pin mismatch between http3-zig and pinned quic-zig\n' >&2
     printf '  http3-zig url: %s\n' "$http3_boringssl_url" >&2
     printf '  quic-zig  url: %s\n' "$quic_boringssl_url" >&2
     printf '  http3-zig hash: %s\n' "$http3_boringssl_hash" >&2
@@ -102,7 +102,7 @@ if [ "$http3_boringssl_url" != "$quic_boringssl_url" ] ||
     exit 1
 fi
 
-printf 'boringssl_zig pin matches pinned quic-zig (%s)\n' "$http3_boringssl_hash"
+printf 'boringssl pin matches pinned quic-zig (%s)\n' "$http3_boringssl_hash"
 
 # build.zig recreates the quic module and must hand it a build_options
 # "version" string. The value is cosmetic, but it must not drift from the
