@@ -4,7 +4,7 @@ http3-zig is a pre-1.0 HTTP/3 stack over `quic-zig` and `boringssl-zig`. The
 normative core — RFC 9114 (HTTP/3), RFC 9204 (QPACK), RFC 9218 (Extensible
 Priorities), RFC 9220 (extended CONNECT), and RFC 9297 (HTTP Datagrams /
 capsules) — is implemented, along with WebTransport
-(draft-ietf-webtrans-http3-15), WebSocket-over-HTTP/3 (RFC 6455 framing over
+(draft-ietf-webtrans-http3-16), WebSocket-over-HTTP/3 (RFC 6455 framing over
 the RFC 9220 extended-CONNECT bootstrap), and CONNECT-UDP / MASQUE helpers.
 
 See the [README](README.md) for the current capability surface and the

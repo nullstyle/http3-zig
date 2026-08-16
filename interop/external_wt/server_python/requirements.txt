@@ -5,7 +5,7 @@
 # Python QUIC stack (aiortc/aioquic, latest 1.3.0) both still emit
 # only the legacy draft-06 SETTINGS codepoint
 # (`0x2b603742`). pywebtransport is currently the only third-party
-# library besides webtransport-go's master branch that explicitly
+# library besides webtransport-go (release-tag v0.12.0) that explicitly
 # implements the `SETTINGS_WT_ENABLED = 0x2c7cf000` codepoint
 # http3-zig pins to in `src/protocol.zig` (see its v0.16.0 changelog
 # entry from 2026-03-13 and the `SETTINGS_WT_ENABLED: u64 =

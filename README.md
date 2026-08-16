@@ -16,7 +16,7 @@ for TLS 1.3 / ALPN configuration.
 | HTTP Datagrams | RFC 9297 |
 | Extended CONNECT | RFC 9220 |
 | Priority | RFC 9218 |
-| WebSocket-over-H3 | RFC 8441 / 9220 |
+| WebSocket-over-H3 | RFC 9220 / 6455 |
 | CONNECT-UDP / MASQUE | RFC 9298 |
 | WebTransport | **draft-ietf-webtrans-http3-16** (`SETTINGS_WT_ENABLED = 0x2c7cf000`; `:protocol = webtransport-h3`, legacy `webtransport` accepted). Browser-era negotiation (draft-02 — what shipped Chrome/Firefox speak — and draft-07) is available via opt-in config knobs; see the [WebTransport tour](docs/webtransport-tour.md)'s "Draft eras and browsers" |
 

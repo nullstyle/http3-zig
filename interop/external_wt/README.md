@@ -108,8 +108,8 @@ Server CLI:
 | `--max-sessions` | `1` | Exit after this many sessions complete. `0` runs until killed. |
 | `--max-lifetime-ms` | `30000` | Wallclock cap before the server force-shuts itself, defends against a stuck client wedging CI. |
 
-The pinned commit in [`server_go/go.mod`](./server_go/go.mod) is a master
-pseudo-version, because tagged releases do not yet advertise draft-15.
+[`server_go/go.mod`](./server_go/go.mod) pins the webtransport-go
+v0.12.0 release tag (the first tag speaking the -16 codepoints).
 
 ## Pinned third-party server: `pywebtransport`
 
@@ -217,7 +217,7 @@ message and exits 0.
 7. A `CLOSE_WEBTRANSPORT_SESSION` capsule is sent and the CONNECT
    stream is finished cleanly.
 
-The harness does **not** verify echo behavior — the server is free to
-ignore the inbound bytes. Echo verification is left to per-server
-adapter scripts because each server uses a different echo path /
-protocol shape.
+The harness REQUIRES byte-exact datagram echo: the client sends a
+content-verified datagram and only proceeds to CLOSE after the peer
+echoes it back (echo-before-close promotion criterion; commit
+baebc9b). A non-echoing peer times the leg out instead of passing.

@@ -56,7 +56,7 @@ For real-network numbers, see the WebTransport interop matrix
 | --- | --- |
 | Host | Apple M5 Max, 18 cores |
 | OS | macOS (Darwin 25.4.0), arm64 |
-| Zig | 0.16.0 (mise-pinned via `mise.toml`) |
+| Zig | 0.17.0-dev.1683+5ceec001b |
 | Build mode | `ReleaseFast` |
 | Cache dir | `/tmp/h3-cache-V3` |
 | Date | 2026-05-09 |

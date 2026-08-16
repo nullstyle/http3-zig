@@ -8,7 +8,7 @@ http3-zig is **pre-1.0**. It implements HTTP/3 (RFC 9114), QPACK
 (RFC 9204), HTTP Datagrams (RFC 9297), Extended CONNECT (RFC 9220),
 HTTP/3 Priority + PRIORITY_UPDATE (RFC 9218), WebSocket-over-H3,
 CONNECT-UDP / MASQUE (RFC 9298), and WebTransport-over-HTTP/3
-(draft-ietf-webtrans-http3-15) on top of sister project
+(draft-ietf-webtrans-http3-16) on top of sister project
 [`quic-zig`](https://github.com/nullstyle/quic-zig). The public API
 may still churn — treat 0.x releases as potentially breaking.
 
@@ -18,8 +18,9 @@ for what has shipped, and [`ROADMAP.md`](ROADMAP.md) for what's planned.
 ## Building
 
 http3-zig pins its toolchain via [`mise`](https://mise.jdx.dev/).
-The project file at [`mise.toml`](mise.toml) installs Zig 0.16.0
-plus the project's auxiliary tools.
+The project file at [`mise.toml`](mise.toml) installs the pinned
+Zig 0.17.0 dev build (0.17.0-dev.1683+5ceec001b) plus the project's
+auxiliary tools.
 
 ```sh
 mise install
@@ -52,8 +53,8 @@ The WebTransport interop matrix lives under
 [`interop/external_wt/`](interop/external_wt/). It pins two
 third-party peers in CI:
 
-- `webtransport-go` (Go, master pseudo-version since draft-15
-  support has not yet shipped in a tagged release).
+- `webtransport-go` (Go, release-tag v0.12.0 — the draft-16
+  codepoints).
 - `pywebtransport` (Python facade over a Rust core, v0.17.1).
 
 The
@@ -73,7 +74,7 @@ operator notes.
 - One-line summary, imperative mood, ~72 chars or less.
 - Optional body explains the *why*, wrapped at ~72 chars.
 - Reference RFCs / drafts in the body when relevant (e.g.
-  `RFC 9114 §4.1`, `draft-ietf-webtrans-http3-15 §5.5`).
+  `RFC 9114 §4.1`, `draft-ietf-webtrans-http3-16 §5.5`).
 - Keep one logical change per commit.
 
 ## Pull requests

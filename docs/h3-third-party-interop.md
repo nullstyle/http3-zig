@@ -12,10 +12,10 @@ request/response checks:
    trust.
 3. The runner requires `STATUS 200` and an exact response body match.
 
-The hard per-push gate remains `h3-interop-self-test.yml`, where both peers are
-http3-zig binaries. The quic-go and aioquic jobs are intentionally
-`continue-on-error: true` while third-party setup is still treated as advisory
-release signal.
+The hard per-push gate is `h3-interop-self-test.yml` (both peers http3-zig
+binaries) plus the promoted quic-go leg in `h3-interop.yml`, which runs on
+every push as a hard gate (2026-08-13 promotion). The aioquic job is
+`continue-on-error: true` and runs weekly only — still advisory.
 
 ## Pinned peers
 

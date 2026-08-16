@@ -43,11 +43,7 @@ breaking changes; see notes per release.
   `on_connection_will_close` before reap destroys the connection),
   clocks and wakeups (one monotonic `now_us` domain owned by the
   `runUdp*` loops; open-coded loops size poll timeouts with
-  `nextTimerDeadline`, never wall-clock), and a 0-RTT status note
-  (transport-level 0-RTT is end-to-end in quic-zig 0.9.0, but http3-zig
-  has no blessed 0-RTT request path yet — HTTP/3 early data is
-  unsupported/untested and requests before `handshakeDone()` are
-  undefined; tracked as future work).
+  `nextTimerDeadline`, never wall-clock).
 - Stated the config posture prominently in the README and embedding
   guide: `SessionConfig.production(.{})` is the deployment posture; the
   bare `.{}` defaults are a compatibility posture with unbounded buffers.

@@ -91,10 +91,12 @@ peer the loop is the same; only the packet driver changes.
 ### Settings exchange
 
 `startWebTransport` and `acceptWebTransport` both gate on the peer's SETTINGS
-having arrived AND advertising all three of `SETTINGS_WT_ENABLED`,
-`SETTINGS_H3_DATAGRAM`, and `SETTINGS_ENABLE_CONNECT_PROTOCOL`. The library
-enforces this eagerly so the application never commits to a session the peer
-can't drive:
+having arrived AND advertising the WebTransport-era settings plus
+`SETTINGS_H3_DATAGRAM`. `SETTINGS_ENABLE_CONNECT_PROTOCOL` is only required
+of a SERVER peer (RFC 9220: the server advertises extended CONNECT; clients
+never send it — a server-side accept gate must not demand it from browser
+clients). The library enforces this eagerly so the application never commits
+to a session the peer can't drive:
 
 ```zig
 // From tests/integration/webtransport.zig

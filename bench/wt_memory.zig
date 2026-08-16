@@ -21,9 +21,9 @@
 //! window. We sample at four points and emit a Markdown table:
 //!
 //!   - warm-up complete (right after WT establishment)
+//!   - after 500 iterations
 //!   - after 1 000 iterations
-//!   - after 5 000 iterations
-//!   - after 10 000 iterations
+//!   - after 2 000 iterations (`total_iterations`)
 //!
 //! `gpa.deinit()` runs at the end so the leak detector can fire on any
 //! payload that escaped `freeEvent`.
@@ -57,9 +57,10 @@ const total_iterations: usize = 2_000;
 const sample_at_iters = [_]usize{ 500, 1_000, 2_000 };
 
 /// Regression gate: per-iteration retained-memory growth (warm-up → final
-/// sample) must stay below this. The current figure is ≈243 bytes/iter (down
-/// from ≈2755 before quic-zig 0.4.0's terminal-stream reaping landed on both
-/// the http3 and QUIC layers). Gate at 600 — ~2.5x current, so allocator /
+/// sample) must stay below this. The current figure is ≈251 bytes/iter
+/// (docs/memory-profile.md; down from ≈2755 before quic-zig 0.4.0's
+/// terminal-stream reaping landed on both the http3 and QUIC layers).
+/// Gate at 600 — ~2.4x current, so allocator /
 /// platform variation passes, but a reintroduced per-stream leak (which ran
 /// into the thousands of bytes/iter) fails the run. Exceeding it exits
 /// non-zero so a CI job can gate on it.

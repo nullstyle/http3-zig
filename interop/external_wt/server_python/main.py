@@ -19,7 +19,8 @@ The flow this peer is asked to participate in (see
   4. Client sends `CLOSE_WEBTRANSPORT_SESSION` and finishes the
      CONNECT stream.
 
-The matrix client doesn't care about echoes, but for symmetry with
+The matrix client REQUIRES byte-exact datagram echo before it sends
+CLOSE (echo-before-close promotion criterion); for symmetry with
 the in-tree Zig echo server (`interop/external_wt/server.zig`) and
 the Go peer we also:
 
@@ -179,12 +180,9 @@ async def run_server(args: argparse.Namespace) -> int:
         and writes the bytes back on a fresh server-initiated uni
         stream (matching the in-tree Zig server's behaviour).
 
-        The matrix client itself doesn't read echoes back — it just
-        finishes its CONNECT stream after sending one datagram and
-        one uni stream — so this loop only really needs to *not
-        crash*. We still mirror traffic for symmetry with the Go peer
-        and so a future matrix client can turn echo verification on
-        without changing servers.
+        The in-tree matrix client REQUIRES byte-exact datagram echo
+        before sending CLOSE (echo-before-close promotion criterion),
+        so this mirror loop is load-bearing, not just crash-avoidance.
         """
         sid = session.session_id
 

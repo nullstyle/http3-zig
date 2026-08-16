@@ -11,22 +11,21 @@
 //   4. Client sends `CLOSE_WEBTRANSPORT_SESSION` and finishes the
 //      CONNECT stream.
 //
-// The matrix client doesn't care about echoes, but for symmetry with
-// the in-tree Zig echo server (`interop/external_wt/server.zig`) we
-// also:
+// The matrix client REQUIRES byte-exact datagram echo before it
+// sends CLOSE (echo-before-close promotion criterion), so this
+// server mirrors traffic. Symmetry with the in-tree Zig echo server
+// (`interop/external_wt/server.zig`) keeps the shapes identical:
 //
 //   * Echo every incoming datagram back to the peer.
 //   * For every accepted uni stream, drain it and open a server-
 //     initiated uni stream that writes the same bytes back.
 //
-// This server uses webtransport-go's master branch because that's
-// where draft-ietf-webtrans-http3-15 wire compatibility lives — it
+// This server pins the webtransport-go v0.12.0 release tag (go.mod),
+// which carries the draft-ietf-webtrans-http3-16 wire codepoints — it
 // advertises both the legacy draft-06 SETTINGS codepoint
-// (`0x2b603742`) for backward compatibility and the draft-15
+// (`0x2b603742`) for backward compatibility and the
 // `SETTINGS_WT_ENABLED = 0x2c7cf000` codepoint that http3-zig pins
-// to. As of 2026-05-09 there is no tagged release on the master
-// branch yet (latest tag is v0.10.0, June 2025, draft-13 only); when
-// the next tag ships, swap the pseudo-version below for it.
+// to.
 //
 // CLI surface mirrors the in-tree Zig server so the same workflow YAML
 // can drive either:

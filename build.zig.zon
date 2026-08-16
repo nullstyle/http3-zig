@@ -4,19 +4,20 @@
     .fingerprint = 0x71cd45b0dc74266b,
     .minimum_zig_version = "0.17.0-dev.1683+5ceec001b",
     .dependencies = .{
-        // quic 0.12.0 — the shape release, and the first tag under the
-        // renamed package identity: the package is `.quic` now (dep key,
-        // b.dependency("quic"), module "quic", @import("quic")); the repo
-        // is still github.com/nullstyle/quic-zig. The rename changed
-        // .name/.fingerprint, so this is a new package identity — the hash
-        // has no continuity with the old quic_zig-* pins. Inherits 0.11.0
-        // (which http3-zig skipped): CUBIC + pacing + HyStart++ as
-        // wire-behavior defaults, batched UDP datapath, O(1) sent-packet
-        // tracker, TimerKind.pacing. New in 0.12.0: BBRv3 (opt-in via
-        // congestion_control = .bbr), Connection address-for-life
+        // quic 0.13.0 — the pin, under the renamed package identity:
+        // the package is `.quic` now (dep key, b.dependency("quic"),
+        // module "quic", @import("quic")); the repo is still
+        // github.com/nullstyle/quic-zig. The rename changed
+        // .name/.fingerprint, so this is a new package identity — the
+        // hash has no continuity with the old quic_zig-* pins.
+        // Inherits 0.12.0 (the shape release, which http3-zig shipped
+        // earlier): CUBIC + pacing + HyStart++ as wire-behavior
+        // defaults, batched UDP datapath, O(1) sent-packet tracker,
+        // TimerKind.pacing, BBRv3 (opt-in via congestion_control =
+        // .bbr), Connection address-for-life
         // (createClient/createServer/destroy replace init-then-bind;
-        // Client/Server wrappers unaffected), and bundled UDP loops that
-        // tolerate peer-provoked receive/send socket errors.
+        // Client/Server wrappers unaffected), and bundled UDP loops
+        // that tolerate peer-provoked receive/send socket errors.
         //
         // http3-zig's only reach into quic internals is
         // quic.conn.state.Error (src/session.zig), which is unaffected.
