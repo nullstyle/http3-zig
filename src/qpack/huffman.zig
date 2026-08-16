@@ -333,11 +333,17 @@ pub fn decode(allocator: std.mem.Allocator, src: []const u8) Error![]u8 {
             acc_bits += 1;
 
             if (acc_bits == eos.len and acc == eos.bits) return Error.HuffmanEos;
-            if (findSymbol(acc, acc_bits)) |symbol| {
-                try out.append(allocator, symbol);
-                acc = 0;
-                acc_bits = 0;
-            } else if (acc_bits >= eos.len) {
+            // The length gate runs the O(1) lookup only at code
+            // boundaries; interior bits cost a single mask test.
+            if (isValidLen(acc_bits)) {
+                if (findSymbol(acc, acc_bits)) |symbol| {
+                    try out.append(allocator, symbol);
+                    acc = 0;
+                    acc_bits = 0;
+                    continue;
+                }
+            }
+            if (acc_bits >= eos.len) {
                 return Error.InvalidHuffmanCode;
             }
         }
@@ -349,11 +355,61 @@ pub fn decode(allocator: std.mem.Allocator, src: []const u8) Error![]u8 {
     return try out.toOwnedSlice(allocator);
 }
 
-fn findSymbol(bits: u32, len: u8) ?u8 {
-    for (table, 0..) |code, symbol| {
-        if (code.len == len and code.bits == bits) return @intCast(symbol);
+const MaxCodeLen = 30;
+
+/// Canonical-code lookup tables. Huffman codes of a given length form a
+/// contiguous bit range (the RFC 7541 table is canonical), so (len, bits)
+/// maps O(1) through a per-length offset — replacing the old per-bit
+/// linear scan over all 257 codes (a peer-amplifiable CPU cost).
+/// Canonicality is asserted at comptime so a future table edit that
+/// breaks the property fails the build instead of decoding wrongly.
+const LengthTable = struct {
+    mins: [MaxCodeLen + 1]u32,
+    maxs: [MaxCodeLen + 1]u32,
+    present: [MaxCodeLen + 1]bool,
+    syms: [MaxCodeLen + 1][257]u8,
+};
+
+/// Computed at comptime: per-length canonical ranges plus the symbol table.
+/// @compileError inside fires only when a non-canonical table is actually
+/// built — the build fails loudly instead of decoding wrongly.
+fn buildLengthTable() LengthTable {
+    var mins: [MaxCodeLen + 1]u32 = @splat(std.math.maxInt(u32));
+    var maxs: [MaxCodeLen + 1]u32 = @splat(0);
+    var present: [MaxCodeLen + 1]bool = @splat(false);
+    var count: [MaxCodeLen + 1]usize = @splat(0);
+    for (table) |code| {
+        mins[code.len] = @min(mins[code.len], code.bits);
+        maxs[code.len] = @max(maxs[code.len], code.bits);
+        present[code.len] = true;
+        count[code.len] += 1;
     }
-    return null;
+    for (table) |code| {
+        if (present[code.len]) {
+            const span = maxs[code.len] - mins[code.len] + 1;
+            if (span != count[code.len]) {
+                @compileError("huffman table is not canonical per length");
+            }
+        }
+    }
+    var syms: [MaxCodeLen + 1][257]u8 = undefined;
+    for (&syms) |*row| row.* = @splat(0);
+    for (table, 0..) |code, symbol| {
+        syms[code.len][code.bits - mins[code.len]] = @intCast(symbol);
+    }
+    return .{ .mins = mins, .maxs = maxs, .present = present, .syms = syms };
+}
+
+const length_table = buildLengthTable();
+
+fn isValidLen(len: u8) bool {
+    return len <= MaxCodeLen and length_table.present[len];
+}
+
+fn findSymbol(bits: u32, len: u8) ?u8 {
+    if (!isValidLen(len)) return null;
+    if (bits < length_table.mins[len] or bits > length_table.maxs[len]) return null;
+    return length_table.syms[len][bits - length_table.mins[len]];
 }
 
 fn lowMask(bits: u8) u64 {

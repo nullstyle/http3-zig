@@ -75,6 +75,28 @@ const DecodeBudget = struct {
         };
     }
 
+    /// Transient headroom for a string whose decoded length is not yet
+    /// known: Huffman output is bounded by ceil(encoded_len * 8 / 5)
+    /// (the minimum code length is 5 bits). Callers reserve this
+    /// BEFORE decoding/allocating the string so the decoded-bytes
+    /// budget acts as a pre-allocation guard, then `settleString`
+    /// swaps the bound for the exact length once known.
+    fn reserveString(self: *DecodeBudget, encoded_len: usize) Error!usize {
+        const bound = (encoded_len * 8 + 4) / 5;
+        if (self.max_decoded_bytes) |max| {
+            if (bound > max or self.decoded_bytes > max - bound) {
+                return error.DecodedFieldSectionTooLarge;
+            }
+        }
+        self.decoded_bytes += bound;
+        return bound;
+    }
+
+    fn settleString(self: *DecodeBudget, reserved: usize, value_len: usize) void {
+        self.decoded_bytes -= reserved;
+        self.decoded_bytes += value_len;
+    }
+
     fn reserve(self: *DecodeBudget, name: []const u8, value: []const u8) Error!void {
         if (self.max_field_lines) |max| {
             if (self.field_lines >= max) return error.TooManyFieldLines;
@@ -146,10 +168,15 @@ pub fn fieldSectionEncodedLenWithOptions(
 ) usize {
     var n: usize = 2; // Required Insert Count = 0, Delta Base = 0.
     for (fields) |field| {
-        if (!field.sensitive and static_table.find(field.name, field.value) != null) {
-            const index = static_table.find(field.name, field.value).?;
-            n += integer.encodedLen(6, index);
-        } else if (static_table.findName(field.name)) |index| {
+        // Single find: the exact-pair probe doubles as the lookup
+        // (was find() + find() + unwrap — two linear scans per field).
+        if (!field.sensitive) {
+            if (static_table.find(field.name, field.value)) |index| {
+                n += integer.encodedLen(6, index);
+                continue;
+            }
+        }
+        if (static_table.findName(field.name)) |index| {
             n += integer.encodedLen(4, index);
             n += stringLiteralEncodedLen(7, field.value, .{ .huffman = options.huffman });
         } else {
@@ -714,8 +741,9 @@ fn chooseInsertInstruction(
     } };
 }
 
-fn readStringAlloc(
+fn readStringWithBudget(
     allocator: std.mem.Allocator,
+    budget: *DecodeBudget,
     src: []const u8,
     pos: *usize,
     prefix_bits: u8,
@@ -724,15 +752,21 @@ fn readStringAlloc(
     const huffman_mask: u8 = @as(u8, 1) << @intCast(prefix_bits);
     const huffman_encoded = (src[pos.*] & huffman_mask) != 0;
     const len = try integer.decode(src[pos.*..], prefix_bits);
-    pos.* += len.bytes_read;
     // Checked cast: on 32-bit targets a wire varint can exceed usize —
     // such a string can never be satisfied by the section buffer.
     const len_usize = std.math.cast(usize, len.value) orelse return Error.MalformedFieldSection;
-    if (src.len - pos.* < len_usize) return Error.MalformedFieldSection;
+    if (src.len - pos.* - len.bytes_read < len_usize) return Error.MalformedFieldSection;
+    // Reserve decoded-byte headroom BEFORE huffman.decode / dupe so
+    // the budget is a pre-allocation guard, not a post-allocation
+    // rejection (~1.6x Huffman expansion was the old transient spike).
+    const reserved = try budget.reserveString(len_usize);
+    pos.* += len.bytes_read;
     const encoded = src[pos.* .. pos.* + len_usize];
     pos.* += len_usize;
-    if (huffman_encoded) return try huffman.decode(allocator, encoded);
-    return try allocator.dupe(u8, encoded);
+    const value = if (huffman_encoded) try huffman.decode(allocator, encoded) else try allocator.dupe(u8, encoded);
+    errdefer allocator.free(value);
+    budget.settleString(reserved, value.len);
+    return value;
 }
 
 fn decodeStaticOnlyFieldSection(
@@ -780,7 +814,7 @@ fn decodeStaticOnlyFieldSection(
                 allocator,
                 &budget,
                 entry.name,
-                try readStringAlloc(allocator, src, &pos, 7),
+                try readStringWithBudget(allocator, &budget, src, &pos, 7),
                 sensitive,
             );
         } else if ((first & 0xe0) == 0x20) {
@@ -857,7 +891,7 @@ fn decodeDynamicFieldSectionBody(
                 allocator,
                 &budget,
                 name,
-                try readStringAlloc(allocator, src, &pos, 7),
+                try readStringWithBudget(allocator, &budget, src, &pos, 7),
                 sensitive,
             );
         } else if ((first & 0xf0) == 0x10) {
@@ -879,7 +913,7 @@ fn decodeDynamicFieldSectionBody(
                 allocator,
                 &budget,
                 entry.name,
-                try readStringAlloc(allocator, src, &pos, 7),
+                try readStringWithBudget(allocator, &budget, src, &pos, 7),
                 sensitive,
             );
         } else if ((first & 0xe0) == 0x20) {
@@ -960,8 +994,11 @@ fn appendLiteralField(
     pos: *usize,
     sensitive: bool,
 ) Error!void {
-    const name = try readStringAlloc(allocator, src, pos, 3);
-    const value = readStringAlloc(allocator, src, pos, 7) catch |err| {
+    const name = try readStringWithBudget(allocator, budget, src, pos, 3);
+    // appendOwnedField frees both on its own error paths; the manual
+    // free below covers only a failed value read (mirrors pre-budget
+    // structure — no errdefer here or the failure path double-frees).
+    const value = readStringWithBudget(allocator, budget, src, pos, 7) catch |err| {
         allocator.free(name);
         return err;
     };

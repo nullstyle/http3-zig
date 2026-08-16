@@ -4908,8 +4908,16 @@ pub const Session = struct {
     ) Error!void {
         const decoder = if (state.message_decoder) |*decoder| decoder else return Error.MissingStream;
 
-        while (state.rx.items.len > 0) {
-            if (frame_mod.peekHeader(state.rx.items)) |hdr| {
+        // Amortized compaction: consume via a cursor and memmove once
+        // per drain instead of once per frame — a peer streaming many
+        // small DATA frames used to force O(n^2) tail copies. The
+        // errdefer compacts the consumed prefix on error exits so the
+        // next drain never re-emits completed frames; failMessageStream
+        // paths clear rx entirely and the swallow keeps that harmless.
+        var cursor: usize = 0;
+        while (cursor < state.rx.items.len) {
+            errdefer compactRx(state, cursor) catch {};
+            if (frame_mod.peekHeader(state.rx.items[cursor..])) |hdr| {
                 self.checkIncomingFrameLength(hdr.frame_type, hdr.length) catch |err| {
                     if (errors_mod.classify(err).scope == .stream) {
                         if (self.messageStreamKind(state)) |kind| {
@@ -4922,9 +4930,17 @@ pub const Session = struct {
                     self.closeForError(err);
                     return err;
                 };
-            } else return; // frame type/length varints not fully buffered yet
-            const decoded = frame_mod.decode(state.rx.items) catch |err| {
-                if (err == error.InsufficientBytes) return;
+            } else {
+                // frame type/length varints not fully buffered yet —
+                // keep the partial header at rx[0] for the next drain.
+                try compactRx(state, cursor);
+                return;
+            }
+            const decoded = frame_mod.decode(state.rx.items[cursor..]) catch |err| {
+                if (err == error.InsufficientBytes) {
+                    try compactRx(state, cursor);
+                    return;
+                }
                 self.closeForError(err);
                 return err;
             };
@@ -4940,6 +4956,9 @@ pub const Session = struct {
                     const decoded_fields = self.decodeFieldSectionForStream(state.id, block) catch |err| {
                         if (err == error.RequiredInsertCountNotReady) {
                             state.blocked_on_qpack = true;
+                            // Park the whole field-section block at
+                            // rx[0]; the consumed prefix is done.
+                            try compactRx(state, cursor);
                             return;
                         }
                         if (errors_mod.classify(err).scope == .stream and decoder.kind != .push) {
@@ -4997,6 +5016,9 @@ pub const Session = struct {
                     const decoded_fields = self.decodeFieldSectionForStream(state.id, promise.field_section) catch |err| {
                         if (err == error.RequiredInsertCountNotReady) {
                             state.blocked_on_qpack = true;
+                            // Park the whole field-section block at
+                            // rx[0]; the consumed prefix is done.
+                            try compactRx(state, cursor);
                             return;
                         }
                         self.closeForError(err);
@@ -5059,7 +5081,8 @@ pub const Session = struct {
                 },
             };
             if (maybe_event) |message_event| {
-                defer message_event.deinit(self.allocator);
+                var message_event_owned = true;
+                defer if (message_event_owned) message_event.deinit(self.allocator);
                 try self.observeWebTransportHeadersIfApplicable(state, decoder.kind, message_event);
                 // Native WT capsule ingestion: a WT CONNECT stream's body
                 // IS the capsule protocol, so the session consumes it —
@@ -5091,12 +5114,21 @@ pub const Session = struct {
                         pos += chunk_len;
                     }
                 } else {
+                    // Field sections transfer ownership into the
+                    // session event (no clone); everything else is
+                    // duped inside and freed by the deinit above.
+                    const transfers_ownership = switch (message_event) {
+                        .headers, .interim_headers, .trailers => true,
+                        else => false,
+                    };
                     try self.appendReservedMessageEvent(events, state.id, decoder.kind, message_event);
+                    if (transfers_ownership) message_event_owned = false;
                 }
             }
 
-            try compactRx(state, decoded.bytes_read);
+            cursor += decoded.bytes_read;
         }
+        try compactRx(state, cursor);
     }
 
     /// Watches the request/response HEADERS that flow through
@@ -5498,6 +5530,10 @@ pub const Session = struct {
         event: message_mod.Event,
     ) Error!void {
         const out: Event = switch (event) {
+            // Field sections are owned by `event` (the decoder
+            // transferred them) — they move into the session event
+            // verbatim instead of being cloned. The caller marks the
+            // source event as transferred so its deinit skips them.
             .headers => |fields| blk: {
                 var in_early_data = false;
                 if (self.role == .server and kind == .request) {
@@ -5507,19 +5543,19 @@ pub const Session = struct {
                 break :blk .{ .headers = .{
                     .stream_id = stream_id,
                     .kind = kind,
-                    .fields = try cloneFields(self.allocator, fields),
+                    .fields = fields,
                     .arrived_in_early_data = in_early_data,
                 } };
             },
             .interim_headers => |fields| .{ .interim_headers = .{
                 .stream_id = stream_id,
                 .kind = kind,
-                .fields = try cloneFields(self.allocator, fields),
+                .fields = fields,
             } },
             .trailers => |fields| .{ .trailers = .{
                 .stream_id = stream_id,
                 .kind = kind,
-                .fields = try cloneFields(self.allocator, fields),
+                .fields = fields,
             } },
             .data => |bytes| .{ .data = .{
                 .stream_id = stream_id,
