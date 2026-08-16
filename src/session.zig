@@ -3250,16 +3250,20 @@ pub const Session = struct {
         // higher layer pairs with its own GOAWAY signal. Existing stream-limit
         // credit is not revoked, so in-flight streams still complete.
         //
-        // EXCEPT while established WebTransport sessions are live:
-        // draft-16 requires them to survive GOAWAY — including opening
-        // NEW substreams — so the transport latch is deferred until the
-        // last one ends (`endWebTransportSession` fires it). The H3
-        // request gates enforce GOAWAY on their own during the window.
+        // EXCEPT while WebTransport sessions are live — established OR
+        // pending: draft-16 requires established sessions to survive
+        // GOAWAY (including opening NEW substreams), and a pending
+        // CONNECT admitted before the GOAWAY can still be accepted
+        // afterward, at which point it needs fresh stream credit the
+        // latched transport would never grant. The latch is deferred
+        // until the last session ends (`endWebTransportSession` fires
+        // it); the H3 request gates enforce GOAWAY on their own during
+        // the window.
         // Long quiet drains are the embedder's keepalive problem:
         // max_idle_timeout keeps running, so drive
         // `Connection.requestPing()` (or WT-level traffic) if sessions
         // can go traffic-idle for minutes.
-        if (self.webTransportEstablishedCount() > 0) {
+        if (self.webTransportEstablishedCount() > 0 or self.webTransportPendingCount() > 0) {
             self.graceful_shutdown_deferred = true;
         } else {
             self.quic.beginGracefulShutdown();
@@ -3756,6 +3760,20 @@ pub const Session = struct {
                     self.metrics_counters.datagrams_dropped_orphan += 1;
                     continue;
                 }
+            }
+            // Budget headroom is checked BEFORE anything is consumed:
+            // receiveDatagramInfo already popped the datagram, so an
+            // EventQueueFull from reserve would silently lose it.
+            // Exhausted budgets break instead — the remaining datagrams
+            // stay queued for the next drain. A single oversized
+            // datagram still surfaces EventPayloadTooLarge per the
+            // documented budget contract (datagrams are unreliable; the
+            // caller sees the explicit error rather than silent loss).
+            if (budget.max_events != null and budget.events >= budget.max_events.?) break;
+            if (budget.max_payload_bytes != null and
+                decoded.payload.len > budget.max_payload_bytes.? -| budget.payload_bytes)
+            {
+                break;
             }
             try budget.reserve(decoded.payload.len);
             const payload = try self.allocator.dupe(u8, decoded.payload);
@@ -5273,6 +5291,12 @@ pub const Session = struct {
         budget: *DrainBudget,
     ) Error!void {
         if (state.recv_reset_seen) return;
+        // Reserve the terminal event slot BEFORE mutating recv state: if
+        // the budget throws here the next drain retries cleanly, whereas
+        // the old mutate-then-reserve ordering dropped the reset event
+        // forever on EventQueueFull (recv_reset_seen short-circuited the
+        // retry).
+        try budget.reserve(0);
         try self.cancelQpackDecodeForStream(state.id);
         state.rx.clearRetainingCapacity();
         state.recv_reset_seen = true;
@@ -5280,9 +5304,13 @@ pub const Session = struct {
 
         // A peer RESET of the CONNECT stream tears the session down the
         // same way a FIN does — reset-close event with the wire code
-        // preserved [draft-ietf-webtrans-http3 §4.6].
+        // preserved [draft-ietf-webtrans-http3 §4.6]. The helper
+        // reserves before mutating, so a budget error here loses only
+        // the session-close event; the reset event below must still
+        // surface, so budget errors are swallowed and non-budget errors
+        // propagate.
         if (self.wt_sessions.contains(state.id)) {
-            try self.closeWebTransportSessionWithEvent(
+            self.closeWebTransportSessionWithEvent(
                 state.id,
                 events,
                 budget,
@@ -5290,7 +5318,9 @@ pub const Session = struct {
                 null,
                 "",
                 error_code,
-            );
+            ) catch |err| {
+                if (!isLocalDrainBudgetError(err)) return err;
+            };
         }
 
         // If we locally rejected this stream (e.g. via the
@@ -5299,8 +5329,6 @@ pub const Session = struct {
         // it as a fresh `webtransport_stream_reset` event because no
         // `webtransport_stream_opened` was ever emitted to pair with it.
         if (state.locally_rejected) return;
-
-        try budget.reserve(0);
 
         // RESETs on a WebTransport stream carry application error codes
         // mapped through the §4.6 algorithm. Surface both the wire code and
@@ -5367,6 +5395,11 @@ pub const Session = struct {
     fn validateDatagramSend(self: *Session, stream_id: u64, payload_len: usize) Error!void {
         try datagram_mod.validateStreamId(stream_id);
 
+        // RFC 9297 §2.1.1: a QUIC DATAGRAM MUST NOT be sent until
+        // SETTINGS_H3_DATAGRAM has been both SENT and received with
+        // value 1 — gate on our own advertised setting too, not just
+        // the peer's.
+        if (!self.local_settings.h3_datagram) return Error.DatagramNotEnabled;
         const peer = self.effectivePeerSettings() orelse return Error.MissingSettings;
         if (!peer.h3_datagram) return Error.DatagramNotEnabled;
 
