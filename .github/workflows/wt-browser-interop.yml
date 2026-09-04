@@ -142,7 +142,7 @@ jobs:
 
       - name: Set up Firefox (latest)
         id: setup-firefox
-        uses: browser-actions/setup-firefox@2ddc1281882c66dd6a359947714eed0a4b91afc1 # v1
+        uses: browser-actions/setup-firefox@0bc507ddf224827e3b1af68e014d5e42ab93e795 # v1
         with:
           firefox-version: latest
 
