@@ -97,9 +97,31 @@ pub fn encodeEncoderInstruction(dst: []u8, instruction: EncoderInstruction) Erro
     return pos;
 }
 
+/// Options for `decodeEncoderInstructionWithOptions`.
+pub const EncoderDecodeOptions = struct {
+    /// Pre-allocation gate for inserted name/value strings: the
+    /// worst-case decoded length (Huffman strings can expand up to
+    /// ceil(8/5) their encoded length) is checked BEFORE the transient
+    /// decode allocation. The natural bound is the receiver-advertised
+    /// QPACK max table capacity — a string longer than it can never be
+    /// part of a legal entry (RFC 9204 §3.2.1/§4.3.1), so the gate
+    /// bounds decode work and heap without rejecting valid
+    /// instructions. Default: no gate (the received-buffer bound is
+    /// the only limit).
+    max_string_len: ?usize = null,
+};
+
 pub fn decodeEncoderInstruction(
     allocator: std.mem.Allocator,
     src: []const u8,
+) Error!DecodedEncoderInstruction {
+    return decodeEncoderInstructionWithOptions(allocator, src, .{});
+}
+
+pub fn decodeEncoderInstructionWithOptions(
+    allocator: std.mem.Allocator,
+    src: []const u8,
+    options: EncoderDecodeOptions,
 ) Error!DecodedEncoderInstruction {
     if (src.len == 0) return error.InsufficientBytes;
 
@@ -108,7 +130,7 @@ pub fn decodeEncoderInstruction(
     if ((first & 0x80) != 0) {
         const index = try decodeEncoderInteger(src[pos..], 6);
         pos += index.bytes_read;
-        const value = try readEncoderStringAlloc(allocator, src, &pos, 7);
+        const value = try readEncoderStringAlloc(allocator, src, &pos, 7, options.max_string_len);
         return .{
             .instruction = .{ .insert_name_ref = .{
                 .table = if ((first & 0x40) != 0) .static else .dynamic,
@@ -121,9 +143,9 @@ pub fn decodeEncoderInstruction(
     }
 
     if ((first & 0x40) != 0) {
-        const name = try readEncoderStringAlloc(allocator, src, &pos, 5);
+        const name = try readEncoderStringAlloc(allocator, src, &pos, 5, options.max_string_len);
         errdefer allocator.free(name.value);
-        const value = try readEncoderStringAlloc(allocator, src, &pos, 7);
+        const value = try readEncoderStringAlloc(allocator, src, &pos, 7, options.max_string_len);
         return .{
             .instruction = .{ .insert_literal = .{
                 .name = name.value,
@@ -268,6 +290,7 @@ fn readEncoderStringAlloc(
     src: []const u8,
     pos: *usize,
     prefix_bits: u8,
+    max_string_len: ?usize,
 ) Error!DecodedString {
     if (pos.* >= src.len) return error.InsufficientBytes;
     const huffman_mask: u8 = @as(u8, 1) << @intCast(prefix_bits);
@@ -278,6 +301,14 @@ fn readEncoderStringAlloc(
     // such a string can never be satisfied by any buffer.
     const len_usize = std.math.cast(usize, len.value) orelse return error.InsufficientBytes;
     if (src.len - pos.* < len_usize) return error.InsufficientBytes;
+    // Pre-allocation gate (see EncoderDecodeOptions.max_string_len):
+    // bound the worst-case decoded length BEFORE Huffman-decoding, so
+    // the transient expansion is capped by receiver configuration
+    // rather than the QUIC flow-control window.
+    if (max_string_len) |max| {
+        const bound = if (huffman_encoded) (len_usize * 8 + 4) / 5 else len_usize;
+        if (bound > max) return error.EntryTooLarge;
+    }
     const encoded = src[pos.* .. pos.* + len_usize];
     pos.* += len_usize;
     const value = if (huffman_encoded) try huffman.decode(allocator, encoded) else try allocator.dupe(u8, encoded);

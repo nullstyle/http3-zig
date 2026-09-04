@@ -22,10 +22,24 @@ pub const Opcode = enum(u4) {
     }
 };
 
+/// Receive-side masking policy. RFC 6455 §5.1 (which RFC 9220's
+/// WebSocket-over-HTTP/3 framing inherits wholesale — RFC 9220 does not
+/// relax it): a client MUST mask every frame it sends and a server MUST
+/// NOT, so a conforming endpoint decodes with `.forbidden` (client role
+/// — the peer is the server) or `.required` (server role — the peer is
+/// the client). `.any` accepts both and exists for harnesses, captures,
+/// and non-conforming peers; `DecodeOptions.forRole` picks the
+/// conforming policy for you.
 pub const MaskPolicy = enum {
     any,
     required,
     forbidden,
+};
+
+/// The local endpoint's WebSocket role, for `DecodeOptions.forRole`.
+pub const EndpointRole = enum {
+    client,
+    server,
 };
 
 pub const Error = std.mem.Allocator.Error || error{
@@ -53,6 +67,17 @@ pub const EncodeOptions = struct {
 pub const DecodeOptions = struct {
     mask_policy: MaskPolicy = .any,
     max_payload_len: ?usize = null,
+
+    /// The conforming default for an endpoint: `.forbidden` when the
+    /// local role is the WebSocket client (RFC 6455 §5.1: servers MUST
+    /// NOT mask), `.required` when it is the server (clients MUST
+    /// mask).
+    pub fn forRole(role: EndpointRole) DecodeOptions {
+        return .{ .mask_policy = switch (role) {
+            .client => .forbidden,
+            .server => .required,
+        } };
+    }
 };
 
 pub const Frame = struct {

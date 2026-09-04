@@ -183,10 +183,23 @@ pub const Decoder = struct {
     pub fn observe(self: *Decoder, allocator: std.mem.Allocator, f: frame_mod.Frame) Error!?Event {
         switch (f) {
             .headers => |block| {
+                // SETTINGS_MAX_FIELD_SECTION_SIZE bounds the DECODED
+                // field section (RFC 9114 §4.2.2: 32 + name + value per
+                // field). The cheap encoded-length pre-gate uses the
+                // worst-case Huffman expansion (~1.6x, 2x slack) to
+                // bound the decode work; the exact accounting runs
+                // after decoding. (The session layer enforces the same
+                // accounting via its QPACK decode budget.)
                 if (self.options.max_field_section_size) |max| {
-                    if (block.len > max) return Error.HeaderSectionTooLarge;
+                    if (block.len > max *| 2) return Error.HeaderSectionTooLarge;
                 }
                 const fields = try qpack.decodeFieldSection(allocator, block);
+                if (self.options.max_field_section_size) |max| {
+                    if (decodedFieldSectionSize(fields) > max) {
+                        qpack.freeFieldSection(allocator, fields);
+                        return Error.HeaderSectionTooLarge;
+                    }
+                }
                 return try self.observeOwnedFieldLines(allocator, fields);
             },
             .data => |bytes| {
@@ -332,15 +345,29 @@ pub const Decoder = struct {
     }
 };
 
+/// Exact RFC 9114 §4.2.2 field-section size: 32 + name + value per
+/// field, saturating so an adversarial section cannot overflow the
+/// accumulator.
+fn decodedFieldSectionSize(fields: []const qpack.FieldLine) usize {
+    var total: usize = 0;
+    for (fields) |field| {
+        total = total +| 32 +| field.name.len +| field.value.len;
+    }
+    return total;
+}
+
 pub fn encodeHeadersFrame(
     dst: []u8,
     fields: []const qpack.FieldLine,
     options: EncodeOptions,
 ) Error!usize {
-    const field_section_len = qpack.fieldSectionEncodedLen(fields);
+    // The cap applies to the decoded size the PEER will enforce
+    // (RFC 9114 §4.2.2 accounting), not our encoded (compressed)
+    // length.
     if (options.max_field_section_size) |max| {
-        if (field_section_len > max) return Error.HeaderSectionTooLarge;
+        if (decodedFieldSectionSize(fields) > max) return Error.HeaderSectionTooLarge;
     }
+    const field_section_len = qpack.fieldSectionEncodedLen(fields);
 
     var pos: usize = 0;
     pos += try varint.encode(dst[pos..], protocol.FrameType.headers);
@@ -354,6 +381,11 @@ pub fn encodeHeadersFrameFromBlock(
     field_section: []const u8,
     options: EncodeOptions,
 ) Error!usize {
+    // The block is pre-encoded, so the exact RFC 9114 §4.2.2 decoded
+    // size is not available without decoding; the encoded length is a
+    // lower bound (Huffman only shrinks), which keeps this a conservative
+    // gate for senders that already validated the fields (as the session
+    // layer's own encode paths do).
     if (options.max_field_section_size) |max| {
         if (field_section.len > max) return Error.HeaderSectionTooLarge;
     }

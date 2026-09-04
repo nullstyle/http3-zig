@@ -27,6 +27,9 @@ const fieldValue = fixt.fieldValue;
 const H3Pair = fixt.H3Pair;
 const exchangePairSettings = fixt.exchangePairSettings;
 const openGetAndAwaitServerHeaders = fixt.openGetAndAwaitServerHeaders;
+const writeQpackEncoderInstruction = fixt.writeQpackEncoderInstruction;
+const expectPairH3Error = fixt.expectPairH3Error;
+const expectLastCloseCode = fixt.expectLastCloseCode;
 
 const qpack = http3_zig.qpack;
 
@@ -467,4 +470,35 @@ test "long-lived pair with repeated hot headers eventually emits Duplicate on th
     // shows the same identical pair. (Its HEADERS decode required the
     // duplicate's insert count, so the instruction has been applied.)
     try std.testing.expect(hasDuplicateEntryPair(&pair.server_h3.qpack_decoder_table));
+}
+
+test "an invalid index on the peer's QPACK encoder stream closes with QPACK_ENCODER_STREAM_ERROR" {
+    const allocator = std.testing.allocator;
+
+    // RFC 9204 §4.3.2: an encoder instruction referencing an absent
+    // entry (here: a Duplicate of index 0 on an empty dynamic table) is
+    // an error on the ENCODER STREAM — the connection must close with
+    // QPACK_ENCODER_STREAM_ERROR (0x201), not the
+    // QPACK_DECOMPRESSION_FAILED (0x200) those codec errors carry when
+    // raised from field-section decoding.
+    var pair: H3Pair = undefined;
+    try pair.initStarted(
+        allocator,
+        .{ .enable_qpack_streams = true },
+        .{ .enable_qpack_streams = true },
+    );
+    defer pair.deinit();
+    try exchangePairSettings(allocator, &pair);
+
+    const client_encoder = pair.client_h3.qpack_encoder_stream_id orelse
+        return error.TestUnexpectedResult;
+    // Duplicate of index 0 encodes to the single byte 0x00 — no entry 0
+    // exists yet on a fresh dynamic table.
+    try writeQpackEncoderInstruction(&pair.client, client_encoder, .{ .duplicate = 0 });
+
+    try expectPairH3Error(allocator, &pair, error.QpackEncoderStreamIndex);
+    try expectLastCloseCode(
+        &pair.server_h3,
+        http3_zig.protocol.ErrorCode.qpack_encoder_stream_error,
+    );
 }

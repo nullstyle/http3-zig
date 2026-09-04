@@ -77,12 +77,13 @@ const DecodeBudget = struct {
 
     /// Transient headroom for a string whose decoded length is not yet
     /// known: Huffman output is bounded by ceil(encoded_len * 8 / 5)
-    /// (the minimum code length is 5 bits). Callers reserve this
+    /// (the minimum code length is 5 bits); a non-Huffman literal
+    /// decodes to exactly its encoded length. Callers reserve this
     /// BEFORE decoding/allocating the string so the decoded-bytes
     /// budget acts as a pre-allocation guard, then `settleString`
     /// swaps the bound for the exact length once known.
-    fn reserveString(self: *DecodeBudget, encoded_len: usize) Error!usize {
-        const bound = (encoded_len * 8 + 4) / 5;
+    fn reserveString(self: *DecodeBudget, encoded_len: usize, huffman_encoded: bool) Error!usize {
+        const bound = if (huffman_encoded) (encoded_len * 8 + 4) / 5 else encoded_len;
         if (self.max_decoded_bytes) |max| {
             if (bound > max or self.decoded_bytes > max - bound) {
                 return error.DecodedFieldSectionTooLarge;
@@ -759,7 +760,7 @@ fn readStringWithBudget(
     // Reserve decoded-byte headroom BEFORE huffman.decode / dupe so
     // the budget is a pre-allocation guard, not a post-allocation
     // rejection (~1.6x Huffman expansion was the old transient spike).
-    const reserved = try budget.reserveString(len_usize);
+    const reserved = try budget.reserveString(len_usize, huffman_encoded);
     pos.* += len.bytes_read;
     const encoded = src[pos.* .. pos.* + len_usize];
     pos.* += len_usize;

@@ -180,6 +180,8 @@ pub fn codeForError(err: anyerror) u64 {
         error.MissingHeaders,
         error.EmptyFieldName,
         error.UppercaseFieldName,
+        error.InvalidFieldNameCharacter,
+        error.InvalidFieldValueCharacter,
         error.PseudoHeaderAfterRegular,
         error.DuplicatePseudoHeader,
         error.MissingPseudoHeader,
@@ -218,6 +220,14 @@ pub fn codeForError(err: anyerror) u64 {
         // QPACK_ENCODER_STREAM_ERROR, not QPACK_DECOMPRESSION_FAILED.
         error.EntryTooLarge,
         error.CapacityTooLarge,
+        // RFC 9204 §4.3.2: an invalid index in an encoder instruction
+        // (Set Capacity aside, a Duplicate of an absent entry) is an
+        // error on the ENCODER stream specifically. The session layer
+        // translates InvalidStaticIndex/InvalidDynamicIndex raised by
+        // applyEncoderInstruction into this error at the encoder-stream
+        // call site; the bare errors below keep their field-section
+        // meaning (QPACK_DECOMPRESSION_FAILED).
+        error.QpackEncoderStreamIndex,
         => protocol.ErrorCode.qpack_encoder_stream_error,
         error.MalformedDecoderInstruction,
         error.InsertCountIncrementZero,

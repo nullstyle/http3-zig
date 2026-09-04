@@ -157,6 +157,38 @@ test "NORMATIVE encoder accepts HEADERS then DATA then trailers on a response st
     try std.testing.expect(enc.sent_trailers);
 }
 
+test "SETTINGS_MAX_FIELD_SECTION_SIZE bounds the decoded, not compressed, size [RFC9114 §4.2.2]" {
+    // A Huffman-compressed section can be well under the cap on the wire
+    // while its decoded size (32 + name + value per field) is over it —
+    // the standalone message codec must enforce the decoded accounting
+    // (the session layer already does via its QPACK decode budget).
+    const allocator = std.testing.allocator;
+
+    var value_buf: [400]u8 = undefined;
+    @memset(&value_buf, 'a');
+    const fields = [_]FieldLine{
+        .{ .name = ":method", .value = "GET" },
+        .{ .name = ":scheme", .value = "https" },
+        .{ .name = ":path", .value = "/" },
+        .{ .name = "x-compressible", .value = value_buf[0..] },
+    };
+    var block: [512]u8 = undefined;
+    const block_n = try http3_zig.qpack.encodeFieldSectionWithOptions(&block, &fields, .{ .huffman = true });
+
+    // Wire proof: the compressed block is under the 512-byte cap below
+    // while the decoded accounting exceeds it.
+    var decoded_size: usize = 0;
+    for (fields) |f| decoded_size += 32 + f.name.len + f.value.len;
+    try std.testing.expect(block_n < 512);
+    try std.testing.expect(decoded_size > 512);
+
+    var dec = MessageDecoder.init(.request, .{ .max_field_section_size = 512 });
+    try std.testing.expectError(
+        message.Error.HeaderSectionTooLarge,
+        dec.observe(allocator, .{ .headers = block[0..block_n] }),
+    );
+}
+
 test "MUST NOT close a request stream before any HEADERS section was observed [RFC9114 §4.1 ¶3]" {
     // §4.1 last paragraph: "A server can send a complete response prior to
     // ... receiving the entire request ... ", but also defines that a
@@ -202,6 +234,78 @@ test "MUST NOT accept an empty field name [RFC9114 §4.2 ¶?]" {
         .{ .name = "", .value = "x" },
     };
     try std.testing.expectError(headers.Error.EmptyFieldName, headers.validateRequest(&fields));
+}
+
+test "MUST NOT accept a field name containing a non-tchar character [RFC9114 §4.2 / RFC 9110 §5.1]" {
+    // A field name is 1*tchar; anything else (whitespace, CTLs, DEL,
+    // separators like "(" or "/") makes the message malformed.
+    const bad_names = [_][]const u8{ "bad name", "bad\x00name", "bad\x7fname", "bad(name", "bad/name", "bad:name" };
+    for (bad_names) |bad| {
+        const fields = [_]FieldLine{
+            .{ .name = ":method", .value = "GET" },
+            .{ .name = ":scheme", .value = "https" },
+            .{ .name = ":path", .value = "/" },
+            .{ .name = bad, .value = "x" },
+        };
+        try std.testing.expectError(
+            headers.Error.InvalidFieldNameCharacter,
+            headers.validateRequest(&fields),
+        );
+    }
+}
+
+test "MUST accept a field name built from the full tchar set [RFC9110 §5.1]" {
+    const fields = [_]FieldLine{
+        .{ .name = ":method", .value = "GET" },
+        .{ .name = ":scheme", .value = "https" },
+        .{ .name = ":path", .value = "/" },
+        .{ .name = "!#$%&'*+-.^_`|~0123456789abcdefghijklmnopqrstuvwxyz", .value = "ok" },
+    };
+    try headers.validateRequest(&fields);
+}
+
+test "MUST NOT accept a field value containing a CTL or DEL [RFC9114 §4.2 / RFC 9110 §5.5]" {
+    // field-value runs HTAB / SP / VCHAR / obs-text; NUL, CR, LF, other
+    // CTLs, and DEL make the message malformed. obs-fold is equally
+    // rejected in HTTP/3.
+    const bad_values = [_][]const u8{ "bad\x00value", "bad\rvalue", "bad\nvalue", "bad\x01value", "bad\x7fvalue", "folded\r\n value" };
+    for (bad_values) |bad| {
+        const fields = [_]FieldLine{
+            .{ .name = ":method", .value = "GET" },
+            .{ .name = ":scheme", .value = "https" },
+            .{ .name = ":path", .value = "/" },
+            .{ .name = "x-custom", .value = bad },
+        };
+        try std.testing.expectError(
+            headers.Error.InvalidFieldValueCharacter,
+            headers.validateRequest(&fields),
+        );
+    }
+}
+
+test "MUST accept field values with HTAB, SP, and obs-text octets [RFC 9110 §5.5]" {
+    const fields = [_]FieldLine{
+        .{ .name = ":method", .value = "GET" },
+        .{ .name = ":scheme", .value = "https" },
+        .{ .name = ":path", .value = "/" },
+        .{ .name = "x-custom", .value = "tab\there space \xc3\xa9\xf0\x9f\x8c\x80" },
+    };
+    try headers.validateRequest(&fields);
+}
+
+test "MUST NOT accept a malformed pseudo-header name [RFC9114 §4.2 / RFC 9110 §5.1]" {
+    // ":" alone is not a token; the part after the colon must still be
+    // 1*tchar.
+    const fields = [_]FieldLine{
+        .{ .name = ":", .value = "x" },
+        .{ .name = ":method", .value = "GET" },
+        .{ .name = ":scheme", .value = "https" },
+        .{ .name = ":path", .value = "/" },
+    };
+    try std.testing.expectError(
+        headers.Error.InvalidFieldNameCharacter,
+        headers.validateRequest(&fields),
+    );
 }
 
 test "MUST NOT accept a Connection field on a request [RFC9114 §4.2 ¶?]" {

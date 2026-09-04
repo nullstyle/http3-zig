@@ -1274,14 +1274,44 @@ test "MUST refuse to encode an insert_count_increment of 0 (QPACK_DECODER_STREAM
 }
 
 test "MUST refuse to encode-stream apply a malformed instruction (QPACK_ENCODER_STREAM_ERROR) [RFC9204 §6]" {
-    // applyEncoderInstruction on a duplicate of an absent index MUST
-    // surface InvalidDynamicIndex, the codec-level error that the
-    // session layer maps to QPACK_ENCODER_STREAM_ERROR.
+    // applyEncoderInstruction on a duplicate of an absent index surfaces
+    // InvalidDynamicIndex at the codec level. The SESSION layer
+    // translates it at the encoder-stream origin into
+    // error.QpackEncoderStreamIndex, which closes the connection with
+    // QPACK_ENCODER_STREAM_ERROR — see the session-level test in
+    // tests/integration/qpack_dynamic_posture.zig for the asserted wire
+    // code. Decoding the same bare error from a FIELD SECTION stays
+    // QPACK_DECOMPRESSION_FAILED.
     var table = qpack.DynamicTable.init(std.testing.allocator, 256);
     defer table.deinit();
     try table.setCapacity(256);
     try std.testing.expectError(
         qpack.dynamic_table.Error.InvalidDynamicIndex,
         instructions_mod.applyEncoderInstruction(&table, .{ .duplicate = 0 }),
+    );
+}
+
+test "MUST bound inserted-string decoding at the receiver-advertised table capacity [RFC9204 §3.2.1 / §4.3.1]" {
+    const allocator = std.testing.allocator;
+    var buf: [256]u8 = undefined;
+    const n = try instructions_mod.encodeEncoderInstruction(&buf, .{ .insert_literal = .{
+        .name = "x-very-long-header-field-name",
+        .value = "and-a-correspondingly-long-value-string",
+        .name_huffman = false,
+        .value_huffman = false,
+    } });
+    // Without a gate the instruction decodes (the table apply step
+    // would reject the entry only AFTER the allocations).
+    const ungated = try instructions_mod.decodeEncoderInstruction(allocator, buf[0..n]);
+    instructions_mod.freeDecodedEncoderInstruction(allocator, ungated);
+    // With the gate, the over-capacity string is rejected before any
+    // decode allocation — the session layer passes its advertised max
+    // table capacity here, bounding the encoder-stream receive path by
+    // configuration instead of the QUIC flow-control window.
+    try std.testing.expectError(
+        error.EntryTooLarge,
+        instructions_mod.decodeEncoderInstructionWithOptions(allocator, buf[0..n], .{
+            .max_string_len = 8,
+        }),
     );
 }

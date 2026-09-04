@@ -506,3 +506,33 @@ test "session enforces decoded field-line count budget" {
     try expectServerRequestRejected(allocator, &pair, stream_id, http3_zig.protocol.ErrorCode.message_error);
     try std.testing.expectEqual(http3_zig.session.ShutdownState.active, pair.server_h3.shutdownState());
 }
+
+test "session rejects an unknown/GREASE frame as the first control-stream frame" {
+    const allocator = std.testing.allocator;
+
+    // RFC 9114 §6.2.1: "the first frame on the control stream MUST be
+    // SETTINGS" — a GREASE/unknown type first is not "ignore unknown
+    // frame" territory; the connection closes with H3_MISSING_SETTINGS.
+    // The client session is deliberately never started (a started
+    // session writes SETTINGS as its own first control frame), so the
+    // raw uni stream below is the peer's first control stream.
+    var pair: H3Pair = undefined;
+    pair.client_tls = try http3_zig.client.initTlsContext(.{ .verify = .none });
+    pair.server_tls = try http3_zig.server.initTlsContext(.{}, test_cert_pem, test_key_pem);
+    try initConnectedQuic(allocator, pair.client_tls, pair.server_tls, &pair.client, &pair.server);
+    pair.client_h3 = http3_zig.Session.init(allocator, .client, &pair.client, .{ .enable_grease = false });
+    pair.server_h3 = http3_zig.Session.init(allocator, .server, &pair.server, .{ .enable_grease = false });
+    defer pair.deinit();
+    try pair.server_h3.start();
+
+    // Raw hostile control stream: stream type 0x00, then a GREASE frame
+    // (type 0x40, declared length 0) before any SETTINGS.
+    const hostile: u64 = 2;
+    try openUniWithType(&pair.client, hostile, 0x00);
+    try writeVarint(&pair.client, hostile, 0x40);
+    try writeVarint(&pair.client, hostile, 0);
+
+    try expectPairH3Error(allocator, &pair, error.MissingSettings);
+    try std.testing.expectEqual(http3_zig.session.ShutdownState.closed, pair.server_h3.shutdownState());
+    try expectLastCloseCode(&pair.server_h3, http3_zig.protocol.ErrorCode.missing_settings);
+}

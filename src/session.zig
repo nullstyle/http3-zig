@@ -40,6 +40,14 @@ pub const Error = quic.conn.state.Error ||
         /// A second control / QPACK encoder / QPACK decoder uni stream was
         /// opened locally; only one of each is allowed (RFC 9114 §6.2).
         CriticalStreamAlreadyOpen,
+        /// An encoder-stream instruction referenced an invalid static or
+        /// dynamic table index. Raised by translating
+        /// `error.InvalidStaticIndex` / `error.InvalidDynamicIndex` at the
+        /// encoder-stream origin so the connection closes with
+        /// QPACK_ENCODER_STREAM_ERROR (RFC 9204 §4.3.2) instead of the
+        /// QPACK_DECOMPRESSION_FAILED code those errors carry when raised
+        /// from field-section decoding.
+        QpackEncoderStreamIndex,
         /// `start()` was called after the QPACK encoder + decoder streams
         /// were already opened — internal state-machine guard.
         QpackStreamsAlreadyOpen,
@@ -4887,23 +4895,53 @@ pub const Session = struct {
 
     fn processQpackEncoderState(self: *Session, state: *StreamState) Error!void {
         while (state.rx.items.len > 0) {
-            const decoded = qpack.instructions.decodeEncoderInstruction(
+            // Gate inserted-string decoding at the max table capacity WE
+            // advertised: a string that cannot fit any legal entry is
+            // rejected before the transient Huffman-expansion
+            // allocation, so the encoder-stream receive path is bounded
+            // by this config knob rather than only the QUIC
+            // flow-control window.
+            const decoded = qpack.instructions.decodeEncoderInstructionWithOptions(
                 self.allocator,
                 state.rx.items,
+                .{ .max_string_len = self.qpack_decoder_table.max_capacity },
             ) catch |err| {
                 if (err == error.InsufficientBytes) {
                     try self.flushQpackInsertCountIncrement();
                     return;
                 }
-                self.closeForError(err);
-                return err;
+                // An invalid index in an encoder instruction is an error
+                // on the encoder stream (QPACK_ENCODER_STREAM_ERROR,
+                // RFC 9204 §4.3.2), while the same bare errors raised
+                // while decoding a field section are
+                // QPACK_DECOMPRESSION_FAILED — translate at this origin
+                // boundary so the shared classification stays correct
+                // for both.
+                const scoped_err = switch (err) {
+                    error.InvalidStaticIndex, error.InvalidDynamicIndex => error.QpackEncoderStreamIndex,
+                    else => err,
+                };
+                self.closeForError(scoped_err);
+                return scoped_err;
             };
             defer qpack.instructions.freeDecodedEncoderInstruction(self.allocator, decoded);
 
-            _ = try self.qpack_decoder_state.applyEncoderInstruction(
+            _ = self.qpack_decoder_state.applyEncoderInstruction(
                 &self.qpack_decoder_table,
                 decoded.instruction,
-            );
+            ) catch |err| {
+                // Same origin translation as the decode step above: an
+                // invalid index in an encoder instruction closes with
+                // QPACK_ENCODER_STREAM_ERROR (RFC 9204 §4.3.2), not the
+                // field-section QPACK_DECOMPRESSION_FAILED code the bare
+                // errors carry elsewhere.
+                const scoped_err = switch (err) {
+                    error.InvalidStaticIndex, error.InvalidDynamicIndex => error.QpackEncoderStreamIndex,
+                    else => err,
+                };
+                self.closeForError(scoped_err);
+                return scoped_err;
+            };
             self.trace(.{
                 .name = .qpack_encoder_instruction_received,
                 .role = self.role,

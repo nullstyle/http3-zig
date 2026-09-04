@@ -56,7 +56,7 @@
 //!   RFC9114 §4.3.1, §4.3.2 generic :method / :scheme / :path / :authority / :protocol pseudo-header rules
 //!                                                                                    → rfc9114_messages.zig
 //!   RFC6455 §5             frame layout, masking, fragmentation, control sizing      → rfc6455_websocket.zig
-//!   RFC9220 §4.5           "client-side masking is not necessary"                    → rfc6455_websocket.zig
+//!   (RFC 6455 §5.1)      masking direction (client masks, server does not)          → rfc6455_websocket.zig
 
 const std = @import("std");
 const http3_zig = @import("http3_zig");

@@ -8,12 +8,13 @@
 //!     reassembly, UTF-8 validation on text + close-reason, and aggregate
 //!     size limits.
 //!
-//! RFC 9220 §4.5 ¶? notes that masking is "not necessary" over HTTP/3
-//! because the QUIC transport already provides reliable framing. http3_zig's
-//! codec still implements the RFC 6455 wire shape (so an HTTP/3 endpoint
-//! can interop with an RFC 6455 over TCP peer through a translating
-//! intermediary, and so the codec can be used for testing and tooling).
-//! Both directions are exercised here.
+//! Masking over HTTP/3: RFC 9220 says nothing about masking — it
+//! inherits RFC 6455 framing wholesale, and RFC 6455 §5.1 still applies
+//! (clients MUST mask, servers MUST NOT). Conforming endpoints decode
+//! with `frame.DecodeOptions.forRole(.client/.server)`; the codec also
+//! keeps the permissive `MaskPolicy.any` for harnesses, captures, and
+//! translating intermediaries, which is exercised here separately from
+//! the MUST-strength policies.
 //!
 //! ## Coverage
 //!
@@ -22,7 +23,7 @@
 //!   RFC6455 §5.1 ¶?  MUST       server-to-client frames are NOT masked (encode)
 //!   RFC6455 §5.1 ¶?  MUST NOT   accept an unmasked client-to-server frame (decode policy=required)
 //!   RFC6455 §5.1 ¶?  MUST NOT   accept a masked server-to-client frame (decode policy=forbidden)
-//!   RFC9220 §4.5 ¶?  MAY        accept either masked or unmasked frames under MaskPolicy.any
+//!   (codec)          MAY        accept either masked or unmasked frames under MaskPolicy.any (harness/intermediary posture — NOT an RFC 9220 relaxation)
 //!   RFC6455 §5.2 ¶?  MUST       FIN=1 marks final frame of a message
 //!   RFC6455 §5.2 ¶?  MUST NOT   accept a frame with any of RSV1/RSV2/RSV3 set
 //!   RFC6455 §5.2 ¶?  NORMATIVE  Opcode classifier distinguishes data vs. control
@@ -66,7 +67,7 @@
 //!     to gate. This is documented as `Pong carries optional <=125-byte
 //!     payload` in the Covered list above.
 //!   RFC9220 §3, §4   bootstrap handshake / SETTINGS_ENABLE_CONNECT_PROTOCOL → rfc9220_websocket_h3.zig
-//!   RFC9220 §4.5 ¶?  "client-side masking is not necessary in HTTP/3"        — exercised here, both
+//!   (codec)          MaskPolicy.any tolerance                            — exercised here, both
 //!                                                                             masked and unmasked paths.
 //!   RFC6455 §11      Extension/subprotocol registries                        → IANA, not a codec test.
 
@@ -126,11 +127,12 @@ test "MUST NOT accept a masked server-to-client frame on the client's decoder [R
     );
 }
 
-test "MAY skip masking on a WebSocket-over-HTTP/3 client frame [RFC9220 §4.5 ¶?]" {
-    // RFC 9220 §4.5: over HTTP/3, the QUIC stream provides reliable
-    // framing, so client-to-server masking is "not necessary". http3_zig's
-    // codec supports unmasked frames in either direction when the
-    // policy is `.any` (the default).
+test "MaskPolicy.any tolerates an unmasked client frame (codec posture, not an RFC allowance)" {
+    // RFC 9220 does not relax RFC 6455 §5.1 — a conforming SERVER
+    // decodes with `.required` and rejects this frame. The `.any`
+    // policy exists for harnesses, captures, and translating
+    // intermediaries, and tolerates unmasked frames in either
+    // direction.
     var buf: [16]u8 = undefined;
     const n = try frame.encodeText(&buf, "hi", .{ .mask = false });
     try std.testing.expectEqual(@as(u8, 0), buf[1] & 0x80);
@@ -140,10 +142,11 @@ test "MAY skip masking on a WebSocket-over-HTTP/3 client frame [RFC9220 §4.5 ¶
     try std.testing.expectEqualStrings("hi", decoded.frame.payload);
 }
 
-test "MAY accept either masked or unmasked frames under MaskPolicy.any [RFC9220 §4.5 ¶?]" {
-    // The default `mask_policy = .any` is the symmetric companion to the
-    // §4.5 "masking not necessary" relaxation: the codec accepts both a
-    // masked and an unmasked frame on the same decoder configuration.
+test "MaskPolicy.any accepts either masked or unmasked frames [codec posture]" {
+    // The default `mask_policy = .any` accepts both a masked and an
+    // unmasked frame on the same decoder configuration — a codec
+    // capability, not a protocol allowance (conforming endpoints use
+    // `forRole`).
     var buf: [32]u8 = undefined;
 
     // Masked frame round-trips.

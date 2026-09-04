@@ -87,13 +87,16 @@ pub fn validateFrameType(
     settings_seen: bool,
 ) FrameValidationError!void {
     if (protocol.isReservedHttp2FrameType(frame_type)) return FrameValidationError.FrameUnexpected;
+    // RFC 9114 §6.2.1: the first frame on the control stream MUST be
+    // SETTINGS — including when it is an unknown/GREASE type, so this
+    // check precedes the unknown-frame tolerance below.
+    if (context == .control and is_first and frame_type != protocol.FrameType.settings) {
+        return FrameValidationError.MissingSettings;
+    }
     if (!protocol.isKnownFrameType(frame_type)) return;
 
     switch (context) {
         .control => {
-            if (is_first and frame_type != protocol.FrameType.settings) {
-                return FrameValidationError.MissingSettings;
-            }
             if (frame_type == protocol.FrameType.settings and settings_seen) {
                 return FrameValidationError.DuplicateSettings;
             }
@@ -134,6 +137,15 @@ test "control stream requires first SETTINGS and rejects DATA" {
     try v.observe(protocol.FrameType.settings);
     try std.testing.expectError(FrameValidationError.FrameUnexpected, v.observe(protocol.FrameType.data));
     try std.testing.expectError(FrameValidationError.DuplicateSettings, v.observe(protocol.FrameType.settings));
+}
+
+test "an unknown/GREASE frame first on the control stream is still missing SETTINGS [RFC9114 §6.2.1]" {
+    var v = FrameValidator.init(.control);
+    try std.testing.expectError(FrameValidationError.MissingSettings, v.observe(0xface));
+    // After a proper SETTINGS, unknown frames are tolerated again.
+    var v2 = FrameValidator.init(.control);
+    try v2.observe(protocol.FrameType.settings);
+    try v2.observe(0xface);
 }
 
 test "request streams allow request frames and ignore extensions" {

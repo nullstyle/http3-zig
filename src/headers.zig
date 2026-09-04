@@ -8,6 +8,8 @@ pub const FieldLine = qpack.FieldLine;
 pub const Error = error{
     EmptyFieldName,
     UppercaseFieldName,
+    InvalidFieldNameCharacter,
+    InvalidFieldValueCharacter,
     PseudoHeaderAfterRegular,
     DuplicatePseudoHeader,
     MissingPseudoHeader,
@@ -28,6 +30,7 @@ pub const RequestValidationOptions = struct {
 pub fn validateTrailers(fields: []const FieldLine) Error!void {
     for (fields) |field| {
         try validateName(field.name);
+        try validateValue(field.value);
         if (field.name[0] == ':') return Error.InvalidPseudoHeader;
         if (isConnectionSpecific(field.name)) return Error.ConnectionSpecificField;
         if (isForbiddenTrailerField(field.name)) return Error.ForbiddenTrailerField;
@@ -101,6 +104,7 @@ pub fn validateRequestWithOptions(fields: []const FieldLine, options: RequestVal
 
     for (fields) |field| {
         try validateName(field.name);
+        try validateValue(field.value);
         const pseudo = field.name[0] == ':';
         if (pseudo and seen_regular) return Error.PseudoHeaderAfterRegular;
         if (!pseudo) {
@@ -228,6 +232,7 @@ pub fn validateResponse(fields: []const FieldLine) Error!void {
 
     for (fields) |field| {
         try validateName(field.name);
+        try validateValue(field.value);
         const pseudo = field.name[0] == ':';
         if (pseudo and seen_regular) return Error.PseudoHeaderAfterRegular;
         if (!pseudo) {
@@ -255,8 +260,38 @@ pub fn validateResponse(fields: []const FieldLine) Error!void {
 
 fn validateName(name: []const u8) Error!void {
     if (name.len == 0) return Error.EmptyFieldName;
-    for (name) |c| {
+    // A field name is a token (RFC 9110 §5.1): 1*tchar, where tchar is
+    // ALPHA / DIGIT / "!#$%&'*+-.^_`|~". HTTP/3 field names are
+    // additionally lowercase (checked first, RFC 9114 §4.1.2 / QPACK
+    // §4.1.1). Pseudo-header names are ":" followed by a token, so the
+    // prefix is skipped for the character check.
+    const token = if (name[0] == ':') name[1..] else name;
+    if (token.len == 0) return Error.InvalidFieldNameCharacter;
+    for (token) |c| {
         if (std.ascii.isUpper(c)) return Error.UppercaseFieldName;
+        if (!isTchar(c)) return Error.InvalidFieldNameCharacter;
+    }
+}
+
+// RFC 9110 §5.1 tchar.
+fn isTchar(c: u8) bool {
+    return switch (c) {
+        '!', '#', '$', '%', '&', '\'', '*', '+', '-', '.', '^', '_', '`', '|', '~' => true,
+        else => std.ascii.isAlphanumeric(c),
+    };
+}
+
+// A field value (RFC 9110 §5.5 field-value without obs-fold, which
+// HTTP/3 rejects): runs of HTAB, SP, VCHAR (%x21-7E), and obs-text
+// (%x80-FF). Everything else — CTLs other than HTAB, and DEL — makes
+// the message malformed (RFC 9114 §4.1.2 → H3_MESSAGE_ERROR).
+fn validateValue(value: []const u8) Error!void {
+    for (value) |c| {
+        const ok = switch (c) {
+            '\t', ' ' => true,
+            else => c >= 0x21 and c != 0x7F,
+        };
+        if (!ok) return Error.InvalidFieldValueCharacter;
     }
 }
 
