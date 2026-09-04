@@ -364,6 +364,12 @@ just external-h3-interop
   capped before their DATA-frame payload is allocated.
   `SessionConfig.production(.{})` collects those caps into a recommended
   production baseline without changing compatibility-oriented defaults.
+  The session engine is split across `src/session/` — `config.zig`
+  (the `Config` surface and production preset), `events.zig` (the
+  `Event` union, payload types, and batch helpers), and `state.zig`
+  (per-stream and per-WT-session state plus the drain budget) — with
+  `session.*` re-export aliases keeping every public path stable.
+
 - `connection`: `quic-zig.Connection` adapter for control stream, optional QPACK
   streams, and request/data frame writes.
 - `client` / `server`: BoringSSL TLS context helpers with ALPN set to `h3`,

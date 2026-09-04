@@ -11,6 +11,13 @@ breaking changes; see notes per release.
 
 ### Added
 
+- Split the session engine across `src/session/`: `config.zig` (the
+  `Config` surface, production preset, policy enums), `events.zig`
+  (the `Event` union, every payload type, batch helpers), and
+  `state.zig` (per-stream + per-WebTransport-session state, drain
+  budget). A pure move — `session.zig` keeps the `Session` engine and
+  re-exports every public name, so all `session.*` paths, type
+  identities, and the check-api signature pins are unchanged.
 - **Added the first deliberate performance pass** (the perf docs
   previously recorded baselines only): zero-copy DATA/capsule stream
   sends (stack-encoded frame + capsule headers, payload written
