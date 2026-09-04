@@ -11,6 +11,17 @@ breaking changes; see notes per release.
 
 ### Added
 
+- **Added the first deliberate performance pass** (the perf docs
+  previously recorded baselines only): zero-copy DATA/capsule stream
+  sends (stack-encoded frame + capsule headers, payload written
+  verbatim — quic's stream buffer is the single remaining copy), a
+  reused session scratch for QUIC DATAGRAM sends, static-table borrows
+  in QPACK decode (exact comptime pointer+length match skips freeing
+  borrowed slices in every free path), O(1) head-index dynamic-table
+  eviction with amortized compaction, a comptime (length × first-byte)
+  bucket index for static-table lookups, and pre-sized Huffman decode
+  output. Same-machine p50: establish −3%, datagram RT −5%, uni-stream
+  RT −9%; memory gate unchanged at 259 B/iter.
 - Added two fuzz targets closing the last unfuzzed decode surfaces:
   `headers-validate` (semantic header validation over adversarial
   field lines) and `message-decoder` (the request/response/push message

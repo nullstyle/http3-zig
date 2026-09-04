@@ -77,6 +77,19 @@ jobs:
         timeout-minutes: 20
         run: zig build examples --summary all
 
+      # Build the library artifact in ReleaseSafe so the release ships
+      # a real, downloadable static library with safety checks intact
+      # (matches the posture of the CI matrix legs), plus a SHA-256
+      # checksum file for consumers.
+      - name: Build the ReleaseSafe library artifact
+        run: zig build -Doptimize=ReleaseSafe --summary all
+
+      - name: Checksum the artifact
+        run: |
+          cd zig-out/lib
+          shasum -a 256 libhttp3_zig.a > libhttp3_zig.a.sha256
+          cat libhttp3_zig.a.sha256
+
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -84,4 +97,6 @@ jobs:
           gh release create "${GITHUB_REF_NAME}" \
             --title "${GITHUB_REF_NAME}" \
             --generate-notes \
-            --notes-file CHANGELOG.md
+            --notes-file CHANGELOG.md \
+            zig-out/lib/libhttp3_zig.a \
+            zig-out/lib/libhttp3_zig.a.sha256
