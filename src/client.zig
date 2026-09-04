@@ -2004,7 +2004,14 @@ fn cloneFields(
     const out = try allocator.alloc(qpack.FieldLine, fields.len);
     var initialized: usize = 0;
     errdefer {
-        freeFields(allocator, out[0..initialized]);
+        // Free only the initialized entries' strings, then the array
+        // once at full length — freeFields on a partial slice would
+        // free the array with the wrong length and the trailing
+        // allocator.free would double-free it.
+        for (out[0..initialized]) |field| {
+            allocator.free(@constCast(field.name));
+            allocator.free(@constCast(field.value));
+        }
         allocator.free(out);
     }
 

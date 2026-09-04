@@ -1685,8 +1685,12 @@ pub const Session = struct {
     /// the scratch is freed in `deinit`.
     fn ensureDrainScratch(self: *Session, scratch: *[]u8, needed: usize) Error![]u8 {
         if (scratch.len < needed) {
+            // Allocate before freeing: on alloc failure the old buffer
+            // must stay reachable through `scratch` so `deinit` cannot
+            // free a dangling pointer.
+            const grown = try self.allocator.alloc(u8, needed);
             if (scratch.len > 0) self.allocator.free(scratch.*);
-            scratch.* = try self.allocator.alloc(u8, needed);
+            scratch.* = grown;
         }
         return scratch.*[0..needed];
     }
@@ -1932,6 +1936,15 @@ pub const Session = struct {
         errdefer self.quic.streamReset(stream_id, protocol.ErrorCode.internal_error) catch {};
 
         const state = try self.createState(stream_id);
+        // Mirror the uni sibling's cleanup: without this, a prefix-write
+        // failure leaves a registered StreamState the caller can never
+        // finish, and `gcClosedStreams` will not reap it (bidi reaping
+        // requires `locally_finished`) — it leaks until session deinit.
+        errdefer {
+            _ = self.streams.remove(stream_id);
+            state.deinit(self.allocator);
+            self.allocator.destroy(state);
+        }
         state.bidi_kind = .webtransport;
         state.wt_session_id = session_id;
 
@@ -2308,7 +2321,6 @@ pub const Session = struct {
     ) Error!void {
         try budget.reserve(reason.len);
         const owned_reason = try self.allocator.dupe(u8, reason);
-        errdefer self.allocator.free(owned_reason);
         self.sweepWebTransportSubstreams(session_id);
         self.endWebTransportSession(session_id);
         try self.appendReservedEvent(events, .{
@@ -2742,7 +2754,6 @@ pub const Session = struct {
         _ = state;
         try budget.reserve(capsule.value.len);
         const owned = try self.allocator.dupe(u8, capsule.value);
-        errdefer self.allocator.free(owned);
         try self.appendReservedEvent(events, .{
             .webtransport_unknown_capsule = .{
                 .session_id = sess.flow.session_id,
@@ -3832,7 +3843,6 @@ pub const Session = struct {
             }
             try budget.reserve(decoded.payload.len);
             const payload = try self.allocator.dupe(u8, decoded.payload);
-            errdefer self.allocator.free(payload);
             try self.appendReservedEvent(events, .{
                 .datagram = .{
                     .stream_id = decoded.stream_id,
@@ -3882,7 +3892,6 @@ pub const Session = struct {
             null;
         try budget.reserve(close_event.reason.len);
         const reason = try self.allocator.dupe(u8, close_event.reason);
-        errdefer self.allocator.free(reason);
 
         if (application) |app| {
             if (errorSourceFromCloseSource(close_event.source)) |source| {
@@ -4226,7 +4235,6 @@ pub const Session = struct {
 
         try budget.reserve(state.rx.items.len);
         const data = try self.allocator.dupe(u8, state.rx.items);
-        errdefer self.allocator.free(data);
         const data_len = data.len;
         try self.appendReservedEvent(events, .{
             .webtransport_stream_data = .{
@@ -5115,14 +5123,19 @@ pub const Session = struct {
                     }
                 } else {
                     // Field sections transfer ownership into the
-                    // session event (no clone); everything else is
-                    // duped inside and freed by the deinit above.
+                    // session event (no clone) — disarm the defer
+                    // BEFORE the append: the append path owns the event
+                    // and deinits it on failure, so a post-append
+                    // disarm would double-free the fields exactly when
+                    // the events-list append runs out of memory.
+                    // Everything else is duped inside append and freed
+                    // by the deinit above.
                     const transfers_ownership = switch (message_event) {
                         .headers, .interim_headers, .trailers => true,
                         else => false,
                     };
-                    try self.appendReservedMessageEvent(events, state.id, decoder.kind, message_event);
                     if (transfers_ownership) message_event_owned = false;
+                    try self.appendReservedMessageEvent(events, state.id, decoder.kind, message_event);
                 }
             }
 
@@ -5566,8 +5579,13 @@ pub const Session = struct {
                 try self.validateReceivedPushId(promise.push_id);
                 const fields = self.received_push_promises.get(promise.push_id) orelse return Error.InvalidPushId;
                 const field_section = try self.allocator.dupe(u8, promise.field_section);
-                errdefer self.allocator.free(field_section);
-                const fields_copy = try cloneFields(self.allocator, fields);
+                const fields_copy = cloneFields(self.allocator, fields) catch |err| {
+                    // The event is not built yet, so its deinit will not
+                    // run — free the section explicitly here. Past this
+                    // point appendRawEvent owns both allocations.
+                    self.allocator.free(field_section);
+                    return err;
+                };
                 break :blk .{ .push_promise = .{
                     .stream_id = stream_id,
                     .push_id = promise.push_id,
@@ -6989,6 +7007,13 @@ fn errorSourceFromCloseSource(source: quic.CloseSource) ?errors_mod.Source {
     };
 }
 
+/// Appends `event` to `events`, taking ownership of it unconditionally:
+/// on append failure the event is deinitialized HERE, exactly once.
+/// Callers must therefore not `errdefer`-free payloads embedded in an
+/// event once it has been handed to appendRawEvent /
+/// `Session.appendReservedEvent` — that is a double-free. If cleanup is
+/// needed for failures between the payload allocation and the append,
+/// free explicitly on those intermediate error paths instead.
 fn appendRawEvent(allocator: std.mem.Allocator, events: *std.ArrayList(Event), event: Event) Error!void {
     events.append(allocator, event) catch |err| {
         event.deinit(allocator);
@@ -7154,7 +7179,14 @@ fn cloneFields(allocator: std.mem.Allocator, fields: []const qpack.FieldLine) Er
     const out = try allocator.alloc(qpack.FieldLine, fields.len);
     var initialized: usize = 0;
     errdefer {
-        freeFields(allocator, out[0..initialized]);
+        // Free only the initialized entries' strings, then the array
+        // once at full length — freeFields on a partial slice would
+        // free the array with the wrong length and the trailing
+        // allocator.free would double-free it.
+        for (out[0..initialized]) |field| {
+            allocator.free(@constCast(field.name));
+            allocator.free(@constCast(field.value));
+        }
         allocator.free(out);
     }
 

@@ -29,4 +29,5 @@ test {
     _ = @import("integration/transport_driver.zig");
     _ = @import("integration/production_preset.zig");
     _ = @import("integration/public_api_smoke.zig");
+    _ = @import("integration/fault_injection.zig");
 }
