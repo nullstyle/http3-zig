@@ -18,6 +18,10 @@ on:
 # checkout needed. To bump quic-zig, edit build.zig.zon's `.url` + `.hash`
 # by hand (`tools/fetch-package-hash.sh <new-tarball-url>` prints the hash
 # without poisoning the normal build cache; do NOT use `zig fetch --save`).
+# Least privilege: every job here only reads the repo.
+permissions:
+  contents: read
+
 jobs:
   build-test:
     timeout-minutes: 45
@@ -65,13 +69,13 @@ jobs:
     continue-on-error: ${{ matrix.advisory }}
     steps:
       - name: Checkout http3-zig
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Check boringssl-zig pin matches quic-zig
         run: tools/check-boringssl-pin.sh
 
       - name: Set up mise (zig master + project tools)
-        uses: jdx/mise-action@v4
+        uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4
         with:
           install: true
           cache: true
@@ -82,7 +86,7 @@ jobs:
         run: git ls-files -z '*.zig' '*.zon' | xargs -0 zig fmt --check
 
       - name: Cache Zig packages
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: .zig-global-cache
           key: zig-global-cache-${{ hashFiles('build.zig.zon') }}
@@ -152,16 +156,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout http3-zig
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Set up mise (zig master + project tools)
-        uses: jdx/mise-action@v4
+        uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4
         with:
           install: true
           cache: true
 
       - name: Cache Zig packages
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: .zig-global-cache
           key: zig-global-cache-${{ hashFiles('build.zig.zon') }}

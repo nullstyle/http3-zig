@@ -51,6 +51,10 @@ on:
 # build breakage, runner infrastructure), demote it by restoring
 # `continue-on-error: true` in a one-line commit that names the cause;
 # re-promote with the same soak criterion once the cause clears.
+# Least privilege: every job here only reads the repo.
+permissions:
+  contents: read
+
 jobs:
   matrix:
     name: WT interop (http3-zig as client)
@@ -61,16 +65,16 @@ jobs:
       EXTRA_URLS: ${{ github.event.inputs.urls }}
     steps:
       - name: Checkout http3-zig
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Set up mise (zig master + project tools)
-        uses: jdx/mise-action@v4
+        uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4
         with:
           install: true
           cache: true
 
       - name: Cache Zig packages
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: .zig-global-cache
           key: zig-global-cache-${{ hashFiles('build.zig.zon') }}
@@ -91,7 +95,7 @@ jobs:
           exit 1
 
       - name: Set up Go (for the webtransport-go peer)
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           go-version: "1.27.0"
           # Cache the module download for the third-party peer.
@@ -101,7 +105,7 @@ jobs:
           cache-dependency-path: interop/external_wt/server_go/go.sum
 
       - name: Set up Python (for the pywebtransport peer)
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           # pywebtransport requires CPython >= 3.12. We pin to 3.12
           # so a future runtime bump on `ubuntu-latest` doesn't

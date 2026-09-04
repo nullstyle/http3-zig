@@ -1,0 +1,21 @@
+# Dependabot keeps the third-party GitHub Actions current. Every `uses:`
+# in .github/workflows/ is pinned to a full commit SHA (mutable tags are
+# a supply-chain vector), so updates arrive as PRs that swap the SHA —
+# review is a one-line diff against the upstream tag.
+version: 2
+
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: "ci: "
+    labels:
+      - dependencies
+      - github-actions
+    groups:
+      actions-minor:
+        update-types:
+          - minor
+          - patch

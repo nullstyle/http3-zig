@@ -30,6 +30,10 @@ on:
 # runner infrastructure) -> restore `continue-on-error: true` in a
 # one-line commit naming the cause; re-promote with the same criterion
 # once the cause clears.
+# Least privilege: every job here only reads the repo.
+permissions:
+  contents: read
+
 jobs:
   chrome:
     name: WT browser interop (Chrome stable vs http3-zig server)
@@ -38,16 +42,16 @@ jobs:
     continue-on-error: true
     steps:
       - name: Checkout http3-zig
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Set up mise (zig master + project tools)
-        uses: jdx/mise-action@v4
+        uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4
         with:
           install: true
           cache: true
 
       - name: Cache Zig packages
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: .zig-global-cache
           key: zig-global-cache-${{ hashFiles('build.zig.zon') }}
@@ -72,7 +76,7 @@ jobs:
 
       - name: Set up Chrome (stable)
         id: setup-chrome
-        uses: browser-actions/setup-chrome@v2
+        uses: browser-actions/setup-chrome@48483d551c22a1fe6154c6a195ccc6d5773dc8c4 # v2
         with:
           chrome-version: stable
 
@@ -88,7 +92,7 @@ jobs:
 
       - name: Upload browser interop logs
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: wt-browser-chrome-${{ github.run_id }}
           path: ${{ runner.temp }}/browser-logs
@@ -104,16 +108,16 @@ jobs:
     continue-on-error: true
     steps:
       - name: Checkout http3-zig
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Set up mise (zig master + project tools)
-        uses: jdx/mise-action@v4
+        uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4
         with:
           install: true
           cache: true
 
       - name: Cache Zig packages
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: .zig-global-cache
           key: zig-global-cache-${{ hashFiles('build.zig.zon') }}
@@ -138,7 +142,7 @@ jobs:
 
       - name: Set up Firefox (latest)
         id: setup-firefox
-        uses: browser-actions/setup-firefox@v1
+        uses: browser-actions/setup-firefox@2ddc1281882c66dd6a359947714eed0a4b91afc1 # v1
         with:
           firefox-version: latest
 
@@ -159,7 +163,7 @@ jobs:
 
       - name: Upload browser interop logs
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: wt-browser-firefox-${{ github.run_id }}
           path: ${{ runner.temp }}/browser-logs

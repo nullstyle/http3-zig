@@ -21,27 +21,33 @@ on:
 #                       explores NEW inputs with coverage feedback rather than
 #                       replaying a fixed corpus. Linux only: the
 #                       std.testing.fuzz runtime aborts on macOS (the platform
-#                       gap quic-zig also documents). This is where sanitizer-
-#                       grade coverage of the untrusted H3/QPACK/capsule decode
-#                       path comes from; ASan over the BoringSSL C++ boundary
-#                       is boringssl-zig's concern (BoringSSL is fuzzed
-#                       upstream).
+#                       gap quic-zig also documents). Runs ReleaseSafe, so it
+#                       is safety-checked (panics, integer overflow, bounds
+#                       checks fire) but NOT sanitizer-grade: use-after-free
+#                       and similar memory bugs that only ASan/UBSan catch
+#                       can pass through it. ASan over the BoringSSL C++
+#                       boundary is boringssl-zig's concern (BoringSSL is
+#                       fuzzed upstream).
+# Least privilege: every job here only reads the repo.
+permissions:
+  contents: read
+
 jobs:
   corpus-loop:
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
       - name: Checkout http3-zig
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Set up mise (zig master + project tools)
-        uses: jdx/mise-action@v4
+        uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4
         with:
           install: true
           cache: true
 
       - name: Cache Zig packages
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: .zig-global-cache
           key: zig-global-cache-${{ hashFiles('build.zig.zon') }}
@@ -87,7 +93,7 @@ jobs:
 
       - name: Upload fuzz crash artifacts
         if: failure()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: fuzz-nightly-corpus-crashes
           path: |
@@ -102,16 +108,16 @@ jobs:
     timeout-minutes: 90
     steps:
       - name: Checkout http3-zig
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Set up mise (zig master + project tools)
-        uses: jdx/mise-action@v4
+        uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4
         with:
           install: true
           cache: true
 
       - name: Cache Zig packages
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: .zig-global-cache
           key: zig-global-cache-${{ hashFiles('build.zig.zon') }}
@@ -146,9 +152,24 @@ jobs:
       # — the uploaded artifact contains only the seed corpus). A real
       # fuzz-found crash does not match these signatures and still fails
       # the job.
+      #
+      # Compile the fuzz test binary up front so the timed window below
+      # measures fuzzing, not compilation (also hands the full 30-minute
+      # budget to the fuzzer itself).
+      - name: Pre-compile the ReleaseSafe fuzz test binary
+        run: zig build test -Doptimize=ReleaseSafe --summary all
+
+      # The advisory skip is gated on a survival floor: the runner must
+      # have fuzzed productively for at least five minutes before dying
+      # (the runner emits no execution counts we can parse, so elapsed
+      # fuzzing time is the activity signal). A faster death — signature
+      # match or not — fails the job instead of silently going green.
       - name: Coverage-guided fuzz for 30 minutes
+        id: coverage_fuzz
         run: |
+          fuzz_elapsed=0
           run_fuzz() {
+            fuzz_started=$(date +%s)
             set +e
             # ReleaseSafe: keeps safety checks (panics/UB fire) while
             # regaining compiler optimization — Debug fuzzing ran at a
@@ -157,28 +178,40 @@ jobs:
             timeout 30m zig build test -Doptimize=ReleaseSafe --fuzz 2>&1 | tee fuzz-nightly.log
             status=${PIPESTATUS[0]}
             set -e
+            fuzz_elapsed=$(( $(date +%s) - fuzz_started ))
             if [ "$status" -eq 124 ]; then return 0; fi
             return "$status"
           }
           known_runner_bug() {
             grep -Eq "corrupted coverage file .*pcs_len was zero|panic: start index [0-9]+ is larger than end index [0-9]+" fuzz-nightly.log
           }
+          survived_floor() {
+            [ "$fuzz_elapsed" -ge 300 ]
+          }
           if run_fuzz; then exit 0; fi
           if known_runner_bug; then
             echo "::warning::Zig fuzz-runner infrastructure failure; retrying once with a clean fuzz cache"
             rm -rf .zig-cache/v
             if run_fuzz; then exit 0; fi
-            if known_runner_bug; then
-              echo "::warning::Known Zig-master fuzz-runner bug reproduced twice (see workflow comment); treating as advisory skip, artifacts uploaded"
-              echo "known_runner_bug=true" >> "$GITHUB_OUTPUT" || true
+            if known_runner_bug && survived_floor; then
+              echo "::warning::Known Zig-master fuzz-runner bug reproduced twice after ${fuzz_elapsed}s of productive fuzzing (survival floor met); treating as advisory skip, artifacts uploaded"
+              echo "known_runner_bug=true" >> "$GITHUB_OUTPUT"
+              {
+                echo "## Coverage-guided fuzz: advisory skip"
+                echo ""
+                echo "The known Zig-master fuzz-runner bug reproduced twice, after"
+                echo "${fuzz_elapsed}s of productive fuzzing (floor: 300s). No crash"
+                echo "input was produced; artifacts are attached to this run."
+              } >> "$GITHUB_STEP_SUMMARY"
               exit 0
             fi
+            echo "::error::fuzz runner died after only ${fuzz_elapsed}s (below the 300s survival floor) — not treating as the known runner bug"
           fi
           exit 1
 
       - name: Upload fuzz crash artifacts
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: fuzz-nightly-coverage-guided-crashes
           path: |
