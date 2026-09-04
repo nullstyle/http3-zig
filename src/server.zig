@@ -885,10 +885,13 @@ pub const Server = struct {
 
     /// Server-side top-level configuration knobs.
     ///
-    /// All fields default to the same permissive values the underlying
-    /// `session_mod.Config` uses (so an unconfigured `Config{}` is a 1:1
-    /// pass-through). Hand-tuning is still supported, but most users
-    /// should opt into the `production` preset for v0.1.0:
+    /// A compatibility projection of the session-level knobs with a
+    /// production preset — every field forwards 1:1 to
+    /// `session_mod.Config` via `toSessionConfig()` (an unconfigured
+    /// `Config{}` is exactly the session defaults). Prefer configuring
+    /// `session.Config` / `SessionConfig.production(.{})` directly for
+    /// anything this struct does not enumerate. Deployment postures
+    /// should use the `production` preset:
     ///
     /// ```zig
     /// var session = http3_zig.Session.init(
@@ -906,10 +909,12 @@ pub const Server = struct {
         /// Mirrors `session_mod.Config.max_concurrent_peer_streams`.
         max_concurrent_peer_streams: ?usize = null,
 
-        /// Cap on encoded HEADERS payload bytes per QPACK field
-        /// section. `null` preserves the legacy unbounded behaviour.
-        /// Mirrors `session_mod.Config.max_field_section_size` (it is
-        /// also re-advertised via SETTINGS when this knob is set).
+        /// Cap on the DECODED size of a QPACK field section — RFC 9114
+        /// §4.2.2 accounting, 32 + name + value bytes per field (the
+        /// read-time pre-gate allows Huffman-expansion slack on the
+        /// encoded length). `null` preserves the legacy unbounded
+        /// behaviour. Mirrors `session_mod.Config.max_field_section_size`
+        /// (also re-advertised via SETTINGS when this knob is set).
         max_field_section_size: ?u64 = null,
 
         /// Cap on bytes a single peer-opened WebTransport stream may
@@ -968,7 +973,7 @@ pub const Server = struct {
         ///       QUIC's MAX_STREAMS budget (which is generous by
         ///       design).
         ///   - `max_field_section_size = 16 KiB`
-        ///       Bounds encoded HEADERS payload bytes per field
+        ///       Bounds decoded field-section size (RFC 9114 §4.2.2)
         ///       section, limiting the cost of an oversized header
         ///       attack. 16 KiB is comfortable for ordinary REST
         ///       traffic.

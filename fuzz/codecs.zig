@@ -29,6 +29,8 @@ pub const Target = enum {
     earlydata,
     priority,
     stream,
+    headers_validate,
+    message_decoder,
 };
 
 pub const concrete_targets = [_]Target{
@@ -51,6 +53,8 @@ pub const concrete_targets = [_]Target{
     .earlydata,
     .priority,
     .stream,
+    .headers_validate,
+    .message_decoder,
 };
 
 const smoke_inputs = [_][]const u8{
@@ -94,6 +98,8 @@ pub fn targetName(target: Target) []const u8 {
         .earlydata => "earlydata",
         .priority => "priority",
         .stream => "stream",
+        .headers_validate => "headers-validate",
+        .message_decoder => "message-decoder",
     };
 }
 
@@ -118,6 +124,8 @@ pub fn targetFromName(name: []const u8) ?Target {
     if (std.mem.eql(u8, name, "earlydata") or std.mem.eql(u8, name, "early_data")) return .earlydata;
     if (std.mem.eql(u8, name, "priority")) return .priority;
     if (std.mem.eql(u8, name, "stream") or std.mem.eql(u8, name, "stream-type")) return .stream;
+    if (std.mem.eql(u8, name, "headers-validate") or std.mem.eql(u8, name, "headers_validate")) return .headers_validate;
+    if (std.mem.eql(u8, name, "message-decoder") or std.mem.eql(u8, name, "message_decoder")) return .message_decoder;
     return null;
 }
 
@@ -147,6 +155,50 @@ pub fn runTarget(allocator: std.mem.Allocator, target: Target, input: []const u8
         .earlydata => fuzzEarlyData(input),
         .priority => fuzzPriority(input),
         .stream => fuzzStreamType(input),
+        .headers_validate => fuzzHeadersValidate(input),
+        .message_decoder => fuzzMessageDecoder(allocator, input),
+    }
+}
+
+fn fuzzHeadersValidate(input: []const u8) void {
+    // Map bytes onto field lines: newline-separated segments, each
+    // optionally split into name/value at the first '='. Any subset of
+    // the tchar/CTL rules is then reachable through the validators.
+    var fields: [32]http3_zig.FieldLine = undefined;
+    var count: usize = 0;
+    var it = std.mem.splitScalar(u8, input, '\n');
+    while (it.next()) |segment| {
+        if (count >= fields.len) break;
+        const eq = std.mem.indexOfScalar(u8, segment, '=') orelse segment.len;
+        fields[count] = .{
+            .name = segment[0..eq],
+            .value = if (eq < segment.len) segment[eq + 1 ..] else "",
+        };
+        count += 1;
+    }
+    if (http3_zig.headers.validateRequest(fields[0..count])) |_| {} else |_| {}
+    if (http3_zig.headers.validateRequestWithOptions(fields[0..count], .{
+        .enable_connect_protocol = true,
+    })) |_| {} else |_| {}
+    if (http3_zig.headers.validateResponse(fields[0..count])) |_| {} else |_| {}
+    if (http3_zig.headers.validateTrailers(fields[0..count])) |_| {} else |_| {}
+}
+
+fn fuzzMessageDecoder(allocator: std.mem.Allocator, input: []const u8) void {
+    // Drive the request/response/push message state machines over
+    // arbitrary frame bytes, split mid-stream to exercise iteration
+    // boundaries.
+    inline for (.{ .request, .response, .push }) |kind| {
+        var dec = http3_zig.message.Decoder.init(kind, .{
+            .max_field_section_size = 4096,
+        });
+        var events: std.ArrayList(http3_zig.message.Event) = .empty;
+        const half = input.len / 2;
+        dec.observeBytes(allocator, input[0..half], &events) catch {};
+        dec.observeBytes(allocator, input[half..], &events) catch {};
+        dec.finish() catch {};
+        for (events.items) |event| event.deinit(allocator);
+        events.deinit(allocator);
     }
 }
 

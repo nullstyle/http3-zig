@@ -87,6 +87,8 @@ pub fn main(init: std.process.Init) !void {
     try seedEarlyData(allocator, io, root, &buf);
     try seedPriority(io, root, &buf);
     try seedStreamType(io, root, &buf);
+    try seedHeadersValidate(io, root);
+    try seedMessageDecoder(io, root);
 
     var stdout_buf: [256]u8 = undefined;
     var stdout_writer = std.Io.File.stdout().writer(io, &stdout_buf);
@@ -927,6 +929,32 @@ fn seedPriority(io: std.Io, root: std.Io.Dir, buf: []u8) !void {
     try writeSeed(io, root, "priority", "05-garbage", "banana");
     try writeSeed(io, root, "priority", "06-bad-urgency", "u=9");
     try writeSeed(io, root, "priority", "07-long", "u=3, i, i, i, i, i");
+}
+
+// ------------------------------------------------------------ headers-validate
+
+fn seedHeadersValidate(io: std.Io, root: std.Io.Dir) !void {
+    try writeSeed(io, root, "headers-validate", "01-minimal-request", ":method=GET\n:scheme=https\n:path=/\n:authority=example.com\n");
+    try writeSeed(io, root, "headers-validate", "02-valid-tokens", ":method=GET\n:scheme=https\n:path=/\nAccept=*/*\nx-custom=ok\n");
+    try writeSeed(io, root, "headers-validate", "03-bad-name-tchar", ":method=GET\nAccept(*/*\n");
+    try writeSeed(io, root, "headers-validate", "04-ctl-value", ":method=GET\nx-bad=cr\rvalue\n");
+    try writeSeed(io, root, "headers-validate", "05-uppercase-name", ":method=get\n");
+    try writeSeed(io, root, "headers-validate", "06-response", ":status=200\ncontent-type=text/html\n");
+    try writeSeed(io, root, "headers-validate", "07-empty", "");
+}
+
+// ------------------------------------------------------------ message-decoder
+
+fn seedMessageDecoder(io: std.Io, root: std.Io.Dir) !void {
+    var buf: [64]u8 = undefined;
+    // HEADERS frame carrying a static-indexed :method GET section.
+    var n = try http3_zig.frame.encode(&buf, .{ .headers = &[_]u8{ 0x00, 0xc1 } });
+    try writeSeed(io, root, "message-decoder", "01-headers-get", buf[0..n]);
+    n = try http3_zig.frame.encode(&buf, .{ .data = "hello" });
+    try writeSeed(io, root, "message-decoder", "02-data", buf[0..n]);
+    try writeSeed(io, root, "message-decoder", "04-empty-data", &[_]u8{ 0x00, 0x00 });
+    try writeSeed(io, root, "message-decoder", "05-truncated-frame", &[_]u8{ 0xff, 0xff, 0xff, 0xff, 0xff, 0xff });
+    try writeSeed(io, root, "message-decoder", "06-empty", "");
 }
 
 // ---------------------------------------------------------------- stream type
