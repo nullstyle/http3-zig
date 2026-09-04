@@ -1364,6 +1364,14 @@ const DrainBudget = struct {
     }
 };
 
+/// An owned HTTP/3 DATAGRAM popped from the transport but not yet
+/// emitted as an event (see `Session.pending_datagram`).
+const PendingDatagram = struct {
+    stream_id: u64,
+    payload: []u8,
+    arrived_in_early_data: bool,
+};
+
 /// Per-WebTransport-session flow-control state
 /// (draft-ietf-webtrans-http3 §5.6). The state lives for the lifetime of
 /// a confirmed WebTransport session; each session is keyed by its
@@ -1624,6 +1632,13 @@ pub const Session = struct {
     /// in `deinit`. Not part of the public API surface.
     drain_read_scratch: []u8 = &.{},
     drain_datagram_scratch: []u8 = &.{},
+    /// A datagram popped from the transport in the same iteration that
+    /// discovered the drain budget exhausted. Unlike the datagrams still
+    /// sitting in the transport queue it cannot be left for the next
+    /// drain, so it is stashed here (bounded: at most one, at most
+    /// `max_datagram_payload_size` bytes) and flushed first on the next
+    /// drain. See `drainDatagrams`.
+    pending_datagram: ?PendingDatagram = null,
 
     pub fn init(
         allocator: std.mem.Allocator,
@@ -1676,6 +1691,7 @@ pub const Session = struct {
         self.qpack_decoder_state.deinit();
         if (self.drain_read_scratch.len > 0) self.allocator.free(self.drain_read_scratch);
         if (self.drain_datagram_scratch.len > 0) self.allocator.free(self.drain_datagram_scratch);
+        if (self.pending_datagram) |pending| self.allocator.free(pending.payload);
     }
 
     /// Lazily (re)allocates `scratch.*` to hold at least `needed` bytes
@@ -1814,13 +1830,17 @@ pub const Session = struct {
         self: *Session,
         status: quic.EarlyDataStatus,
         events: *std.ArrayList(Event),
-        budget: *DrainBudget,
     ) Error!void {
         if (self.role != .client or self.early_data_resolved) return;
         switch (status) {
             .accepted => {
                 self.early_data_resolved = true;
-                try self.appendEvent(events, budget, .{ .early_data = .{
+                // One-shot outcome with a borrowed (session-lifetime)
+                // reason and no owned payload: appended without a budget
+                // gate so an exhausted drain budget cannot permanently
+                // swallow it — the transport never re-delivers the
+                // `.early_data` connection event.
+                try self.appendReservedEvent(events, .{ .early_data = .{
                     .status = .accepted,
                     .reason = "",
                 } });
@@ -1830,7 +1850,7 @@ pub const Session = struct {
                 // §7.2.4.2 ¶7: rejection discards the remembered state;
                 // the new SETTINGS simply apply when they arrive.
                 self.remembered_peer_settings = null;
-                try self.appendEvent(events, budget, .{ .early_data = .{
+                try self.appendReservedEvent(events, .{ .early_data = .{
                     .status = .rejected,
                     .reason = self.quic.earlyDataReason(),
                 } });
@@ -3659,7 +3679,7 @@ pub const Session = struct {
                     if (errors_mod.classify(err).scope == .stream) {
                         if (self.messageStreamKind(state)) |kind| {
                             if (kind != .push) {
-                                self.failMessageStream(state, kind, err, events, &budget);
+                                try self.failMessageStream(state, kind, err, events, &budget);
                                 return;
                             }
                         }
@@ -3802,6 +3822,23 @@ pub const Session = struct {
             self.config.max_datagram_payload_size;
         const scratch = try self.ensureDrainScratch(&self.drain_datagram_scratch, max_payload);
 
+        // Flush a datagram stashed by a previously exhausted drain
+        // first, preserving arrival order with the transport queue.
+        if (self.pending_datagram) |pending| {
+            if (!drainBudgetHasRoom(budget, pending.payload.len)) return; // still exhausted
+            try budget.reserve(pending.payload.len);
+            // Ownership moves into the event; null the slot first so an
+            // append failure cannot leave a dangling stash.
+            self.pending_datagram = null;
+            try self.appendReservedEvent(events, .{
+                .datagram = .{
+                    .stream_id = pending.stream_id,
+                    .payload = pending.payload,
+                    .arrived_in_early_data = pending.arrived_in_early_data,
+                },
+            });
+        }
+
         while (self.quic.receiveDatagramInfo(scratch)) |info| {
             if (!self.local_settings.h3_datagram) {
                 self.closeForError(Error.DatagramNotEnabled);
@@ -3827,18 +3864,26 @@ pub const Session = struct {
                     continue;
                 }
             }
-            // Budget headroom is checked BEFORE anything is consumed:
-            // receiveDatagramInfo already popped the datagram, so an
-            // EventQueueFull from reserve would silently lose it.
-            // Exhausted budgets break instead — the remaining datagrams
-            // stay queued for the next drain. A single oversized
-            // datagram still surfaces EventPayloadTooLarge per the
-            // documented budget contract (datagrams are unreliable; the
-            // caller sees the explicit error rather than silent loss).
-            if (budget.max_events != null and budget.events >= budget.max_events.?) break;
-            if (budget.max_payload_bytes != null and
-                decoded.payload.len > budget.max_payload_bytes.? -| budget.payload_bytes)
-            {
+            // Budget headroom is checked BEFORE the reserve: exhausted
+            // budgets break — the datagrams still queued in the
+            // transport survive for the next drain. The one already
+            // popped by receiveDatagramInfo cannot, so it is stashed and
+            // flushed first next drain (see `pending_datagram`). A
+            // datagram that can never fit the per-event cap keeps the
+            // documented EventPayloadTooLarge contract (datagrams are
+            // unreliable; the caller sees the explicit error rather
+            // than silent loss).
+            if (!drainBudgetHasRoom(budget, decoded.payload.len)) {
+                if (budget.max_payload_size != null and decoded.payload.len > budget.max_payload_size.?) {
+                    return Error.EventPayloadTooLarge;
+                }
+                if (self.allocator.dupe(u8, decoded.payload)) |payload| {
+                    self.pending_datagram = .{
+                        .stream_id = decoded.stream_id,
+                        .payload = payload,
+                        .arrived_in_early_data = info.arrived_in_early_data,
+                    };
+                } else |_| {} // OOM: drop — the datagram path is unreliable
                 break;
             }
             try budget.reserve(decoded.payload.len);
@@ -3865,7 +3910,7 @@ pub const Session = struct {
                 .datagram_lost => |lost| try self.appendEvent(events, budget, .{ .datagram_lost = lost }),
                 .flow_blocked => |blocked| try self.appendEvent(events, budget, .{ .flow_blocked = blocked }),
                 .connection_ids_needed => |needed| try self.appendEvent(events, budget, .{ .connection_ids_needed = needed }),
-                .early_data => |status| try self.observeEarlyDataOutcome(status, events, budget),
+                .early_data => |status| try self.observeEarlyDataOutcome(status, events),
                 // Transport-level ConnectionEvents the H3 layer does not
                 // surface to its embedder — e.g. `alternative_server_address`,
                 // a QUIC server-migration hint (draft-munizaga-quic-
@@ -3890,9 +3935,9 @@ pub const Session = struct {
             errors_mod.applicationError(close_event.error_code)
         else
             null;
-        try budget.reserve(close_event.reason.len);
-        const reason = try self.allocator.dupe(u8, close_event.reason);
 
+        // Durable classification first: these hold even if event
+        // emission degrades below.
         if (application) |app| {
             if (errorSourceFromCloseSource(close_event.source)) |source| {
                 self.last_close_error = .{
@@ -3901,8 +3946,37 @@ pub const Session = struct {
                 };
             }
         }
-
         self.syncShutdownState();
+
+        // The close event is terminal and one-shot — the transport has
+        // already consumed it, and nothing can re-derive it on a later
+        // drain — so it must survive any drain-budget configuration.
+        // Instead of failing `reserve`, trim the reason to what the
+        // budgets allow (marking it truncated, mirroring the
+        // transport-side truncation flag), skip the events-count gate
+        // for this single terminal event, and degrade to an empty
+        // reason if even the trimmed dupe hits OOM. The budget counters
+        // are still updated so later reserves see honest totals.
+        var reason_len = close_event.reason.len;
+        var reason_truncated = close_event.reason_truncated;
+        if (budget.max_payload_size) |per_event_cap| {
+            if (reason_len > per_event_cap) {
+                reason_len = per_event_cap;
+                reason_truncated = true;
+            }
+        }
+        if (budget.max_payload_bytes) |total_cap| {
+            const headroom = total_cap -| budget.payload_bytes;
+            if (reason_len > headroom) {
+                reason_len = headroom;
+                reason_truncated = true;
+            }
+        }
+        const reason: []u8 = self.allocator.dupe(u8, close_event.reason[0..reason_len]) catch @as([]u8, &.{});
+        if (reason.len < close_event.reason.len) reason_truncated = true;
+        budget.events += 1;
+        budget.payload_bytes += reason.len;
+
         try self.appendReservedEvent(events, .{
             .connection_closed = .{
                 .source = close_event.source,
@@ -3910,7 +3984,7 @@ pub const Session = struct {
                 .error_code = close_event.error_code,
                 .frame_type = close_event.frame_type,
                 .reason = reason,
-                .reason_truncated = close_event.reason_truncated,
+                .reason_truncated = reason_truncated,
                 .at_us = close_event.at_us,
                 .draining_deadline_us = close_event.draining_deadline_us,
                 .application = application,
@@ -4930,7 +5004,7 @@ pub const Session = struct {
                     if (errors_mod.classify(err).scope == .stream) {
                         if (self.messageStreamKind(state)) |kind| {
                             if (kind != .push) {
-                                self.failMessageStream(state, kind, err, events, budget);
+                                try self.failMessageStream(state, kind, err, events, budget);
                                 return;
                             }
                         }
@@ -4970,7 +5044,7 @@ pub const Session = struct {
                             return;
                         }
                         if (errors_mod.classify(err).scope == .stream and decoder.kind != .push) {
-                            self.failMessageStream(state, decoder.kind, err, events, budget);
+                            try self.failMessageStream(state, decoder.kind, err, events, budget);
                             return;
                         }
                         self.closeForError(err);
@@ -4981,7 +5055,7 @@ pub const Session = struct {
                     decoder.validateOwnedFieldLines(decoded_fields.fields) catch |err| {
                         if (errors_mod.classify(err).scope == .stream and decoder.kind != .push) {
                             qpack.freeFieldSection(self.allocator, decoded_fields.fields);
-                            self.failMessageStream(state, decoder.kind, err, events, budget);
+                            try self.failMessageStream(state, decoder.kind, err, events, budget);
                             return;
                         }
                         self.closeForError(err);
@@ -4996,7 +5070,7 @@ pub const Session = struct {
                         // the section on error — do not double-free here.
                         fields_to_free = null;
                         if (errors_mod.classify(err).scope == .stream and decoder.kind != .push) {
-                            self.failMessageStream(state, decoder.kind, err, events, budget);
+                            try self.failMessageStream(state, decoder.kind, err, events, budget);
                             return;
                         }
                         self.closeForError(err);
@@ -5062,7 +5136,7 @@ pub const Session = struct {
                     };
                     const observed = decoder.observe(self.allocator, decoded.frame) catch |err| {
                         if (errors_mod.classify(err).scope == .stream and decoder.kind != .push) {
-                            self.failMessageStream(state, decoder.kind, err, events, budget);
+                            try self.failMessageStream(state, decoder.kind, err, events, budget);
                             return;
                         }
                         self.closeForError(err);
@@ -5344,11 +5418,11 @@ pub const Session = struct {
                 if (self.role == .server and decoder.kind == .request and
                     (err == error.MissingHeaders or err == error.ContentLengthMismatch))
                 {
-                    self.failMessageStream(state, decoder.kind, error.RequestIncomplete, events, budget);
+                    try self.failMessageStream(state, decoder.kind, error.RequestIncomplete, events, budget);
                     return;
                 }
                 if (errors_mod.classify(err).scope == .stream and decoder.kind != .push) {
-                    self.failMessageStream(state, decoder.kind, err, events, budget);
+                    try self.failMessageStream(state, decoder.kind, err, events, budget);
                     return;
                 }
                 self.closeForError(err);
@@ -6949,8 +7023,11 @@ pub const Session = struct {
     /// connection alive. Push-stream message errors keep connection scope
     /// (callers dispatch on `decoder.kind`). Emits `request_rejected`
     /// (server role) or `stream_reset` (client role) so the refusal is
-    /// never silent. The reset itself is durable; only the notification
-    /// event may be lost to drain-budget exhaustion.
+    /// never silent. The budget is reserved BEFORE any mutation: on
+    /// exhaustion nothing is reset and the bytes stay at `rx`, so the
+    /// next drain re-derives the same error and the whole failure —
+    /// reset AND notification — happens together instead of the
+    /// notification being silently dropped.
     fn failMessageStream(
         self: *Session,
         state: *StreamState,
@@ -6958,22 +7035,22 @@ pub const Session = struct {
         err: anyerror,
         events: *std.ArrayList(Event),
         budget: *DrainBudget,
-    ) void {
+    ) Error!void {
         const code = errors_mod.codeForError(err);
+        try budget.reserve(0);
         self.resetStream(state.id, code) catch {};
         state.recv_finished = true;
         state.locally_rejected = true;
         state.rx.clearRetainingCapacity();
 
-        budget.reserve(0) catch return;
         switch (self.role) {
-            .server => self.appendReservedEvent(events, .{
+            .server => try self.appendReservedEvent(events, .{
                 .request_rejected = .{
                     .stream_id = state.id,
                     .error_code = code,
                 },
-            }) catch {},
-            .client => self.appendReservedEvent(events, .{
+            }),
+            .client => try self.appendReservedEvent(events, .{
                 .stream_reset = .{
                     .stream_id = state.id,
                     .kind = kind,
@@ -6981,7 +7058,7 @@ pub const Session = struct {
                     .final_size = 0,
                     .source = .local,
                 },
-            }) catch {},
+            }),
         }
     }
 

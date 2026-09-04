@@ -421,3 +421,231 @@ test "session caps pending WebTransport sessions and closes on a WT CONNECT floo
     try std.testing.expect(pair.server_h3.webTransportPendingCount() <= 4);
     try expectLastCloseCode(&pair.server_h3, http3_zig.protocol.ErrorCode.excess_load);
 }
+
+test "connection_closed survives an exhausted drain event budget" {
+    const allocator = std.testing.allocator;
+
+    // The transport close event is one-shot: it must reach the embedder
+    // even when the per-drain event budget is exhausted by other events
+    // (or configured down to a single slot).
+    var pair: H3Pair = undefined;
+    try pair.initStarted(allocator, .{}, .{ .max_events_per_drain = 1 });
+    defer pair.deinit();
+    try exchangePairSettings(allocator, &pair);
+
+    const close_reason = "budget-proof close reason";
+    pair.client_h3.close(256, close_reason);
+
+    var client_events: std.ArrayList(http3_zig.session.Event) = .empty;
+    defer {
+        clearSessionEvents(allocator, &client_events);
+        client_events.deinit(allocator);
+    }
+    var server_events: std.ArrayList(http3_zig.session.Event) = .empty;
+    defer {
+        clearSessionEvents(allocator, &server_events);
+        server_events.deinit(allocator);
+    }
+
+    var saw_close = false;
+    var now_us: u64 = 1_000_000;
+    var iters: u32 = 0;
+    while (!saw_close) : (iters += 1) {
+        try std.testing.expect(iters < 20_000);
+        pumpH3(
+            &pair.client,
+            &pair.server,
+            &pair.client_h3,
+            &pair.server_h3,
+            &client_events,
+            &server_events,
+            &now_us,
+        ) catch |err| try std.testing.expectEqual(error.EventQueueFull, err);
+        for (server_events.items) |event| switch (event) {
+            .connection_closed => |closed| {
+                try std.testing.expectEqualStrings(close_reason, closed.reason);
+                try std.testing.expect(!closed.reason_truncated);
+                saw_close = true;
+            },
+            else => {},
+        };
+        clearSessionEvents(allocator, &client_events);
+        clearSessionEvents(allocator, &server_events);
+    }
+    try std.testing.expect(saw_close);
+    // Draining once the peer's close lands; .closed only after the
+    // transport drain deadline passes.
+    try std.testing.expect(pair.server_h3.shutdownState() != .active);
+}
+
+test "connection_closed trims its reason under the per-event payload cap" {
+    const allocator = std.testing.allocator;
+
+    var pair: H3Pair = undefined;
+    try pair.initStarted(allocator, .{}, .{ .max_event_payload_size = 8 });
+    defer pair.deinit();
+    try exchangePairSettings(allocator, &pair);
+
+    pair.client_h3.close(257, "a close reason far longer than the cap allows");
+
+    var client_events: std.ArrayList(http3_zig.session.Event) = .empty;
+    defer {
+        clearSessionEvents(allocator, &client_events);
+        client_events.deinit(allocator);
+    }
+    var server_events: std.ArrayList(http3_zig.session.Event) = .empty;
+    defer {
+        clearSessionEvents(allocator, &server_events);
+        server_events.deinit(allocator);
+    }
+
+    var saw_close = false;
+    var now_us: u64 = 1_000_000;
+    var iters: u32 = 0;
+    while (!saw_close) : (iters += 1) {
+        try std.testing.expect(iters < 20_000);
+        try pumpH3(
+            &pair.client,
+            &pair.server,
+            &pair.client_h3,
+            &pair.server_h3,
+            &client_events,
+            &server_events,
+            &now_us,
+        );
+        for (server_events.items) |event| switch (event) {
+            .connection_closed => |closed| {
+                try std.testing.expect(closed.reason_truncated);
+                try std.testing.expect(closed.reason.len <= 8);
+                saw_close = true;
+            },
+            else => {},
+        };
+        clearSessionEvents(allocator, &client_events);
+        clearSessionEvents(allocator, &server_events);
+    }
+    try std.testing.expect(saw_close);
+}
+
+test "a datagram popped during an exhausted drain is stashed, not dropped" {
+    const allocator = std.testing.allocator;
+
+    // max_events_per_drain = 1: the first drain emits datagram 1, and the
+    // boundary datagram 2 — already popped from the transport — must be
+    // stashed and delivered on a later drain, in order.
+    var pair: H3Pair = undefined;
+    try pair.initStarted(
+        allocator,
+        .{},
+        .{ .max_events_per_drain = 1, .settings = .{ .h3_datagram = true } },
+    );
+    defer pair.deinit();
+    try exchangePairSettings(allocator, &pair);
+
+    try sendRawH3Datagram(&pair.client, 0, "d1");
+    try sendRawH3Datagram(&pair.client, 0, "d2");
+
+    var client_events: std.ArrayList(http3_zig.session.Event) = .empty;
+    defer {
+        clearSessionEvents(allocator, &client_events);
+        client_events.deinit(allocator);
+    }
+    var server_events: std.ArrayList(http3_zig.session.Event) = .empty;
+    defer {
+        clearSessionEvents(allocator, &server_events);
+        server_events.deinit(allocator);
+    }
+
+    var received: std.ArrayList([]u8) = .empty;
+    defer {
+        for (received.items) |payload| allocator.free(payload);
+        received.deinit(allocator);
+    }
+    var now_us: u64 = 1_000_000;
+    var iters: u32 = 0;
+    while (received.items.len < 2) : (iters += 1) {
+        try std.testing.expect(iters < 20_000);
+        pumpH3(
+            &pair.client,
+            &pair.server,
+            &pair.client_h3,
+            &pair.server_h3,
+            &client_events,
+            &server_events,
+            &now_us,
+        ) catch |err| try std.testing.expectEqual(error.EventQueueFull, err);
+        for (server_events.items) |event| switch (event) {
+            .datagram => |datagram| try received.append(allocator, try allocator.dupe(u8, datagram.payload)),
+            else => {},
+        };
+        clearSessionEvents(allocator, &client_events);
+        clearSessionEvents(allocator, &server_events);
+    }
+    try std.testing.expectEqualStrings("d1", received.items[0]);
+    try std.testing.expectEqualStrings("d2", received.items[1]);
+}
+
+test "a malformed request's rejection notification survives budget exhaustion" {
+    const allocator = std.testing.allocator;
+
+    // The stream reset for a malformed message is protocol-mandatory, but
+    // the request_rejected notification must not be silently swallowed by
+    // an exhausted drain budget: the failure handling defers whole to the
+    // next drain instead.
+    var pair: H3Pair = undefined;
+    try pair.initStarted(
+        allocator,
+        .{},
+        .{ .max_events_per_drain = 1, .max_field_section_size = 65536 },
+    );
+    defer pair.deinit();
+    try exchangePairSettings(allocator, &pair);
+
+    const stream_id: u64 = 0;
+    _ = try pair.client.openBidi(stream_id);
+    try writeVarint(&pair.client, stream_id, http3_zig.protocol.FrameType.headers);
+    try writeVarint(&pair.client, stream_id, 200_000);
+
+    var client_events: std.ArrayList(http3_zig.session.Event) = .empty;
+    defer {
+        clearSessionEvents(allocator, &client_events);
+        client_events.deinit(allocator);
+    }
+    var server_events: std.ArrayList(http3_zig.session.Event) = .empty;
+    defer {
+        clearSessionEvents(allocator, &server_events);
+        server_events.deinit(allocator);
+    }
+
+    var saw_rejection = false;
+    var now_us: u64 = 1_000_000;
+    var iters: u32 = 0;
+    while (!saw_rejection) : (iters += 1) {
+        try std.testing.expect(iters < 20_000);
+        pumpH3(
+            &pair.client,
+            &pair.server,
+            &pair.client_h3,
+            &pair.server_h3,
+            &client_events,
+            &server_events,
+            &now_us,
+        ) catch |err| try std.testing.expectEqual(error.EventQueueFull, err);
+        for (server_events.items) |event| switch (event) {
+            .request_rejected => |rejected| {
+                try std.testing.expectEqual(stream_id, rejected.stream_id);
+                try std.testing.expectEqual(
+                    http3_zig.protocol.ErrorCode.message_error,
+                    rejected.error_code,
+                );
+                saw_rejection = true;
+            },
+            else => {},
+        };
+        clearSessionEvents(allocator, &client_events);
+        clearSessionEvents(allocator, &server_events);
+    }
+    try std.testing.expect(saw_rejection);
+    // The malformed message is a stream error; the connection survives.
+    try std.testing.expectEqual(http3_zig.session.ShutdownState.active, pair.server_h3.shutdownState());
+}
