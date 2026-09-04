@@ -439,8 +439,10 @@ pub fn decodeLiteralFieldSectionWithOptions(
 
 pub fn freeFieldSection(allocator: std.mem.Allocator, fields: []FieldLine) void {
     for (fields) |field| {
-        allocator.free(@constCast(field.name));
-        allocator.free(@constCast(field.value));
+        // Name/value slices borrowed from the static table (see
+        // `static_table.containsPtr`) are not heap allocations.
+        if (!static_table.containsPtr(field.name)) allocator.free(@constCast(field.name));
+        if (!static_table.containsPtr(field.value)) allocator.free(@constCast(field.value));
     }
     allocator.free(fields);
 }
@@ -789,8 +791,8 @@ fn decodeStaticOnlyFieldSection(
     var fields: std.ArrayList(FieldLine) = .empty;
     errdefer {
         for (fields.items) |field| {
-            allocator.free(@constCast(field.name));
-            allocator.free(@constCast(field.value));
+            if (!static_table.containsPtr(field.name)) allocator.free(@constCast(field.name));
+            if (!static_table.containsPtr(field.value)) allocator.free(@constCast(field.value));
         }
         fields.deinit(allocator);
     }
@@ -845,8 +847,8 @@ fn decodeDynamicFieldSectionBody(
     var fields: std.ArrayList(FieldLine) = .empty;
     errdefer {
         for (fields.items) |field| {
-            allocator.free(@constCast(field.name));
-            allocator.free(@constCast(field.value));
+            if (!static_table.containsPtr(field.name)) allocator.free(@constCast(field.name));
+            if (!static_table.containsPtr(field.value)) allocator.free(@constCast(field.value));
         }
         fields.deinit(allocator);
     }
@@ -928,6 +930,12 @@ fn decodeDynamicFieldSectionBody(
     return try fields.toOwnedSlice(allocator);
 }
 
+/// Appends a field decoded from an indexed (or name-indexed)
+/// representation. Static-table-resident strings are BORROWED (the
+/// comptime storage outlives every section); dynamic-table strings are
+/// duped — the table may evict (and free) them while the decoded
+/// section is still live. `freeFieldSection` skips the borrowed slices
+/// via the static-table pointer-region check.
 fn appendCopiedField(
     fields: *std.ArrayList(FieldLine),
     allocator: std.mem.Allocator,
@@ -937,10 +945,16 @@ fn appendCopiedField(
     sensitive: bool,
 ) Error!void {
     try budget.reserve(name_src, value_src);
-    const name = try allocator.dupe(u8, name_src);
-    errdefer allocator.free(name);
-    const value = try allocator.dupe(u8, value_src);
-    errdefer allocator.free(value);
+    const name: []const u8 = if (static_table.containsPtr(name_src))
+        name_src
+    else
+        try allocator.dupe(u8, name_src);
+    errdefer if (!static_table.containsPtr(name)) allocator.free(@constCast(name));
+    const value: []const u8 = if (static_table.containsPtr(value_src))
+        value_src
+    else
+        try allocator.dupe(u8, value_src);
+    errdefer if (!static_table.containsPtr(value)) allocator.free(@constCast(value));
     try fields.append(allocator, .{
         .name = name,
         .value = value,
@@ -958,8 +972,11 @@ fn appendCopiedNameField(
 ) Error!void {
     errdefer allocator.free(value);
     try budget.reserve(name_src, value);
-    const name = try allocator.dupe(u8, name_src);
-    errdefer allocator.free(name);
+    const name: []const u8 = if (static_table.containsPtr(name_src))
+        name_src
+    else
+        try allocator.dupe(u8, name_src);
+    errdefer if (!static_table.containsPtr(name)) allocator.free(@constCast(name));
     try fields.append(allocator, .{
         .name = name,
         .value = value,
@@ -1662,4 +1679,30 @@ fn expectDecodedFields(block: []const u8, expected: []const FieldLine) anyerror!
         try std.testing.expectEqualStrings(want.value, got.value);
         try std.testing.expectEqual(want.sensitive, got.sensitive);
     }
+}
+
+test "decoded static references borrow static storage and free cleanly" {
+    const allocator = std.testing.allocator;
+    // Static-only section: zero prefix, one static-indexed field
+    // (0xc0 | 1 = :path "/").
+    const static_block = [_]u8{ 0x00, 0x00, 0xc1 };
+    const fields = try decodeFieldSection(allocator, &static_block);
+    defer freeFieldSection(allocator, fields);
+    try std.testing.expectEqual(@as(usize, 1), fields.len);
+    const entry = static_table.get(1).?;
+    try std.testing.expectEqual(entry.name.ptr, fields[0].name.ptr);
+    try std.testing.expectEqual(entry.value.ptr, fields[0].value.ptr);
+    // Mixed section: static-indexed field + literal field — the literal
+    // stays heap-owned while the indexed one borrows.
+    const src_fields = [_]FieldLine{
+        .{ .name = ":path", .value = "/" },
+        .{ .name = "x-custom", .value = "v" },
+    };
+    var block: [64]u8 = undefined;
+    const block_n = try encodeFieldSection(&block, &src_fields);
+    const mixed_fields = try decodeFieldSection(allocator, block[0..block_n]);
+    defer freeFieldSection(allocator, mixed_fields);
+    try std.testing.expectEqual(@as(usize, 2), mixed_fields.len);
+    try std.testing.expect(static_table.containsPtr(mixed_fields[0].name));
+    try std.testing.expect(!static_table.containsPtr(mixed_fields[1].name));
 }

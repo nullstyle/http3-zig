@@ -44,6 +44,11 @@ pub const DynamicTable = struct {
     size: usize = 0,
     insert_count: u64 = 0,
     dropped_count: u64 = 0,
+    /// Logical head of the live region inside `entries`: entries in
+    /// `[0, head)` have been evicted (freed) and are dead slots left in
+    /// place so eviction is O(1) — no per-eviction array shift. The
+    /// dead prefix is compacted amortized-O(1) on insert.
+    head: usize = 0,
     entries: std.ArrayList(Entry) = .empty,
     /// Optional trace context. Defaults to a no-op hook so the table
     /// stays usable in transport-free settings (tests, fuzzing).
@@ -62,14 +67,15 @@ pub const DynamicTable = struct {
     }
 
     pub fn clear(self: *DynamicTable) void {
-        for (self.entries.items) |*entry| self.freeEntry(entry);
+        for (self.entries.items[self.head..]) |*entry| self.freeEntry(entry);
         self.entries.clearRetainingCapacity();
+        self.head = 0;
         self.size = 0;
         self.dropped_count = self.insert_count;
     }
 
     pub fn len(self: *const DynamicTable) usize {
-        return self.entries.items.len;
+        return self.entries.items.len - self.head;
     }
 
     pub fn setCapacity(self: *DynamicTable, capacity: usize) Error!void {
@@ -105,7 +111,7 @@ pub const DynamicTable = struct {
         if (size_needed > self.capacity) return false; // cannot be inserted at all
         const target = self.capacity - size_needed;
         var remaining = self.size;
-        var i: usize = 0;
+        var i: usize = self.head;
         while (remaining > target) {
             if (i >= self.entries.items.len) break;
             const entry = &self.entries.items[i];
@@ -187,7 +193,7 @@ pub const DynamicTable = struct {
 
     pub fn find(self: *const DynamicTable, name: []const u8, value: []const u8) ?u64 {
         var i = self.entries.items.len;
-        while (i > 0) {
+        while (i > self.head) {
             i -= 1;
             const entry = self.entries.items[i];
             if (std.mem.eql(u8, entry.name, name) and std.mem.eql(u8, entry.value, value)) {
@@ -199,7 +205,7 @@ pub const DynamicTable = struct {
 
     pub fn findName(self: *const DynamicTable, name: []const u8) ?u64 {
         var i = self.entries.items.len;
-        while (i > 0) {
+        while (i > self.head) {
             i -= 1;
             const entry = self.entries.items[i];
             if (std.mem.eql(u8, entry.name, name)) return entry.absolute_index;
@@ -215,6 +221,15 @@ pub const DynamicTable = struct {
 
         const size_needed = entrySize(name, value);
         if (size_needed > self.capacity) return Error.EntryTooLarge;
+        // Amortized compaction: once the dead prefix is at least half
+        // the backing capacity, slide the live region down so O(1)
+        // head-advance eviction cannot grow dead slots unboundedly.
+        if (self.head > 0 and self.head * 2 >= self.entries.capacity) {
+            const live = self.entries.items.len - self.head;
+            std.mem.copyForwards(Entry, self.entries.items[0..live], self.entries.items[self.head..]);
+            self.entries.shrinkRetainingCapacity(live);
+            self.head = 0;
+        }
         try self.entries.ensureUnusedCapacity(self.allocator, 1);
         try self.evictToCapacity(self.capacity - size_needed);
 
@@ -231,7 +246,7 @@ pub const DynamicTable = struct {
             .name = .qpack_dynamic_insert,
             .role = self.trace.role,
             .bytes = size_needed,
-            .count = self.entries.items.len,
+            .count = self.len(),
             .value = absolute_index,
         });
         return absolute_index;
@@ -239,27 +254,34 @@ pub const DynamicTable = struct {
 
     fn offsetForAbsolute(self: *const DynamicTable, absolute_index: u64) ?usize {
         if (absolute_index < self.dropped_count or absolute_index >= self.insert_count) return null;
-        const offset = absolute_index - self.dropped_count;
+        const offset = self.head + (absolute_index - self.dropped_count);
         if (offset >= self.entries.items.len) return null;
         return @intCast(offset);
     }
 
     fn evictToCapacity(self: *DynamicTable, target_size: usize) Error!void {
         while (self.size > target_size) {
-            if (self.entries.items.len == 0) return Error.EntryTooLarge;
-            var entry = self.entries.orderedRemove(0);
+            if (self.entries.items.len - self.head == 0) return Error.EntryTooLarge;
+            const entry = self.entries.items[self.head];
             const entry_size = entry.size();
             const evicted_index = entry.absolute_index;
+            self.head += 1;
             self.size -= entry_size;
             self.dropped_count = evicted_index + 1;
-            self.freeEntry(&entry);
+            self.freeEntry(@constCast(&entry));
             self.trace.hooks.emit(.{
                 .name = .qpack_dynamic_evict,
                 .role = self.trace.role,
                 .bytes = entry_size,
-                .count = self.entries.items.len,
+                .count = self.len(),
                 .value = evicted_index,
             });
+        }
+        // Fully-drained table: recycle the dead prefix eagerly so the
+        // backing array does not retain a full generation of slots.
+        if (self.head == self.entries.items.len) {
+            self.entries.clearRetainingCapacity();
+            self.head = 0;
         }
     }
 

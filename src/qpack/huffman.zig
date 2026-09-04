@@ -320,6 +320,10 @@ pub fn encode(dst: []u8, src: []const u8) Error!usize {
 pub fn decode(allocator: std.mem.Allocator, src: []const u8) Error![]u8 {
     var out: std.ArrayList(u8) = .empty;
     errdefer out.deinit(allocator);
+    // Pre-size to the exact worst-case expansion (minimum code length
+    // is 5 bits) instead of growing by doubling — the bound is already
+    // known and reserved against the decode budget by callers.
+    try out.ensureTotalCapacity(allocator, (src.len * 8 + 4) / 5);
 
     var acc: u32 = 0;
     var acc_bits: u8 = 0;

@@ -122,9 +122,16 @@ pub const Encoder = struct {
     }
 
     pub fn encodeData(self: *Encoder, dst: []u8, data: []const u8) Error!usize {
+        try self.observeDataFrame();
+        return try encodeDataFrame(dst, data);
+    }
+
+    /// The message-state validation `encodeData` performs, without
+    /// encoding — send paths that write the frame header and payload as
+    /// separate stream writes call this once instead.
+    pub fn observeDataFrame(self: *const Encoder) Error!void {
         if (!self.sent_headers) return Error.DataBeforeHeaders;
         if (self.sent_trailers) return Error.DataAfterTrailers;
-        return try encodeDataFrame(dst, data);
     }
 
     pub fn encodeTrailers(self: *Encoder, dst: []u8, fields: []const qpack.FieldLine) Error!usize {

@@ -44,6 +44,16 @@ pub fn encode(dst: []u8, capsule_type: u64, value: []const u8) Error!usize {
     return pos + value.len;
 }
 
+/// Encodes just the capsule header (type + value-length varints), for
+/// send paths that write the value bytes as a separate zero-copy
+/// stream write.
+pub fn encodeHeader(dst: []u8, capsule_type: u64, value_len: usize) Error!usize {
+    var pos: usize = 0;
+    pos += try varint.encode(dst[pos..], capsule_type);
+    pos += try varint.encode(dst[pos..], value_len);
+    return pos;
+}
+
 pub fn encodeDatagram(dst: []u8, payload: []const u8) Error!usize {
     return encode(dst, Type.datagram, payload);
 }

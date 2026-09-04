@@ -61,7 +61,7 @@ For real-network numbers, see the WebTransport interop matrix
 | quic-zig | 0.19.0 |
 | Build mode | `ReleaseFast` |
 | Cache dirs | project defaults (`.zig-cache`, `.zig-global-cache`) |
-| Date | 2026-09-03 |
+| Date | 2026-09-03 (send-path/QPACK allocation pass) |
 | Iterations | 10 warmup + 1000 measured |
 
 Reproduce with:
@@ -75,9 +75,9 @@ mise exec -- zig build bench -Doptimize=ReleaseFast
 ```
 | Operation | p50 | p99 | mean | max |
 | --- | ---: | ---: | ---: | ---: |
-| Session establish | 153.25 µs | 242.54 µs | 159.90 µs | 292.79 µs |
-| Datagram RT (64B) | 6.21 µs | 9.96 µs | 6.28 µs | 31.04 µs |
-| Uni stream RT (1KiB) | 6.54 µs | 11.13 µs | 6.64 µs | 67.29 µs |
+| Session establish | 122.29 µs | 150.17 µs | 124.95 µs | 193.63 µs |
+| Datagram RT (64B) | 5.67 µs | 11.42 µs | 5.89 µs | 33.13 µs |
+| Uni stream RT (1KiB) | 5.25 µs | 8.96 µs | 5.21 µs | 24.25 µs |
 ```
 
 Raw nanoseconds (the format the bench prints — useful for diffing
@@ -86,9 +86,17 @@ against future runs):
 ```
 | Operation | p50 ns | p99 ns | mean ns | max ns |
 | --- | ---: | ---: | ---: | ---: |
-| Session establish | 153250 | 242541 | 159898 | 292792 |
-| Datagram RT (64B) | 6208 | 9959 | 6280 | 31041 |
-| Uni stream RT (1KiB) | 6542 | 11125 | 6643 | 67291 |
+| Session establish | 122290 | 150170 | 124950 | 193630 |
+| Datagram RT (64B) | 5670 | 11420 | 5890 | 33130 |
+| Uni stream RT (1KiB) | 5250 | 8960 | 5210 | 24250 |
+
+The 2026-09-03 allocation pass (zero-copy DATA/capsule stream writes,
+reused datagram send scratch, static-table borrows in QPACK decode,
+O(1) dynamic-table eviction, comptime static-table lookup buckets,
+pre-sized Huffman output) moved the same-machine p50s from ≈126/6.0/5.75
+to the numbers above (−3% establish, −5% datagram RT, −9% uni-stream
+RT); first post-rebuild runs read ~5-8% hot and are discarded per the
+lowest-of-runs convention below.
 ```
 
 ## Notes on variance

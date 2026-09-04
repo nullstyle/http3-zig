@@ -1640,6 +1640,11 @@ pub const Session = struct {
     /// in `deinit`. Not part of the public API surface.
     drain_read_scratch: []u8 = &.{},
     drain_datagram_scratch: []u8 = &.{},
+    /// Scratch for outgoing QUIC DATAGRAM frames: quic's send API takes
+    /// a single buffer (it copies into its send queue before returning),
+    /// so the frame is assembled here instead of per-send alloc+free.
+    /// Grows monotonically, freed in `deinit`.
+    send_datagram_scratch: []u8 = &.{},
     /// A datagram popped from the transport in the same iteration that
     /// discovered the drain budget exhausted. Unlike the datagrams still
     /// sitting in the transport queue it cannot be left for the next
@@ -1699,6 +1704,7 @@ pub const Session = struct {
         self.qpack_decoder_state.deinit();
         if (self.drain_read_scratch.len > 0) self.allocator.free(self.drain_read_scratch);
         if (self.drain_datagram_scratch.len > 0) self.allocator.free(self.drain_datagram_scratch);
+        if (self.send_datagram_scratch.len > 0) self.allocator.free(self.send_datagram_scratch);
         if (self.pending_datagram) |pending| self.allocator.free(pending.payload);
     }
 
@@ -1717,6 +1723,10 @@ pub const Session = struct {
             scratch.* = grown;
         }
         return scratch.*[0..needed];
+    }
+
+    fn ensureSendDatagramScratch(self: *Session, needed: usize) Error![]u8 {
+        return self.ensureDrainScratch(&self.send_datagram_scratch, needed);
     }
 
     /// Releases the deep-cloned bytes attached to `event` using the
@@ -3213,10 +3223,9 @@ pub const Session = struct {
         try self.validateDatagramSend(stream_id, payload.len);
 
         const len = try datagram_mod.encodedLen(stream_id, payload.len);
-        const encoded = try self.allocator.alloc(u8, len);
-        defer self.allocator.free(encoded);
-        const n = try datagram_mod.encode(encoded, stream_id, payload);
-        const id = try self.quic.sendDatagramTracked(encoded[0..n]);
+        const scratch = try self.ensureSendDatagramScratch(len);
+        const n = try datagram_mod.encode(scratch, stream_id, payload);
+        const id = try self.quic.sendDatagramTracked(scratch[0..n]);
         self.trace(.{
             .name = .datagram_sent,
             .role = self.role,
@@ -3246,10 +3255,9 @@ pub const Session = struct {
         try self.validateDatagramSend(stream_id, payload_len);
 
         const len = try datagram_mod.encodedLenWithContext(stream_id, context_id, payload.len);
-        const encoded = try self.allocator.alloc(u8, len);
-        defer self.allocator.free(encoded);
-        const n = try datagram_mod.encodeWithContext(encoded, stream_id, context_id, payload);
-        const id = try self.quic.sendDatagramTracked(encoded[0..n]);
+        const scratch = try self.ensureSendDatagramScratch(len);
+        const n = try datagram_mod.encodeWithContext(scratch, stream_id, context_id, payload);
+        const id = try self.quic.sendDatagramTracked(scratch[0..n]);
         self.trace(.{
             .name = .datagram_sent,
             .role = self.role,
@@ -6290,27 +6298,63 @@ pub const Session = struct {
         encoder: *message_mod.Encoder,
         data: []const u8,
     ) Error!void {
-        try self.ensureStreamSendCapacity(stream_id, self.dataFramesEncodedLen(data.len));
+        try self.writeDataSegments(stream_id, encoder, &.{data});
+    }
+
+    /// The zero-copy DATA send path: each chunk is emitted as a
+    /// stack-encoded frame header followed by the payload segments
+    /// written verbatim — no per-chunk heap buffer, and the only copy
+    /// of the payload is the one quic's stream buffer makes. `segments`
+    /// concatenate into a single DATA frame payload per chunk (the
+    /// capsule send path passes [header, value]).
+    fn writeDataSegments(
+        self: *Session,
+        stream_id: u64,
+        encoder: *message_mod.Encoder,
+        segments: []const []const u8,
+    ) Error!void {
+        var payload_len: usize = 0;
+        for (segments) |segment| payload_len += segment.len;
+        if (payload_len == 0) return;
+        // Message-state validation once up front (the encoder flags do
+        // not change per chunk).
+        try encoder.observeDataFrame();
+
+        try self.ensureStreamSendCapacity(stream_id, self.dataFramesEncodedLen(payload_len));
 
         const chunk_size = if (self.config.max_data_frame_payload == 0)
-            data.len
+            payload_len
         else
             self.config.max_data_frame_payload;
+        var seg_index: usize = 0;
+        var seg_offset: usize = 0;
         var offset: usize = 0;
-        while (offset < data.len) {
-            const end = @min(data.len, offset + chunk_size);
-            const chunk = data[offset..end];
-            const len = varint.encodedLen(protocol.FrameType.data) + varint.encodedLen(chunk.len) + chunk.len;
-            const buf = try self.allocator.alloc(u8, len);
-            defer self.allocator.free(buf);
-            const n = try encoder.encodeData(buf, chunk);
-            try self.writeAll(stream_id, buf[0..n]);
+        while (offset < payload_len) {
+            const end = @min(payload_len, offset + chunk_size);
+            const chunk_len = end - offset;
+            var hdr: [varint.max_len * 2]u8 = undefined;
+            var hdr_len: usize = 0;
+            hdr_len += try varint.encode(hdr[hdr_len..], protocol.FrameType.data);
+            hdr_len += try varint.encode(hdr[hdr_len..], chunk_len);
+            try self.writeAll(stream_id, hdr[0..hdr_len]);
+            var written: usize = 0;
+            while (written < chunk_len) {
+                const seg = segments[seg_index];
+                const take = @min(chunk_len - written, seg.len - seg_offset);
+                try self.writeAll(stream_id, seg[seg_offset .. seg_offset + take]);
+                written += take;
+                seg_offset += take;
+                if (seg_offset == seg.len) {
+                    seg_index += 1;
+                    seg_offset = 0;
+                }
+            }
             self.trace(.{
                 .name = .data_sent,
                 .role = self.role,
                 .stream_id = stream_id,
                 .frame_type = protocol.FrameType.data,
-                .bytes = chunk.len,
+                .bytes = chunk_len,
             });
             offset = end;
         }
@@ -6350,12 +6394,17 @@ pub const Session = struct {
             .push => return Error.InvalidRole,
         };
         const encoded_len = try capsuleEncodedLenChecked(capsule_type, value.len);
+        _ = encoded_len; // size check only; the segments below carry the bytes
         const encoder = try self.ensureEncoder(state, kind);
-        try self.ensureStreamSendCapacity(stream_id, self.dataFramesEncodedLen(encoded_len));
-        const encoded = try self.allocator.alloc(u8, encoded_len);
-        defer self.allocator.free(encoded);
-        const n = try capsule_mod.encode(encoded, capsule_type, value);
-        try self.writeDataWithEncoder(stream_id, encoder, encoded[0..n]);
+        // Zero-copy: the capsule header is stack-encoded and the value
+        // bytes are written verbatim as the second DATA segment — no
+        // intermediate capsule buffer, no second payload copy.
+        var capsule_hdr: [varint.max_len * 2]u8 = undefined;
+        const capsule_hdr_len = try capsule_mod.encodeHeader(&capsule_hdr, capsule_type, value.len);
+        try self.writeDataSegments(stream_id, encoder, &.{
+            capsule_hdr[0..capsule_hdr_len],
+            value,
+        });
         self.trace(.{
             .name = .capsule_sent,
             .role = self.role,
@@ -7323,11 +7372,9 @@ fn cloneFields(allocator: std.mem.Allocator, fields: []const qpack.FieldLine) Er
 }
 
 fn freeFields(allocator: std.mem.Allocator, fields: []qpack.FieldLine) void {
-    for (fields) |field| {
-        allocator.free(@constCast(field.name));
-        allocator.free(@constCast(field.value));
-    }
-    allocator.free(fields);
+    // Delegates so static-table-borrowed slices (see
+    // qpack.static_table.containsPtr) are skipped uniformly.
+    qpack.freeFieldSection(allocator, fields);
 }
 
 test "session emits deep-owned message events" {

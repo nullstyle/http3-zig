@@ -116,18 +116,18 @@ pub fn get(index: usize) ?Entry {
     return entries[index];
 }
 
-pub fn find(name: []const u8, value: []const u8) ?usize {
-    for (entries, 0..) |entry, i| {
-        if (std.mem.eql(u8, entry.name, name) and std.mem.eql(u8, entry.value, value)) return i;
+/// True when `mem` IS a static-table string (exact pointer + length
+/// match against one of the comptime entries). Decoded field sections
+/// BORROW static-resident name/value strings instead of duping them;
+/// the free paths use this check to skip freeing borrowed slices. A
+/// heap allocation can never coincide with comptime storage, so the
+/// match is exact.
+pub fn containsPtr(mem: []const u8) bool {
+    for (entries) |entry| {
+        if (entry.name.ptr == mem.ptr and entry.name.len == mem.len) return true;
+        if (entry.value.ptr == mem.ptr and entry.value.len == mem.len) return true;
     }
-    return null;
-}
-
-pub fn findName(name: []const u8) ?usize {
-    for (entries, 0..) |entry, i| {
-        if (std.mem.eql(u8, entry.name, name)) return i;
-    }
-    return null;
+    return false;
 }
 
 test "table has 99 entries and key RFC examples" {
@@ -136,4 +136,109 @@ test "table has 99 entries and key RFC examples" {
     try std.testing.expectEqualStrings("/", entries[1].value);
     try std.testing.expectEqual(@as(?usize, 17), find(":method", "GET"));
     try std.testing.expectEqual(@as(?usize, 23), find(":scheme", "https"));
+}
+
+// ---------------------------------------------------------------------------
+// Comptime lookup index: buckets keyed by (name length, first byte).
+// Encoders probe the table 2-3x per field (full match, then name-only);
+// the bucket prefilter cuts the 99-entry scan to the 0-4 candidates
+// that share a length and first byte.
+
+const max_name_len = blk: {
+    var m: usize = 0;
+    for (entries) |entry| {
+        if (entry.name.len > m) m = entry.name.len;
+    }
+    break :blk m;
+};
+
+const max_bucket_size = blk: {
+    @setEvalBranchQuota(1_000_000);
+    var counts: [max_name_len + 1][128]usize = @splat(@splat(0));
+    for (entries) |entry| counts[entry.name.len][entry.name[0]] += 1;
+    var m: usize = 0;
+    for (&counts, 0..) |by_first, len| {
+        for (by_first, 0..) |count, first| {
+            if (len > 0 and first > 0 and count > m) m = count;
+        }
+    }
+    break :blk m;
+};
+
+const lookup_storage: [max_name_len + 1][128][max_bucket_size]u16 = blk: {
+    @setEvalBranchQuota(1_000_000);
+    var storage: [max_name_len + 1][128][max_bucket_size]u16 = @splat(@splat(@splat(0)));
+    var fill: [max_name_len + 1][128]usize = @splat(@splat(0));
+    for (entries, 0..) |entry, i| {
+        const l = entry.name.len;
+        const f = entry.name[0];
+        storage[l][f][fill[l][f]] = @intCast(i);
+        fill[l][f] += 1;
+    }
+    break :blk storage;
+};
+
+const lookup_fills: [max_name_len + 1][128]usize = blk: {
+    @setEvalBranchQuota(1_000_000);
+    var fill: [max_name_len + 1][128]usize = @splat(@splat(0));
+    for (entries) |entry| {
+        fill[entry.name.len][entry.name[0]] += 1;
+    }
+    break :blk fill;
+};
+
+const lookup_index: [max_name_len + 1][128][]const u16 = blk: {
+    @setEvalBranchQuota(1_000_000);
+    var buckets: [max_name_len + 1][128][]const u16 = undefined;
+    for (0..max_name_len + 1) |l| {
+        for (0..128) |f| {
+            buckets[l][f] = lookup_storage[l][f][0..lookup_fills[l][f]];
+        }
+    }
+    break :blk buckets;
+};
+
+fn nameBucket(name: []const u8) ?[]const u16 {
+    if (name.len == 0 or name.len > max_name_len) return null;
+    const first = name[0];
+    if (first >= 128) return null;
+    return lookup_index[name.len][first];
+}
+
+pub fn find(name: []const u8, value: []const u8) ?usize {
+    const bucket = nameBucket(name) orelse return null;
+    for (bucket) |i| {
+        const entry = entries[i];
+        if (std.mem.eql(u8, entry.name, name) and std.mem.eql(u8, entry.value, value)) return i;
+    }
+    return null;
+}
+
+pub fn findName(name: []const u8) ?usize {
+    const bucket = nameBucket(name) orelse return null;
+    for (bucket) |i| {
+        if (std.mem.eql(u8, entries[i].name, name)) return i;
+    }
+    return null;
+}
+
+test "comptime bucket index preserves find/findName results" {
+    // Every entry must be findable through the bucketed path.
+    // findName keeps the original first-match semantics, so for
+    // duplicated names (":path", "x-frame-options") the FIRST index
+    // with that name is the correct answer.
+    for (entries, 0..) |entry, i| {
+        try std.testing.expectEqual(@as(?usize, i), find(entry.name, entry.value));
+        if (findName(entry.name)) |first| {
+            try std.testing.expectEqualStrings(entry.name, entries[first].name);
+            try std.testing.expect(first <= i);
+        } else return error.TestUnexpectedResult;
+    }
+    // Probes that can match nothing are cheap rejections.
+    try std.testing.expectEqual(@as(?usize, null), find("nope", "x"));
+    try std.testing.expectEqual(@as(?usize, null), findName(""));
+    try std.testing.expectEqual(@as(?usize, null), findName("\xff-prefixed"));
+    // Same name, different value still falls through to name-only.
+    try std.testing.expectEqual(@as(?usize, null), find(":path", "/other"));
+    try std.testing.expectEqual(@as(?usize, 1), findName(":path"));
 }

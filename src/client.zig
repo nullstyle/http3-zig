@@ -2038,11 +2038,9 @@ fn cloneFields(
 }
 
 fn freeFields(allocator: std.mem.Allocator, fields: []qpack.FieldLine) void {
-    for (fields) |field| {
-        allocator.free(@constCast(field.name));
-        allocator.free(@constCast(field.value));
-    }
-    allocator.free(fields);
+    // Delegates so static-table-borrowed slices (see
+    // qpack.static_table.containsPtr) are skipped uniformly.
+    qpack.freeFieldSection(allocator, fields);
 }
 
 fn fieldValue(fields: []const qpack.FieldLine, name: []const u8) ?[]const u8 {
