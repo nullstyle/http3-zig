@@ -11,6 +11,19 @@ breaking changes; see notes per release.
 
 ### Added
 
+- The two deferred allocation/CPU follow-ups from the performance
+  pass: (1) the dynamic-QPACK encoder computes each field's
+  representation ONCE per section into a stack cache (up to 64 fields,
+  recomputing beyond) consumed by sizing, reference collection, and
+  encoding — previously the pure chooser ran up to three times per
+  field; the default static-only posture is untouched. (2) WebTransport
+  substream data events now MOVE the stream's receive buffer into the
+  event (exact-length shrink in place, copy fallback only when remap
+  fails) instead of duping it — zero payload copies and half the
+  transient memory, with loss-safe ordering under OOM: the events-list
+  slot is reserved before the move and the append is infallible, so
+  reliable-stream bytes can never be dropped (the fault-injection
+  sweep exercises exactly this path).
 - Split the session engine across `src/session/`: `config.zig` (the
   `Config` surface, production preset, policy enums), `events.zig`
   (the `Event` union, every payload type, batch helpers), and

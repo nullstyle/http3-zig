@@ -3114,9 +3114,18 @@ pub const Session = struct {
         }
 
         try budget.reserve(state.rx.items.len);
-        const data = try self.allocator.dupe(u8, state.rx.items);
+        // Zero-copy emission: the rx buffer MOVES into the event
+        // (shrunk to exact length in place via remap; the copy fallback
+        // is rare) instead of being duped. Loss-safe under OOM: every
+        // fallible step leaves rx intact, and the events-list slot is
+        // reserved before the move so the append itself is infallible —
+        // an append failure would otherwise free the event along with
+        // the moved bytes of a reliable stream. The stream re-grows rx
+        // on the next inbound bytes.
+        try events.ensureUnusedCapacity(self.allocator, 1);
+        const data = try state.rx.toOwnedSlice(self.allocator);
         const data_len = data.len;
-        try self.appendReservedEvent(events, .{
+        self.appendReservedEventAssumeCapacity(events, .{
             .webtransport_stream_data = .{
                 .stream_id = state.id,
                 .session_id = state.wt_session_id.?,
@@ -3124,7 +3133,6 @@ pub const Session = struct {
                 .data = data,
             },
         });
-        state.rx.clearRetainingCapacity();
 
         // Bookkeeping: bump `peer_data_received` so the application
         // can decide when to advertise a higher `local_max_data` via
@@ -4536,6 +4544,25 @@ pub const Session = struct {
             }
         }
         try appendRawEvent(self.allocator, events, event);
+        self.traceEmittedEvent(event);
+    }
+
+    /// `appendReservedEvent` for callers that reserved the events-list
+    /// slot with `ensureUnusedCapacity` BEFORE taking an action whose
+    /// failure would lose data (e.g. moving a stream buffer into the
+    /// event): the append here cannot fail, so the ordering "reserve
+    /// slot, then move, then append" is loss-safe even under OOM.
+    fn appendReservedEventAssumeCapacity(
+        self: *Session,
+        events: *std.ArrayList(Event),
+        event: Event,
+    ) void {
+        if (eventStreamId(event)) |stream_id| {
+            if (self.streams.get(stream_id)) |state| {
+                state.last_event_us = self.quic.last_activity_us;
+            }
+        }
+        events.appendAssumeCapacity(event);
         self.traceEmittedEvent(event);
     }
 

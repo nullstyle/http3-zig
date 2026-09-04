@@ -268,7 +268,9 @@ pub fn dynamicFieldSectionEncodedLenWithOptions(
     fields: []const FieldLine,
     options: DynamicFieldSectionEncodeOptions,
 ) Error!usize {
-    const plan = try planDynamicFieldSection(table, fields, options);
+    var source: RepresentationSource = .{};
+    source.fill(table, fields, options);
+    const plan = try planDynamicFieldSection(table, fields, options, &source);
     return try plan.totalLen(@intCast(table.max_capacity));
 }
 
@@ -291,7 +293,11 @@ pub fn encodeDynamicFieldSectionWithOptions(
     options: DynamicFieldSectionEncodeOptions,
 ) Error!usize {
     const max_table_capacity: u64 = @intCast(table.max_capacity);
-    const plan = try planDynamicFieldSection(table, fields, options);
+    // One representation pass feeds sizing, reference collection, and
+    // encoding (see RepresentationSource).
+    var source: RepresentationSource = .{};
+    source.fill(table, fields, options);
+    const plan = try planDynamicFieldSection(table, fields, options, &source);
     const total_len = try plan.totalLen(max_table_capacity);
     if (dst.len < total_len) return Error.BufferTooSmall;
 
@@ -299,7 +305,7 @@ pub fn encodeDynamicFieldSectionWithOptions(
         tracker.encoder_state.recordInsertCount(table.insert_count);
         var references: std.ArrayList(u64) = .empty;
         defer references.deinit(tracker.encoder_state.allocator);
-        try collectDynamicReferences(&references, tracker.encoder_state.allocator, table, fields, plan.base, options);
+        try collectDynamicReferences(&references, tracker.encoder_state.allocator, table, fields, plan.base, options, &source);
         _ = try tracker.encoder_state.trackFieldSection(tracker.stream_id, references.items);
     }
 
@@ -309,8 +315,8 @@ pub fn encodeDynamicFieldSectionWithOptions(
         .base = plan.base,
     }, max_table_capacity);
 
-    for (fields) |field| {
-        const representation = chooseFieldRepresentation(table, plan.base, field, options);
+    for (fields, 0..) |field, i| {
+        const representation = source.get(i, table, plan.base, field, options);
         pos += try encodeFieldRepresentation(dst[pos..], table, plan.base, field, representation, options);
     }
     return pos;
@@ -474,17 +480,53 @@ pub fn encodeStringLiteral(
     return pos;
 }
 
+/// One-shot representation cache. `chooseFieldRepresentation` is pure
+/// (const table, fixed base/options), and the encode flow needs its
+/// answer three times per field — plan sizing, reference collection,
+/// and encoding. Sections of up to `stack_capacity` fields (the
+/// overwhelming case) compute each field's representation exactly once
+/// into the stack cache; larger sections transparently fall back to
+/// recomputing per pass rather than allocating.
+const RepresentationSource = struct {
+    const stack_capacity = 64;
+
+    stack: [stack_capacity]FieldRepresentation = undefined,
+    cached_len: usize = 0,
+
+    fn fill(self: *RepresentationSource, table: *const DynamicTable, fields: []const FieldLine, options: DynamicFieldSectionEncodeOptions) void {
+        const n = @min(fields.len, stack_capacity);
+        const base = table.insert_count;
+        for (fields[0..n], 0..) |field, i| {
+            self.stack[i] = chooseFieldRepresentation(table, base, field, options);
+        }
+        self.cached_len = n;
+    }
+
+    fn get(
+        self: *const RepresentationSource,
+        index: usize,
+        table: *const DynamicTable,
+        base: u64,
+        field: FieldLine,
+        options: DynamicFieldSectionEncodeOptions,
+    ) FieldRepresentation {
+        if (index < self.cached_len) return self.stack[index];
+        return chooseFieldRepresentation(table, base, field, options);
+    }
+};
+
 fn planDynamicFieldSection(
     table: *const DynamicTable,
     fields: []const FieldLine,
     options: DynamicFieldSectionEncodeOptions,
+    source: *const RepresentationSource,
 ) Error!DynamicFieldSectionPlan {
     const base = table.insert_count;
     var required_insert_count: u64 = 0;
     var body_len: usize = 0;
 
-    for (fields) |field| {
-        const representation = chooseFieldRepresentation(table, base, field, options);
+    for (fields, 0..) |field, i| {
+        const representation = source.get(i, table, base, field, options);
         switch (representation) {
             .dynamic_indexed,
             .dynamic_post_base_indexed,
@@ -646,9 +688,10 @@ fn collectDynamicReferences(
     fields: []const FieldLine,
     base: u64,
     options: DynamicFieldSectionEncodeOptions,
+    source: *const RepresentationSource,
 ) Error!void {
-    for (fields) |field| {
-        const representation = chooseFieldRepresentation(table, base, field, options);
+    for (fields, 0..) |field, i| {
+        const representation = source.get(i, table, base, field, options);
         switch (representation) {
             .dynamic_indexed,
             .dynamic_post_base_indexed,
