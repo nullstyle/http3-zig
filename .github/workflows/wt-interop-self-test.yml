@@ -1,5 +1,8 @@
 name: wt-interop-self-test
 
+env:
+  ZIG_GLOBAL_CACHE_DIR: ${{ github.workspace }}/.zig-global-cache
+
 on:
   push:
     branches: [main]
@@ -35,9 +38,9 @@ jobs:
       - name: Cache Zig packages
         uses: actions/cache@v4
         with:
-          path: zig-pkg
-          key: zig-pkg-${{ hashFiles('build.zig.zon') }}
-          restore-keys: zig-pkg-
+          path: .zig-global-cache
+          key: zig-global-cache-${{ hashFiles('build.zig.zon') }}
+          restore-keys: zig-global-cache-
 
       # GitHub's tarball/raw endpoints flake (504s, DNS) often enough to fail
       # real runs. Prefetch the full dependency tree with retries so a bad
@@ -69,7 +72,7 @@ jobs:
       - name: Wait for the server's READY line
         run: |
           set -euo pipefail
-          for i in $(seq 1 200); do
+          for _ in $(seq 1 200); do
             if grep -q "^READY " "${{ runner.temp }}/wt-server.log"; then
               break
             fi
@@ -116,7 +119,7 @@ jobs:
             --eras modern,draft07,draft02 \
             > "${{ runner.temp }}/wt-era-server.log" 2>&1 &
           echo "$!" > "${{ runner.temp }}/wt-era-server.pid"
-          for i in $(seq 1 200); do
+          for _ in $(seq 1 200); do
             grep -q "^READY " "${{ runner.temp }}/wt-era-server.log" && break
             sleep 0.05
           done

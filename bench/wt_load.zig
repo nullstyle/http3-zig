@@ -108,8 +108,10 @@ const PerSession = struct {
     // initial `MAX_STREAMS_UNI` grant likely won't cover all 500
     // up front).
     streams_opened: usize = 0,
-    // How many of those streams have been fully written + finished.
-    streams_written: usize = 0,
+    // How many stream FINs the server has observed. Closing the CONNECT
+    // stream tears down the session's substream routing state, so sender-side
+    // `finish()` alone is not enough to declare the reliable work drained.
+    streams_finished_server: usize = 0,
     // Tracks server-side max-data bumps: did we push the credit yet?
     pushed_max_data: bool = false,
     // Per-direction datagram progress.
@@ -478,12 +480,12 @@ fn runLoad(
                 .webtransport_stream_finished => |finished| {
                     const idx = session_idx_by_id.get(finished.session_id) orelse
                         return error.FinishFromUnknownSession;
-                    _ = idx;
                     const entry = streams_by_id.getPtr(finished.stream_id) orelse
                         return error.FinishWithoutData;
                     if (entry.session_id != finished.session_id) return error.StreamSessionMismatch;
                     if (entry.finished) return error.DoubleFinish;
                     entry.finished = true;
+                    per_session[idx].streams_finished_server += 1;
                     streams_finished_total += 1;
                 },
                 .stream_finished => |sf| {
@@ -563,7 +565,6 @@ fn runLoad(
                     => break,
                     else => return err,
                 };
-                ps.streams_written += 1;
             }
 
             // Send the per-direction datagrams at the cadence "every
@@ -591,25 +592,20 @@ fn runLoad(
                 }
             }
 
-            // Fire close once everything else is in flight. The server
-            // mirrors the close on its side (we don't need to wait for
-            // every byte to drain client→server for the close to
-            // reach the peer).
+            // Fire close once everything else has drained. In particular,
+            // wait for the server to observe every reliable stream FIN:
+            // finishing a sender stream only queues its FIN, while closing
+            // the CONNECT stream tears down the receiver's session routing
+            // state. Congestion control is free to deliver those packets in
+            // a different order.
             // Per-session "ready to close" gate. We require:
-            //   - every uni stream queued (sender side),
+            //   - every uni stream finished at the server,
             //   - every c2s datagram queued via `sendDatagram`,
-            //   - every s2c datagram either received OR
-            //     unambiguously globally accounted for via a
-            //     loss event (we don't know which session a lost
-            //     datagram belonged to from the event payload, so
-            //     we use the global counter as a fallback gate
-            //     after streams + sends are done).
             //
-            // The close itself triggers when we've made our
-            // local "send all my stuff" effort — datagrams are
-            // best-effort, blocking the close on every receive
-            // would deadlock the workload under any loss.
-            const all_streams_done = ps.streams_written == streams_per_session;
+            // Datagrams remain best-effort, so blocking close on every
+            // receive would deadlock the workload under legitimate loss.
+            const all_streams_done =
+                ps.streams_finished_server == streams_per_session;
             const all_c2s_dgrams_sent = ps.dgrams_c2s_sent == dgrams_c2s_per_session;
             if (all_streams_done and all_c2s_dgrams_sent and !ps.close_sent) {
                 wt.close(0, "ok") catch |err| switch (err) {

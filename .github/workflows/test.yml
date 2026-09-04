@@ -1,5 +1,8 @@
 name: test
 
+env:
+  ZIG_GLOBAL_CACHE_DIR: ${{ github.workspace }}/.zig-global-cache
+
 on:
   push:
     branches: [main]
@@ -10,11 +13,11 @@ on:
 # transport dependency it builds against. CI uses jdx/mise-action to install
 # the same toolchain as local development.
 #
-# build.zig.zon pins quic and boringssl_zig as URL+hash release-tarball
-# deps, so a standalone CI checkout fetches everything itself — no local path
-# checkout needed. To bump quic-zig, edit build.zig.zon's `.url` + `.hash` by
-# hand (run `zig fetch <new-tarball-url>` for the hash — do NOT
-# `zig fetch --save`, which mangles the dependency entry).
+# build.zig.zon pins quic and boringssl as URL+hash tarball dependencies,
+# so a standalone CI checkout fetches everything itself — no local path
+# checkout needed. To bump quic-zig, edit build.zig.zon's `.url` + `.hash`
+# by hand (`tools/fetch-package-hash.sh <new-tarball-url>` prints the hash
+# without poisoning the normal build cache; do NOT use `zig fetch --save`).
 jobs:
   build-test:
     timeout-minutes: 45
@@ -81,9 +84,9 @@ jobs:
       - name: Cache Zig packages
         uses: actions/cache@v4
         with:
-          path: zig-pkg
-          key: zig-pkg-${{ hashFiles('build.zig.zon') }}
-          restore-keys: zig-pkg-
+          path: .zig-global-cache
+          key: zig-global-cache-${{ hashFiles('build.zig.zon') }}
+          restore-keys: zig-global-cache-
 
       # GitHub's tarball/raw endpoints flake (504s, DNS) often enough to fail
       # real runs. Prefetch the full dependency tree with retries so a bad
@@ -160,9 +163,9 @@ jobs:
       - name: Cache Zig packages
         uses: actions/cache@v4
         with:
-          path: zig-pkg
-          key: zig-pkg-${{ hashFiles('build.zig.zon') }}
-          restore-keys: zig-pkg-
+          path: .zig-global-cache
+          key: zig-global-cache-${{ hashFiles('build.zig.zon') }}
+          restore-keys: zig-global-cache-
 
       # GitHub's tarball/raw endpoints flake (504s, DNS) often enough to fail
       # real runs. Prefetch the full dependency tree with retries so a bad

@@ -260,10 +260,10 @@ pub fn run(
         .new_session_callback = if (options.session_cache != null) captureTicket else null,
         .new_session_user_data = if (options.session_cache != null) @as(?*anyopaque, &binder) else null,
         // Transport tuning (docs/embedding-guide.md "Transport
-        // Tuning"). Since quic 0.11 the defaults are the deployment
-        // posture — CUBIC + pacing + HyStart++ — so this demo sets
+        // Tuning"). The defaults are the deployment posture — BBRv3
+        // (since quic 0.16) + pacing + HyStart++ — so this demo sets
         // nothing; the levers, shown at their defaults:
-        // .congestion_control = .cubic, // .bbr = BBRv3 opt-in; .new_reno = pre-0.11 rollback
+        // .congestion_control = .bbr, // .cubic = RFC 9438 rollback; .new_reno = pre-0.11 rollback
         // .enable_pacing = true, // false restores pre-0.11 burst timing exactly
         // .enable_hystart = true, // false restores plain RFC 9002 slow start
     });

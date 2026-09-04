@@ -20,7 +20,7 @@
 //   * For every accepted uni stream, drain it and open a server-
 //     initiated uni stream that writes the same bytes back.
 //
-// This server pins the webtransport-go v0.12.0 release tag (go.mod),
+// This server pins the webtransport-go v0.13.0 release tag (go.mod),
 // which carries the draft-ietf-webtrans-http3-16 wire codepoints — it
 // advertises both the legacy draft-06 SETTINGS codepoint
 // (`0x2b603742`) for backward compatibility and the

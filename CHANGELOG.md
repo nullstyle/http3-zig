@@ -12,7 +12,7 @@ breaking changes; see notes per release.
 ### Added
 
 - Added `examples/udp_server.zig` — the production HTTP/3 server skeleton:
-  real UDP socket, multi-connection accept via `quic_zig.Server` +
+  real UDP socket, multi-connection accept via `quic.Server` +
   `transport.runUdpServer`, one `Session` (production preset) + facade +
   `ServerRunner` + `TransportEndpoint` per connection hung off
   `Slot.user_data` (created on first sight in the `on_iteration` hook),
@@ -23,7 +23,7 @@ breaking changes; see notes per release.
   `openRequestStreamCount() == 0` or a drain deadline, then hand off to
   the loop's CONNECTION_CLOSE grace window).
 - Added `examples/udp_client.zig` — the real-socket HTTP/3 client:
-  `quic_zig.Client.connect` (system trust store by default, `--insecure`
+  `quic.Client.connect` (system trust store by default, `--insecure`
   for self-signed demos), `transport.runUdpClient`, the request gated on
   `handshakeDone()`, response assembly via `ClientRunner`, and a clean
   H3_NO_ERROR close. Interops with `examples/udp_server.zig`.
@@ -34,11 +34,11 @@ breaking changes; see notes per release.
   leg after `run-examples`.
 - Added `TransportEndpoint.advance` (delegates to `Connection.advance`):
   the client bootstrap step real-network embedders need to emit the first
-  ClientHello — `quic_zig.Client.connect` defers it for 0-RTT staging, and
+  ClientHello — `quic.Client.connect` defers it for 0-RTT staging, and
   loopback tests use the in-process peer shim instead. Documented as pump
   order step 0 in the embedding guide and pinned in the public-API smoke.
 - Added embedding-guide sections for multi-connection accept ("Accepting
-  Connections": `quic_zig.Server` owns accept/demux/Retry/rate limits;
+  Connections": `quic.Server` owns accept/demux/Retry/rate limits;
   init per-slot sessions in the `on_iteration` hook, deinit in
   `on_connection_will_close` before reap destroys the connection),
   clocks and wakeups (one monotonic `now_us` domain owned by the
@@ -70,7 +70,7 @@ breaking changes; see notes per release.
   request deadlines, and certificate rotation (new boringssl context for
   new connections — BoringSSL up-refs `SSL_CTX` per `SSL_new`, so live
   connections finish on the old one — with
-  `quic_zig.Server.replaceTlsContext` as the integrated wrapper path).
+  `quic.Server.replaceTlsContext` as the integrated wrapper path).
 - **Added HTTP/3 early data (0-RTT, RFC 9114 §7.2.4.2)** — the library's
   largest previously-named capability gap. Client: `http3_zig.earlydata`
   pairs quic's resumption envelope with remembered peer SETTINGS (`H3RS`
@@ -135,7 +135,7 @@ breaking changes; see notes per release.
   `setQlogPacketEvents` passthrough on Session/Client/Server; noted
   quic 0.12's install-time `connection_started` emission.
 - Added transport-tuning visibility: annotated at-default config lines
-  in both udp examples (congestion_control incl. opt-in BBRv3,
+  in both udp examples (congestion control incl. BBRv3/CUBIC selection,
   enable_pacing, enable_hystart, and the RunUdpOptions batching knobs)
   plus a "Transport Tuning" embedding-guide section; udp_server's
   shutdown line surfaces `egress_local_faults` with a loud nonzero
@@ -146,18 +146,26 @@ breaking changes; see notes per release.
 
 ### Changed
 
-- **boringssl repinned to the renamed `boringssl` package identity and
-  quic to the repin series (bare SHA 681d4bc)** — the package is
-  `.boringssl` now (dependency key, package name, and module name all
-  `boringssl`; repo still nullstyle/boringssl-zig), carrying the
-  `SSL_get_client_random` binding quic-zig's 0-RTT anti-replay hook
-  needs for SHA256(ticket || client_random) identities. Both entries
-  match quic-zig's byte-for-byte, so the diamond dedupes to one
-  boringssl instance and `boringssl.tls.Context` type identity holds.
-  Repin both to release tags once quic-zig/boringssl-zig cut the next
-  tags.
-- **quic dependency bumped v0.12.0 → v0.13.0** (all additive; wire
-  behavior and defaults unchanged). Adoptions: the at-most-once
+- **Toolchain advanced to Zig 0.17.0-dev.1978+c961124d9 and quic-zig
+  v0.19.0.** The quic 0.14.0–0.19.0 series makes BBRv3 the default
+  congestion controller, adds zero-copy stream reads, sheds inbound
+  DATAGRAM overflow instead of closing the connection, supports
+  `SO_REUSEPORT`, and bounds stalled handshakes by default. The direct
+  boringssl-zig pin remains the latest unreleased 0.6.5 revision
+  (b47af8c) and still matches quic's entry byte-for-byte, preserving
+  `boringssl.tls.Context` module identity across the dependency diamond.
+  quic is treated as a source-only dependency because http3-zig
+  reconstructs its modules around that shared boringssl instance; this
+  also avoids forwarding the obsolete `optimize` option into quic's new
+  `release`-policy build.
+- **Auxiliary dependencies refreshed:** Go 1.27.0; quic-go v0.62.0;
+  webtransport-go v0.13.0; pywebtransport 0.20.0; `x/net` v0.58.0 and
+  the matching Go transitive set; and just 1.58.0. aioquic 1.3.0 and
+  qpack 0.6.0 were already current. Both third-party WebTransport peers
+  complete the draft-16 SETTINGS, CONNECT, datagram, uni-stream, and
+  close flow after the update.
+- The earlier **quic v0.13 transport integrations** remain in place:
+  the at-most-once
   `Event.early_data` is now driven by quic's one-shot
   `ConnectionEvent.early_data` instead of a per-drain status poll —
   fixing a real hazard where a 0-RTT REJECTION could be missed (after
@@ -171,13 +179,17 @@ breaking changes; see notes per release.
   `WebTransportStream.writable()` — QUIC-side send headroom for
   backpressure-aware writers (upstream-Unstable struct; the
   `connection` component is a shared pool, do not sum). Memory: quic
-  0.13.0's sent-packet tracker right-sizing cuts the fixed
+  0.13.0's sent-packet tracker right-sizing cut the fixed
   two-connection warm-up footprint from ≈ 6.2 MB to ≈ 1.87 MB
-  (measured; per-iteration slope byte-identical at 251.2 B/iter) —
-  docs/memory-profile.md carries the new table. Note for other
-  consumers: pin the release TARBALL URL (`archive/refs/tags/v0.13.0`),
-  not the `git+…#v0.13.0` form — the annotated tag resolves to a
-  different fingerprint via git on current Zig master.
+  at that bump; `docs/memory-profile.md` carries the refreshed quic
+  0.19.0 trace (≈ 2.01 MB warm-up, 259.2 B/iter, leak-clean).
+- Package hash calculation now goes through
+  `tools/fetch-package-hash.sh`, which gives `zig fetch` a disposable
+  global cache. This prevents its URL-recompression bug from caching a
+  double-nested archive that later appears as a misleading `N-V-…`
+  dependency hash mismatch. Normal builds use a project-local global
+  cache via `mise.toml`, isolating them from malformed archives produced
+  by other Zig checkouts.
 - **WebTransport wire pin bumped draft-ietf-webtrans-http3-15 → -16** (zero
   codepoint changes — a behavioral revision; the API_STABILITY dual-codepath
   sunset window is waived and the waiver recorded in the conformance

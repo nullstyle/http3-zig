@@ -52,20 +52,20 @@ requiring an external server be up.
 
 ## Wire-format pin
 
-This harness pins to **draft-ietf-webtrans-http3-15**. The most
+This harness pins to **draft-ietf-webtrans-http3-16**. The most
 visible knob is the SETTINGS bootstrap: http3-zig advertises only
-the draft-15 codepoint `SETTINGS_WT_ENABLED = 0x2c7cf000` (boolean).
+the current codepoint `SETTINGS_WT_ENABLED = 0x2c7cf000` (boolean).
 Earlier drafts used a numeric `SETTINGS_WT_MAX_SESSIONS = 0x14e9cd29`
 with no overlap — peers from different revisions will not interop
 by accident.
 
-When picking a third-party server, confirm it speaks draft-15 — support
+When picking a third-party server, confirm it speaks draft-16 — support
 moves as projects release, so verify against each project's current source:
 
-| Implementation | draft-15 | Notes |
+| Implementation | draft-16 | Notes |
 |---|---|---|
-| `quic-go/webtransport-go` | master | Tagged releases still emit draft-13; master advertises both `0x2b603742` (draft-06) and `0x2c7cf000` (draft-15). Pinned peer in [`server_go/`](./server_go/). |
-| `wtransport/pywebtransport` | yes (v0.16.0+) | Python facade over a Rust core (`quinn-proto` + `pyo3`); advertises `SETTINGS_WT_ENABLED = 0x2c7cf000`. Pinned peer in [`server_python/`](./server_python/) (v0.17.1). |
+| `quic-go/webtransport-go` | yes (v0.12.0+) | Advertises both `0x2b603742` (draft-06 compatibility) and `0x2c7cf000`; pinned in [`server_go/`](./server_go/) at v0.13.0. |
+| `wtransport/pywebtransport` | yes (v0.20.0+) | Python facade over a Rust core (`quinn-proto` + `pyo3`); pinned in [`server_python/`](./server_python/) at v0.20.0. |
 | `BiagioFesta/wtransport` | no | Uses only the legacy `0x2b603742` (draft-06) codepoint. |
 | `cloudflare/quiche` | no | No native WebTransport path in the `quiche-server` example ([issue #1114](https://github.com/cloudflare/quiche/issues/1114)). |
 | `aiortc/aioquic` | no | Defines `ENABLE_WEBTRANSPORT = 0x2B603742` (draft-13). |
@@ -109,7 +109,7 @@ Server CLI:
 | `--max-lifetime-ms` | `30000` | Wallclock cap before the server force-shuts itself, defends against a stuck client wedging CI. |
 
 [`server_go/go.mod`](./server_go/go.mod) pins the webtransport-go
-v0.12.0 release tag (the first tag speaking the -16 codepoints).
+v0.13.0 release tag.
 
 ## Pinned third-party server: `pywebtransport`
 
@@ -123,7 +123,7 @@ peer-specific draft disagreement.
 
 `pywebtransport` is a Python facade over a Rust state machine
 (quinn-proto + pyo3) and advertises `SETTINGS_WT_ENABLED = 0x2c7cf000`
-(draft-ietf-webtrans-http3-15) directly — the same codepoint http3-zig
+(draft-ietf-webtrans-http3-16) directly — the same codepoint http3-zig
 pins to in `src/protocol.zig`.
 
 To repro locally:
@@ -163,15 +163,15 @@ can drive either:
 
 The pinned version in
 [`server_python/requirements.txt`](./server_python/requirements.txt)
-is `pywebtransport==0.17.1`. It provides a Python peer over a distinct
+is `pywebtransport==0.20.0`. It provides a Python peer over a distinct
 QUIC core, so a failure that hits both peers points at http3-zig while
 one that hits a single peer points at a peer-specific disagreement.
 
 ## Other recipes
 
 Server commands vary between implementations and releases; cross-reference
-each project's own docs. Of the peers below, only `webtransport-go` is
-exercised in CI.
+each project's own docs. The two pinned peers above are exercised in CI;
+the recipes below are operator-supplied alternatives.
 
 ### Chromium origin trial / `webtransport-test-server`
 
@@ -179,7 +179,7 @@ For a turnkey browser-compatible target,
 [GoogleChrome/samples](https://github.com/GoogleChrome/samples/tree/gh-pages/webtransport)
 links to `webtransport-test-server.glitch.me`. There is no fixed local
 recipe; use the URL the project currently documents, and confirm it speaks
-draft-15 before pointing the matrix at it.
+draft-16 before pointing the matrix at it.
 
 ```sh
 WT_INTEROP_URL=https://webtransport-test-server.example/wt zig build run-external-wt-client

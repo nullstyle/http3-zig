@@ -1,4 +1,6 @@
 .zig-cache/
+.zig-global-cache/
+.claude/
 zig-cache/
 zig-out/
 zig-pkg/

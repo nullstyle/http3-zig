@@ -21,7 +21,7 @@ every push as a hard gate (2026-08-13 promotion). The aioquic job is
 
 The Go peer is
 [`interop/external_h3/server_quic_go`](../interop/external_h3/server_quic_go),
-a tiny Go module pinned to `github.com/quic-go/quic-go v0.59.0`. It binds a
+a tiny Go module pinned to `github.com/quic-go/quic-go v0.62.0`. It binds a
 caller-owned UDP socket, prints `READY <port>`, serves static files through
 `http3.Server`, and exits after the configured request budget.
 

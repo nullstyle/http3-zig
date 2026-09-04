@@ -8,7 +8,8 @@ to make them faster.
 
 ## What is measured
 
-`bench/wt_bench.zig` (run via `zig build bench`) drives an
+`bench/wt_bench.zig` (run via
+`zig build bench -Doptimize=ReleaseFast`) drives an
 in-process pair of `http3_zig.Session`s through
 `http3_zig.TransportLoopback`. Each iteration is timed with
 `std.Io.Clock.awake.now(io)` (monotonic). 10 warmup iterations are
@@ -55,17 +56,18 @@ For real-network numbers, see the WebTransport interop matrix
 | Field | Value |
 | --- | --- |
 | Host | Apple M5 Max, 18 cores |
-| OS | macOS (Darwin 25.4.0), arm64 |
-| Zig | 0.17.0-dev.1683+5ceec001b |
+| OS | macOS (Darwin 25.6.0), arm64 |
+| Zig | 0.17.0-dev.1978+c961124d9 |
+| quic-zig | 0.19.0 |
 | Build mode | `ReleaseFast` |
-| Cache dir | `/tmp/h3-cache-V3` |
-| Date | 2026-05-09 |
+| Cache dirs | project defaults (`.zig-cache`, `.zig-global-cache`) |
+| Date | 2026-09-03 |
 | Iterations | 10 warmup + 1000 measured |
 
 Reproduce with:
 
 ```bash
-mise exec -- zig build bench -Doptimize=ReleaseFast --cache-dir /tmp/h3-cache-V3
+mise exec -- zig build bench -Doptimize=ReleaseFast
 ```
 
 ## Numbers
@@ -73,9 +75,9 @@ mise exec -- zig build bench -Doptimize=ReleaseFast --cache-dir /tmp/h3-cache-V3
 ```
 | Operation | p50 | p99 | mean | max |
 | --- | ---: | ---: | ---: | ---: |
-| Session establish | 195.29 µs | 354.92 µs | 202.45 µs | 663.58 µs |
-| Datagram RT (64B) | 3.88 µs | 4.63 µs | 3.91 µs | 6.04 µs |
-| Uni stream RT (1KiB) | 18.83 µs | 75.50 µs | 19.58 µs | 231.17 µs |
+| Session establish | 153.25 µs | 242.54 µs | 159.90 µs | 292.79 µs |
+| Datagram RT (64B) | 6.21 µs | 9.96 µs | 6.28 µs | 31.04 µs |
+| Uni stream RT (1KiB) | 6.54 µs | 11.13 µs | 6.64 µs | 67.29 µs |
 ```
 
 Raw nanoseconds (the format the bench prints — useful for diffing
@@ -84,9 +86,9 @@ against future runs):
 ```
 | Operation | p50 ns | p99 ns | mean ns | max ns |
 | --- | ---: | ---: | ---: | ---: |
-| Session establish | 195292 | 354916 | 202454 | 663583 |
-| Datagram RT (64B) | 3875 | 4625 | 3911 | 6042 |
-| Uni stream RT (1KiB) | 18834 | 75500 | 19582 | 231166 |
+| Session establish | 153250 | 242541 | 159898 | 292792 |
+| Datagram RT (64B) | 6208 | 9959 | 6280 | 31041 |
+| Uni stream RT (1KiB) | 6542 | 11125 | 6643 | 67291 |
 ```
 
 ## Notes on variance
@@ -97,16 +99,16 @@ host — taking the lowest of three runs is a reasonable cleanup
 strategy for regression comparisons. Comparable medians, not
 worst-case tails, are the meaningful regression signal.
 
-The Debug-mode run is roughly 40× slower than ReleaseFast (e.g.
-session establish goes from ~200 µs to ~7.7 ms) — never publish
-Debug numbers, they are misleading.
+The Debug-mode run is tens of times slower than ReleaseFast (for
+example, session establishment is roughly 7.3 ms rather than
+~0.15 ms) — never publish Debug numbers, they are misleading.
 
 ## What to do with these numbers
 
 - **CI regression check.** A future commit that bumps p50 by more
   than ~20% on this hardware is worth investigating.
 - **Rough cost model.** If you're sketching a feature that involves
-  N WT datagrams, multiply by ~4 µs per RT for an order-of-magnitude
+  N WT datagrams, multiply by ~6 µs per RT for an order-of-magnitude
   CPU estimate.
 - **Do not** treat these as latency commitments to consumers. Real
   network paths are dominated by RTT, not by these CPU costs.

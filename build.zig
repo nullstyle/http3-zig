@@ -10,10 +10,13 @@ pub fn build(b: *std.Build) void {
     });
     const boringssl_mod = boringssl_dep.module("boringssl");
 
-    const quic_dep = b.dependency("quic", .{
-        .target = target,
-        .optimize = optimize,
-    });
+    // quic is a source-only dependency here: every quic module below is
+    // recreated with this build's target, optimize mode, and shared
+    // boringssl module. Do not forward build options to quic's own build
+    // script; quic 0.19 exposes a `release` policy option rather than the
+    // root project's `optimize` option, and its configured modules are not
+    // consumed by this build.
+    const quic_dep = b.dependency("quic", .{});
     // quic-zig's root.zig single-sources version() from a `build_options`
     // module that its own build.zig provides. Because we recreate the
     // quic module here (to share http3-zig's boringssl instance across
@@ -23,7 +26,7 @@ pub fn build(b: *std.Build) void {
     // pinned in build.zig.zon; tools/check-boringssl-pin.sh lints this
     // on tag pins (bare-SHA pins skip the check).
     const quic_build_options = b.addOptions();
-    quic_build_options.addOption([]const u8, "version", "0.13.1");
+    quic_build_options.addOption([]const u8, "version", "0.19.0");
     const quic_build_options_mod = quic_build_options.createModule();
 
     // Single-source http3-zig's own version() from build.zig.zon so it can
@@ -724,12 +727,8 @@ pub fn build(b: *std.Build) void {
         .optimize = mem_profile_optimize,
     });
     const boringssl_safe_mod = boringssl_safe_dep.module("boringssl");
-    const quic_safe_dep = b.dependency("quic", .{
-        .target = target,
-        .optimize = mem_profile_optimize,
-    });
     const quic_safe_mod = b.createModule(.{
-        .root_source_file = quic_safe_dep.path("src/root.zig"),
+        .root_source_file = quic_dep.path("src/root.zig"),
         .target = target,
         .optimize = mem_profile_optimize,
     });
@@ -789,12 +788,8 @@ pub fn build(b: *std.Build) void {
         .optimize = wt_load_optimize,
     });
     const boringssl_release_mod = boringssl_release_dep.module("boringssl");
-    const quic_release_dep = b.dependency("quic", .{
-        .target = target,
-        .optimize = wt_load_optimize,
-    });
     const quic_release_mod = b.createModule(.{
-        .root_source_file = quic_release_dep.path("src/root.zig"),
+        .root_source_file = quic_dep.path("src/root.zig"),
         .target = target,
         .optimize = wt_load_optimize,
     });

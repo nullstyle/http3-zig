@@ -6,7 +6,7 @@
     .name = .consumer_smoke,
     .version = "0.0.0",
     .fingerprint = 0x822bb40d8e38e149,
-    .minimum_zig_version = "0.17.0-dev.1158+1d1193aa7",
+    .minimum_zig_version = "0.17.0-dev.1978+c961124d9",
     .dependencies = .{
         .http3_zig = .{ .path = "../.." },
     },

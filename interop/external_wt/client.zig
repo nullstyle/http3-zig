@@ -333,7 +333,7 @@ fn runHarness(allocator: std.mem.Allocator, io: std.Io, options: Options) !void 
         }
 
         // CLOSE only after the datagram echo is in hand: peers that
-        // implement CLOSE-on-arrival (webtransport-go v0.12.0, and this
+        // implement CLOSE-on-arrival (including webtransport-go and this
         // library) tear the session down the moment the capsule lands,
         // dropping any echo still in flight — closing first makes the
         // run a race instead of a verification.

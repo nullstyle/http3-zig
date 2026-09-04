@@ -216,23 +216,22 @@ destinations, shutdown grace). The H3-layer notes that matter on top:
 Everything below is quic-layer configuration that http3-zig passes
 through untouched; it is listed here because an HTTP/3 embedder chooses
 it at `quic.Client.Config` / `quic.Server.Config` / `RunUdpOptions`
-construction time. The defaults *are* the deployment posture (quic's
-0.11 changelog: CUBIC + pacing + HyStart++ on by default, batched UDP
-datapath, each with committed benchmark baselines behind it) — the demo
-examples set none of them, and `examples/udp_server.zig` /
+construction time. The defaults *are* the deployment posture (BBRv3
+since quic 0.16, pacing + HyStart++ since 0.11, and the batched UDP
+datapath, each with committed benchmark baselines behind it) — the
+demo examples set none of them, and `examples/udp_server.zig` /
 `examples/udp_client.zig` carry the same list as annotated comment
 blocks in place.
 
 Congestion and send timing, on both `quic.Client.Config` and
 `quic.Server.Config`:
 
-- `congestion_control` (default `.cubic`, RFC 9438). `.bbr` opts into
-  BBRv3 (draft-ietf-ccwg-bbr-06, new in quic 0.12): model-based, paces
-  at the estimated bottleneck bandwidth — quic's changelog measures
-  line-rate parity with a ~5× shorter bottleneck queue and large wins on
-  loss-heavy paths, but it stays opt-in until upstream's multi-flow
-  fairness and interop gates pass. It expects `enable_pacing = true`.
-  `.new_reno` (RFC 9002) is the pre-0.11 one-line rollback.
+- `congestion_control` (default `.bbr`) selects BBRv3
+  (draft-ietf-ccwg-bbr-06): model-based, paced at the estimated
+  bottleneck bandwidth. quic 0.16 promoted it after multi-flow fairness
+  and cross-implementation interop gates passed. `.cubic` (RFC 9438) is
+  the one-line rollback to the 0.11–0.15 default; `.new_reno`
+  (RFC 9002) restores the pre-0.11 controller.
 - `enable_pacing` (default `true`, RFC 9002 §7.7): spreads sends at
   gain × cwnd/RTT instead of bursting a full window. `false` restores
   pre-0.11 burst timing exactly. See "Foreign Event Loops" above for the

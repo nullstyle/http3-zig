@@ -1,5 +1,8 @@
 name: h3-interop
 
+env:
+  ZIG_GLOBAL_CACHE_DIR: ${{ github.workspace }}/.zig-global-cache
+
 on:
   push:
     branches: [main]
@@ -49,9 +52,9 @@ jobs:
       - name: Cache Zig packages
         uses: actions/cache@v4
         with:
-          path: zig-pkg
-          key: zig-pkg-${{ hashFiles('build.zig.zon') }}
-          restore-keys: zig-pkg-
+          path: .zig-global-cache
+          key: zig-global-cache-${{ hashFiles('build.zig.zon') }}
+          restore-keys: zig-global-cache-
 
       # GitHub's tarball/raw endpoints flake (504s, DNS) often enough to fail
       # real runs. Prefetch the full dependency tree with retries so a bad
@@ -70,7 +73,7 @@ jobs:
       - name: Set up Go (for the quic-go peer)
         uses: actions/setup-go@v6
         with:
-          go-version: "1.25"
+          go-version: "1.27.0"
           cache-dependency-path: interop/external_h3/server_quic_go/go.sum
 
       - name: Build the http3-zig external H3 client
@@ -127,9 +130,9 @@ jobs:
       - name: Cache Zig packages
         uses: actions/cache@v4
         with:
-          path: zig-pkg
-          key: zig-pkg-${{ hashFiles('build.zig.zon') }}
-          restore-keys: zig-pkg-
+          path: .zig-global-cache
+          key: zig-global-cache-${{ hashFiles('build.zig.zon') }}
+          restore-keys: zig-global-cache-
 
       # GitHub's tarball/raw endpoints flake (504s, DNS) often enough to fail
       # real runs. Prefetch the full dependency tree with retries so a bad
@@ -191,6 +194,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v6
         with:
+          go-version: "1.27.0"
           cache-dependency-path: interop/qpack_quic_go/go.sum
 
       - name: Run the Go QPACK cross-check

@@ -1,5 +1,8 @@
 name: wt-browser-interop
 
+env:
+  ZIG_GLOBAL_CACHE_DIR: ${{ github.workspace }}/.zig-global-cache
+
 on:
   push:
     branches: [main]
@@ -46,9 +49,9 @@ jobs:
       - name: Cache Zig packages
         uses: actions/cache@v4
         with:
-          path: zig-pkg
-          key: zig-pkg-${{ hashFiles('build.zig.zon') }}
-          restore-keys: zig-pkg-
+          path: .zig-global-cache
+          key: zig-global-cache-${{ hashFiles('build.zig.zon') }}
+          restore-keys: zig-global-cache-
 
       # GitHub's tarball/raw endpoints flake (504s, DNS) often enough to fail
       # real runs. Prefetch the full dependency tree with retries so a bad
@@ -112,9 +115,9 @@ jobs:
       - name: Cache Zig packages
         uses: actions/cache@v4
         with:
-          path: zig-pkg
-          key: zig-pkg-${{ hashFiles('build.zig.zon') }}
-          restore-keys: zig-pkg-
+          path: .zig-global-cache
+          key: zig-global-cache-${{ hashFiles('build.zig.zon') }}
+          restore-keys: zig-global-cache-
 
       # GitHub's tarball/raw endpoints flake (504s, DNS) often enough to fail
       # real runs. Prefetch the full dependency tree with retries so a bad

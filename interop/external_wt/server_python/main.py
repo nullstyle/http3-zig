@@ -6,7 +6,7 @@ two third-party peers in different language/library stacks (Go's
 `quic-go/webtransport-go` vs. Python's `wtransport/pywebtransport`)
 makes it easier to spot regressions: if both peers fail the matrix
 the bug is almost certainly on the http3-zig side, but if only one
-peer fails the bug is more likely peer-specific (a draft-15
+peer fails the bug is more likely peer-specific (a draft-16
 disagreement, a socket-pump quirk, ...).
 
 The flow this peer is asked to participate in (see
@@ -29,15 +29,15 @@ the Go peer we also:
     initiated uni stream that writes the same bytes back.
 
 This server uses pywebtransport because it explicitly aligns with
-draft-ietf-webtrans-http3-15 — see its v0.16.0 changelog entry
-(2026-03-13) "Protocol Constants Alignment ... SETTINGS_WT_ENABLED
-(0x2c7cf000)" and the `SETTINGS_WT_ENABLED: u64 = 0x2C7C_F000`
+draft-ietf-webtrans-http3-16 — see its v0.20.0 changelog entry
+(2026-07-14) "definitive alignment ... draft-ietf-webtrans-http3-16"
+and the `SETTINGS_WT_ENABLED: u64 = 0x2C7C_F000`
 constant in its Rust core (`crates/src/common/constants.rs`). At the
 time of writing, the most popular Rust WebTransport library
 (`BiagioFesta/wtransport` v0.7.1) still emits only the legacy
 draft-06 codepoint (`0x2b603742`), so it is not yet a viable second
 peer; this Python server fills the language-diversity gap until
-either `wtransport` or `aioquic` ships draft-15 support.
+either `wtransport` or `aioquic` ships draft-16 support.
 
 CLI surface mirrors the Go peer so the same workflow YAML can drive
 either:
@@ -72,8 +72,8 @@ import ssl
 import sys
 from typing import Any
 
-# pywebtransport >= 0.16.0 is required for draft-15 wire-format
-# alignment. We pin to 0.17.1 in `requirements.txt` — see that file
+# pywebtransport >= 0.20.0 is required for full draft-16 behavior.
+# We pin to 0.20.0 in `requirements.txt` — see that file
 # for the full rationale.
 from pywebtransport import (
     Event,
@@ -271,7 +271,7 @@ async def run_server(args: argparse.Namespace) -> int:
 def main() -> None:
     """CLI entry point — parse flags and run the server."""
     parser = argparse.ArgumentParser(
-        description="Echo WebTransport server (pywebtransport, draft-15) for http3-zig interop.",
+        description="Echo WebTransport server (pywebtransport, draft-16) for http3-zig interop.",
         allow_abbrev=False,
     )
     parser.add_argument("--listen", default="127.0.0.1:0",

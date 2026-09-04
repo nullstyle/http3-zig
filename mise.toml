@@ -6,5 +6,11 @@
 # ReleaseSafe + conformance + mem-profile) and matches the floor
 # recorded in build.zig.zon's minimum_zig_version. Bump both together
 # after re-verifying on a newer master.
-zig = "0.17.0-dev.1683+5ceec001b"
-just = "1.49.0"
+zig = "0.17.0-dev.1978+c961124d9"
+just = "1.58.0"
+
+[env]
+# Keep dependency archives project-local. This prevents a malformed archive
+# produced by another Zig checkout (or by `zig fetch` on a moving master)
+# from poisoning this project's otherwise content-addressed package cache.
+ZIG_GLOBAL_CACHE_DIR = "{{config_root}}/.zig-global-cache"

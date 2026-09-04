@@ -1,5 +1,8 @@
 name: fuzz-nightly
 
+env:
+  ZIG_GLOBAL_CACHE_DIR: ${{ github.workspace }}/.zig-global-cache
+
 on:
   schedule:
     - cron: '0 6 * * *'   # 06:00 UTC daily
@@ -40,9 +43,9 @@ jobs:
       - name: Cache Zig packages
         uses: actions/cache@v4
         with:
-          path: zig-pkg
-          key: zig-pkg-${{ hashFiles('build.zig.zon') }}
-          restore-keys: zig-pkg-
+          path: .zig-global-cache
+          key: zig-global-cache-${{ hashFiles('build.zig.zon') }}
+          restore-keys: zig-global-cache-
 
       # GitHub's tarball/raw endpoints flake (504s, DNS) often enough to fail
       # real runs. Prefetch the full dependency tree with retries so a bad
@@ -66,13 +69,21 @@ jobs:
 
       - name: Loop codec + WebTransport corpus replays for 30 minutes
         run: |
-          timeout 30m bash -c '
+          if timeout 30m bash -euo pipefail -c '
             zig build run-fuzz-smoke
             while true; do
               zig build run-fuzz-corpus
               zig build run-fuzz-wt-interleaved
             done
-          ' || [ $? -eq 124 ]
+          '; then
+            echo "::error::nightly fuzz loop exited before its 30-minute deadline"
+            exit 1
+          else
+            rc=$?
+            if [ "$rc" -ne 124 ]; then
+              exit "$rc"
+            fi
+          fi
 
       - name: Upload fuzz crash artifacts
         if: failure()
@@ -102,9 +113,9 @@ jobs:
       - name: Cache Zig packages
         uses: actions/cache@v4
         with:
-          path: zig-pkg
-          key: zig-pkg-${{ hashFiles('build.zig.zon') }}
-          restore-keys: zig-pkg-
+          path: .zig-global-cache
+          key: zig-global-cache-${{ hashFiles('build.zig.zon') }}
+          restore-keys: zig-global-cache-
 
       # GitHub's tarball/raw endpoints flake (504s, DNS) often enough to fail
       # real runs. Prefetch the full dependency tree with retries so a bad

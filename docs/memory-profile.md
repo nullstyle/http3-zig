@@ -39,17 +39,17 @@ working-set claim.
 ## The numbers
 
 2 000-iteration trace on the current tree (http3-zig against quic
-0.13.0):
+0.19.0):
 
 | Stage | iters | bytes-in-use | max-bytes-ever | Δ vs warm-up |
 | --- | ---: | ---: | ---: | ---: |
-| warm-up | 0 | 1 866 263 | 1 866 641 | +0 |
-| 500 iters | 500 | 1 992 471 | 1 995 064 | +126 208 |
-| 1k iters | 1 000 | 2 117 879 | 2 120 472 | +251 616 |
-| 2k iters | 2 000 | 2 368 695 | 2 371 288 | +502 432 |
+| warm-up | 0 | 2 014 127 | 2 014 529 | +0 |
+| 500 iters | 500 | 2 144 383 | 2 147 064 | +130 256 |
+| 1k iters | 1 000 | 2 273 791 | 2 276 472 | +259 664 |
+| 2k iters | 2 000 | 2 532 607 | 2 535 288 | +518 480 |
 
-**Δ bytes-in-use warm-up → 2k iters: +502 432 bytes over 2 000 iters
-(≈ 251 bytes/iter).** `gpa.deinit()` reports **ok** — every allocation
+**Δ bytes-in-use warm-up → 2k iters: +518 480 bytes over 2 000 iters
+(≈ 259 bytes/iter).** `gpa.deinit()` reports **ok** — every allocation
 made during the loop is reachable from the `Session` deinit chain.
 
 The fixed warm-up footprint's history: it roughly doubled moving quic
@@ -57,17 +57,18 @@ The fixed warm-up footprint's history: it roughly doubled moving quic
 transport grew its modern congestion-control spine, then quic 0.13.0's
 sent-packet tracker right-sizing (Initial/Handshake trackers 4096 → 256
 slots, capacity now an init-time choice) took it down to **≈ 1.87 MB /
-pair** — below even the 0.10 figure. Per-connection overhead either
-way, not per-iteration cost: the slope the gate watches is unchanged
-across all three eras (the Δ column above is byte-identical to the
-0.12.0 run).
+pair** — below even the 0.10 figure. On quic 0.19.0 the warm-up is
+**≈ 2.01 MB / pair** and the slope is ≈ 259 bytes/iter. The modest
+increase spans six transport releases and this aggregate profile does
+not isolate a single cause; teardown remains leak-clean and the slope
+stays well below the regression gate.
 
 ## Verdict
 
-Per-iteration growth is **≈ 251 bytes/iter**, down **~91 %** from the
+Per-iteration growth is **≈ 259 bytes/iter**, down **~91 %** from the
 ≈ 2 755 bytes/iter this harness measured before terminal-stream reaping
 landed (see history below). The delta is constant across windows
-(warm-up→500: 252/iter; 500→1k: 251/iter; 1k→2k: 251/iter), so it is a
+(warm-up→500: 261/iter; 500→1k: 259/iter; 1k→2k: 259/iter), so it is a
 small predictable per-iteration cost, not a fixed warm-up overhead
 amortizing away. The remaining growth is connection-level bookkeeping that
 scales with the total number of streams a single connection has ever
@@ -95,7 +96,7 @@ freed only at whole-connection teardown.
 ## Regression gate
 
 `bench/wt_memory.zig` exits non-zero when per-iteration growth exceeds
-`max_bytes_per_iter_gate` (600 bytes/iter — ≈ 2.5× the current figure, so
+`max_bytes_per_iter_gate` (600 bytes/iter — ≈ 2.3× the current figure, so
 allocator / platform variation passes, but a reintroduced per-stream leak
 in the thousands of bytes/iter fails). CI runs `zig build mem-profile` and
 gates on that exit code, so a memory regression breaks the build rather
@@ -118,8 +119,8 @@ than silently drifting the published number. Bump the gate deliberately
   map), so 5k/10k runs complete in practical wall-clock time. The default
   stays at 2 000 iterations to keep the CI gate fast; bump
   `total_iterations` + `sample_at_iters` for a deeper manual run.
-- **`max_bytes_ever` tracks `bytes_in_use`.** The two stay within ~256
-  bytes of each other at every checkpoint, so the growth is genuine
+- **`max_bytes_ever` tracks `bytes_in_use`.** The two stay within ~2.7 KiB
+  of each other at every checkpoint, so the growth is genuine
   retained memory, not an allocator high-water artifact from a transient
   per-iteration spike.
 - **Counting allocator semantics.** The `CountingAllocator` reports the

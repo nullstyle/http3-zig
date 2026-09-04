@@ -2,43 +2,30 @@
     .name = .http3_zig,
     .version = "0.4.9",
     .fingerprint = 0x71cd45b0dc74266b,
-    .minimum_zig_version = "0.17.0-dev.1683+5ceec001b",
+    .minimum_zig_version = "0.17.0-dev.1978+c961124d9",
     .dependencies = .{
-        // quic — bare-SHA pin on the repin series (681d4bc): quic-zig
-        // main now pins the renamed `boringssl` package identity and
-        // binds SSL_get_client_random for its SHA256(ticket ||
-        // client_random) 0-RTT anti-replay identities. http3-zig must
-        // ride the same series or the boringssl diamond splits into two
-        // package instances and `boringssl.tls.Context` no longer
-        // unifies across the boundary. Repin to the next quic release
-        // tag when it is cut (tarball form, per the note below).
+        // quic — latest release. This brings in the BBRv3 default,
+        // zero-copy stream reads, receive-side DATAGRAM shedding,
+        // SO_REUSEPORT support, and bounded handshake liveness from the
+        // 0.14.0–0.19.0 release series.
         //
-        // Inherits 0.12.0 (the shape release, which http3-zig shipped
-        // earlier): CUBIC + pacing + HyStart++ as wire-behavior
-        // defaults, batched UDP datapath, O(1) sent-packet tracker,
-        // TimerKind.pacing, BBRv3 (opt-in via congestion_control =
-        // .bbr), Connection address-for-life
-        // (createClient/createServer/destroy replace init-then-bind;
-        // Client/Server wrappers unaffected), and bundled UDP loops
-        // that tolerate peer-provoked receive/send socket errors.
-        //
-        // http3-zig's only reach into quic internals is
-        // quic.conn.state.Error (src/session.zig), which is unaffected.
-        //
-        // To bump: run `zig fetch <git-url>#<ref>` and paste its hash here
-        // by hand — do NOT `zig fetch --save`, which mangles a dependency
-        // entry. Also update the quic_build_options "version" string in
-        // build.zig to the new release (tools/check-boringssl-pin.sh lints
-        // this on tag pins) and mirror any boringssl pin change below
-        // byte-for-byte.
+        // To bump: run `tools/fetch-package-hash.sh <url>` and paste its
+        // hash here by hand — do NOT `zig fetch --save`, which mangles a
+        // dependency entry. The helper isolates `zig fetch` from the build
+        // cache: current Zig master can otherwise recompress a GitHub
+        // tarball with its original root directory still nested inside,
+        // making the next build report a misleading N-V hash mismatch.
+        // Also update the quic_build_options "version" string in build.zig
+        // (tools/check-boringssl-pin.sh lints this on tag pins) and mirror
+        // any boringssl pin change below byte-for-byte.
         // Tarball URL form (not `git+…#tag`): release tags are annotated,
         // and the git form resolves them to a different (unnamed N-V)
         // fingerprint than the release tarball the upstream announcement
         // hashes. The tarball is the canonical pin form upstream
         // publishes — same convention as boringssl below.
         .quic = .{
-            .url = "https://github.com/nullstyle/quic-zig/archive/681d4bc639c1d3d7dbf5bb1f4d98e1bf170b5e0a.tar.gz",
-            .hash = "quic-0.13.1-DnSYvT7SLAAagF-Re8xpDlQ65NBUPtKVArXE7U4Ol2MW",
+            .url = "https://github.com/nullstyle/quic-zig/archive/refs/tags/v0.19.0.tar.gz",
+            .hash = "quic-0.19.0-DnSYvfDZMADCQvF3_9ZQ75Kwdz3nJ4CBLSwxWizuCsLI",
         },
         // MUST match quic's boringssl entry byte-for-byte so the
         // package manager dedupes to a single boringssl module instance;
@@ -46,12 +33,10 @@
         // mismatch yields "expected boringssl.tls.Context, found
         // boringssl.tls.Context" type errors at the boundary.
         //
-        // Commit-SHA tarball rather than a tag: quic pins the renamed
-        // `boringssl` package (still 0.6.5) at b47af8c — the
-        // SSL_get_client_random binding plus the boringssl_zig ->
-        // boringssl package-identity rename (package name and module
-        // name are both `boringssl` now). The old `.boringssl_zig`
-        // identity is gone; this entry must match quic's byte-for-byte.
+        // Commit-SHA tarball rather than a tag: the latest boringssl-zig
+        // revision is the unreleased 0.6.5 package at b47af8c. It carries
+        // the SSL_get_client_random binding and the `boringssl` package
+        // identity expected by quic 0.19.0.
         .boringssl = .{
             .url = "https://github.com/nullstyle/boringssl-zig/archive/b47af8ce3489016437e0fee48236fa6b8564424f.tar.gz",
             .hash = "boringssl-0.6.5-Vv5DN9v_AQCITtYL9qfS0RS1C4fDzW-293xCm7NmjLRY",

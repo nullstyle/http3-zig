@@ -19,7 +19,7 @@ for what has shipped, and [`ROADMAP.md`](ROADMAP.md) for what's planned.
 
 http3-zig pins its toolchain via [`mise`](https://mise.jdx.dev/).
 The project file at [`mise.toml`](mise.toml) installs the pinned
-Zig 0.17.0 dev build (0.17.0-dev.1683+5ceec001b) plus the project's
+Zig 0.17.0 dev build (0.17.0-dev.1978+c961124d9) plus the project's
 auxiliary tools.
 
 ```sh
@@ -27,8 +27,8 @@ mise install
 zig build
 ```
 
-`zig build` produces the library plus the example binaries and the
-interop harnesses under `zig-out/bin/`.
+`zig build` installs the library. Run `just build-all` to compile the
+example binaries, interop harnesses, fuzz runners, and benchmarks too.
 
 ## Tests
 
@@ -53,9 +53,9 @@ The WebTransport interop matrix lives under
 [`interop/external_wt/`](interop/external_wt/). It pins two
 third-party peers in CI:
 
-- `webtransport-go` (Go, release-tag v0.12.0 — the draft-16
+- `webtransport-go` (Go, release-tag v0.13.0 — the draft-16
   codepoints).
-- `pywebtransport` (Python facade over a Rust core, v0.17.1).
+- `pywebtransport` (Python facade over a Rust core, v0.20.0).
 
 The
 [`wt-interop-self-test`](.github/workflows/wt-interop-self-test.yml)

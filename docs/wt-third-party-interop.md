@@ -15,11 +15,11 @@ client-initiated uni stream, and `CLOSE_WEBTRANSPORT_SESSION`. The current
 `main` CI posture treats the WT matrix as advisory signal and the in-tree WT
 self-test as the hard gate.
 
-http3-zig pins **quic v0.13.0**, and the Go peer is pinned to the
-**webtransport-go v0.12.0 release tag** — the first tagged release on the
-current draft. The full flow is locally verified against it with the
+http3-zig pins **quic v0.19.0**; its external peers pin
+**webtransport-go v0.13.0** and **pywebtransport 0.20.0**, both on the
+current draft. The full flow is locally verified against both with the
 modern `webtransport-h3` token (we are a first-class draft-16 peer, not
-a beneficiary of its legacy tolerance). The third-party matrix stays
+a beneficiary of legacy tolerance). The third-party matrix stays
 `continue-on-error: true` with a written promotion criterion + demotion
 rule in the workflow header (two green dispatched runs on the release
 pins promote it); the in-tree self-test (`wt-interop-self-test.yml`)

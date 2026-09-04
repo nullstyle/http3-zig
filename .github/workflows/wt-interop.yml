@@ -1,5 +1,8 @@
 name: wt-interop
 
+env:
+  ZIG_GLOBAL_CACHE_DIR: ${{ github.workspace }}/.zig-global-cache
+
 on:
   push:
     branches: [main]
@@ -38,8 +41,8 @@ on:
 #
 # PROMOTION CRITERION (mirrors h3-interop.yml): promote the matrix to a
 # hard per-push gate after TWO consecutive green workflow_dispatch runs
-# on the release-tag peer pins (webtransport-go v0.12.0 +
-# pywebtransport 0.17.1) — record the run ids in this header when it
+# on the release-tag peer pins (webtransport-go v0.13.0 +
+# pywebtransport 0.20.0) — record the run ids in this header when it
 # happens. Until then it stays advisory (`continue-on-error` on the
 # matrix step); the per-push hard gates are wt-interop-self-test.yml's
 # two in-tree legs (modern matrix + the draft-02 era leg).
@@ -69,9 +72,9 @@ jobs:
       - name: Cache Zig packages
         uses: actions/cache@v4
         with:
-          path: zig-pkg
-          key: zig-pkg-${{ hashFiles('build.zig.zon') }}
-          restore-keys: zig-pkg-
+          path: .zig-global-cache
+          key: zig-global-cache-${{ hashFiles('build.zig.zon') }}
+          restore-keys: zig-global-cache-
 
       # GitHub's tarball/raw endpoints flake (504s, DNS) often enough to fail
       # real runs. Prefetch the full dependency tree with retries so a bad
@@ -90,7 +93,7 @@ jobs:
       - name: Set up Go (for the webtransport-go peer)
         uses: actions/setup-go@v6
         with:
-          go-version: "1.25"
+          go-version: "1.27.0"
           # Cache the module download for the third-party peer.
           # `go-version-file` is only set when there's a top-level
           # go.mod, so we point the cache at the server's go.sum
@@ -133,7 +136,7 @@ jobs:
           # hard failure in CI rather than silently picking up a
           # newer pywebtransport.
           #
-          # As of v0.17.1 pywebtransport ships zero Python runtime
+          # pywebtransport ships zero Python runtime
           # dependencies (the QUIC + HTTP/3 stack lives in its Rust
           # core), so this install is a single wheel download.
           python -m pip install --upgrade pip
@@ -154,7 +157,7 @@ jobs:
       - name: Wait for the webtransport-go peer's READY line
         run: |
           set -euo pipefail
-          for i in $(seq 1 200); do
+          for _ in $(seq 1 200); do
             if grep -q "^READY " "${{ runner.temp }}/wt-go-server.log"; then
               break
             fi
@@ -191,7 +194,7 @@ jobs:
           # runner, so we let it have ~10s (200 * 0.05s) before
           # giving up — same shape as the Go wait, just sized for the
           # heavier startup path.
-          for i in $(seq 1 200); do
+          for _ in $(seq 1 200); do
             if grep -q "^READY " "${{ runner.temp }}/wt-py-server.log"; then
               break
             fi
