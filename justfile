@@ -89,6 +89,26 @@ fmt:
     # Mirror the CI gate exactly: every tracked .zig/.zon file.
     git ls-files -z '*.zig' '*.zon' | xargs -0 zig fmt --check
 
+# --- Running CI locally with act (requires Docker; see CONTRIBUTING) ---
+
+# List every job act can see across the workflows.
+act-list:
+    mise exec -- act -l
+
+# Dry-run the per-push test workflow: plans every step without
+# executing anything — validates workflow shape and the .actrc image
+# mapping in seconds.
+act-test-dryrun:
+    mise exec -- act push -W .github/workflows/test.yml -n
+
+# Run the test workflow's ubuntu Debug legs locally under Docker. The
+# first run downloads the runner image and installs the pinned zig
+# toolchain inside it (mise-action), then compiles the full dependency
+# tree — expect a long first run; subsequent runs reuse the container
+# layers. `--matrix optimize:Debug` keeps it to the Debug legs.
+act-test:
+    mise exec -- act push -W .github/workflows/test.yml -j build-test --matrix os:ubuntu-latest --matrix optimize:Debug
+
 # Compile every out-of-test binary target. `zig build test` does NOT
 # build these, so a signature change in src/ can pass the whole test
 # suite and still break CI at the interop/example build step (this bit

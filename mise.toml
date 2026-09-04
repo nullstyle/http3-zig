@@ -8,6 +8,10 @@
 # after re-verifying on a newer master.
 zig = "0.17.0-dev.1978+c961124d9"
 just = "1.58.0"
+# act runs the GitHub Actions workflows locally under Docker (see
+# CONTRIBUTING.md "Running CI locally with act"). Not used by the build
+# itself — a developer-experience tool like `just`.
+act = "0.2.89"
 
 [env]
 # Keep dependency archives project-local. This prevents a malformed archive

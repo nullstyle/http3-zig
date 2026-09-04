@@ -30,6 +30,46 @@ zig build
 `zig build` installs the library. Run `just build-all` to compile the
 example binaries, interop harnesses, fuzz runners, and benchmarks too.
 
+## Running CI locally with act
+
+The GitHub Actions workflows can be smoke-run locally under Docker with
+[`act`](https://github.com/nektos/act); the tool is pinned in
+[`mise.toml`](mise.toml) next to the toolchain, and the runner-image
+mapping lives in [`.actrc`](.actrc):
+
+```sh
+just act-list          # every job act can see
+just act-test-dryrun   # plan the test workflow's steps, execute nothing
+just act-test          # run the ubuntu Debug legs for real
+```
+
+Prerequisites and honest limits:
+
+- **Docker must be running.** The first run pulls the
+  `catthehacker/ubuntu:act-latest` runner image (~1 GB) and installs
+  the pinned zig toolchain inside the container via mise-action, then
+  compiles the full dependency tree — the first `just act-test` takes
+  a few minutes longer; a verified full Debug-leg run (both
+  ubuntu-latest cells: the entire suite, check-api, examples,
+  udp-smoke) completes in roughly five minutes on Apple Silicon. The
+  image is multi-arch, so the container and the mise-installed zig are
+  native arm64 there — do not force
+  `--container-architecture linux/amd64`, which routes the zig
+  compiler through Rosetta and fails with `bss_size overflow`.
+- **Good fits:** `test.yml` (the per-push gate), `fuzz.yml`'s per-push
+  jobs, `h3-interop-self-test.yml` / `wt-interop-self-test.yml` (the
+  in-tree self-test legs). These are self-contained.
+- **Poor fits:** the interop matrices that bring up external peers
+  (`h3-interop.yml`, `wt-interop.yml`, `wt-browser-interop.yml` need
+  quic-go/aioquic/webtransport-go/pywebtransport or real browsers),
+  `release.yml` (triggered by tags, creates a real GitHub release), and
+  `fuzz-nightly.yml` (30-minute fuzz loops). They will attempt to run
+  but assume CI-only infrastructure.
+- **Approximations:** `macos-*` runner labels map to the same Linux
+  image (no macOS SDK or Darwin behavior), and `actions/cache` is
+  largely a no-op under act, so the dependency/toolchain caches rebuild
+  per container.
+
 ## Tests
 
 ```sh

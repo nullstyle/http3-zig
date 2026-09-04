@@ -1,0 +1,18 @@
+# Runner-image mapping for local `act` runs (see CONTRIBUTING.md
+# "Running CI locally with act"). The catthehacker medium image ships
+# the runner runtime the pinned action versions (checkout@v7,
+# cache@v4, upload-artifact@v7, mise-action@v4) need — the default
+# nektos/act-environments images are too small for them.
+#
+# macos-* labels map to the same Linux image: a local approximation for
+# smoke-running workflow logic, NOT a faithful macOS environment (no
+# macOS SDK, no Darwin behavior). The image is multi-arch — Docker
+# pulls the native variant (arm64 on Apple Silicon), so the pinned zig
+# toolchain mise installs inside the container is also native. Do NOT
+# force --container-architecture linux/amd64 on Apple Silicon: Rosetta
+# cannot run the zig compiler binary ("bss_size overflow").
+-P ubuntu-latest=catthehacker/ubuntu:act-latest
+-P ubuntu-24.04-arm=catthehacker/ubuntu:act-latest
+-P macos-14=catthehacker/ubuntu:act-latest
+-P macos-15=catthehacker/ubuntu:act-latest
+-P macos-26=catthehacker/ubuntu:act-latest

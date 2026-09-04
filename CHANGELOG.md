@@ -42,6 +42,17 @@ breaking changes; see notes per release.
   bucket index for static-table lookups, and pre-sized Huffman decode
   output. Same-machine p50: establish −3%, datagram RT −5%, uni-stream
   RT −9%; memory gate unchanged at 259 B/iter.
+- Added local CI smoke-running via `act` (pinned 0.2.89 in mise.toml):
+  a `.actrc` runner-image mapping and `just act-list` /
+  `just act-test-dryrun` / `just act-test` targets. Verified
+  end-to-end: the test workflow's ubuntu Debug legs run the entire
+  gate green inside the container (~5 min on Apple Silicon via the
+  multi-arch image and the mise-installed native arm64 toolchain;
+  forcing amd64 fails under Rosetta with `bss_size overflow`, which
+  the .actrc documents). CONTRIBUTING.md spells out the good fits
+  (test, fuzz, in-tree self-test legs), poor fits (external-peer
+  interop matrices, release, nightly fuzz), and approximations (macos
+  labels map to Linux; actions/cache is a no-op).
 - Added two fuzz targets closing the last unfuzzed decode surfaces:
   `headers-validate` (semantic header validation over adversarial
   field lines) and `message-decoder` (the request/response/push message
