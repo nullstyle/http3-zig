@@ -11,6 +11,17 @@ breaking changes; see notes per release.
 
 ### Added
 
+- Added two fuzz targets closing the last unfuzzed decode surfaces:
+  `headers-validate` (semantic header validation over adversarial
+  field lines) and `message-decoder` (the request/response/push message
+  state machines through `observeBytes` with a mid-stream split), each
+  with a seed corpus — 21 codec fuzz targets / 153 corpus cases total.
+- Added the allocation-failure fault-injection sweep for drain event
+  emission (see the Fixed entry) and regression tests for every
+  terminal-event survival fix.
+- Added `.github/dependabot.yml` (weekly github-actions updates) and
+  least-privilege `permissions: contents: read` defaults across the
+  read-only workflows.
 - Added `examples/udp_server.zig` — the production HTTP/3 server skeleton:
   real UDP socket, multi-connection accept via `quic.Server` +
   `transport.runUdpServer`, one `Session` (production preset) + facade +
@@ -401,6 +412,50 @@ breaking changes; see notes per release.
 
 ### Fixed
 
+- **Fixed three OOM-path memory-safety bugs found by a new
+  fault-injection sweep** (`tests/integration/fault_injection.zig`
+  drives the WT datagram / substream / close flow with an allocator
+  failing one late allocation at a time): the six drain-event append
+  sites double-freed their payloads when the events-list append ran out
+  of memory (appendRawEvent already owns and deinits the event — the
+  redundant caller errdefers are gone and the contract is documented);
+  `processMessageState` armed its field-section ownership flag only
+  AFTER the append, double-freeing the section on append failure; and
+  `cloneFields`' errdefer (session, client, server) freed the partial
+  array through `freeFields` at the wrong length and then freed it
+  again. `ensureDrainScratch` now allocates the grown buffer before
+  freeing the old one, and `openWebTransportBidiStream` removes its
+  registry entry on prefix-write failure like its uni/push siblings
+  (the orphan previously leaked until session deinit).
+- **Fixed four one-shot drain events being permanently lost under
+  budget exhaustion**: `connection_closed` is now non-droppable
+  (durable classification first, reason trimmed to the payload budget
+  with `reason_truncated` set, events-count gate skipped for the single
+  terminal event, empty-reason fallback on dupe OOM); `early_data` is
+  appended without a budget gate (borrowed reason, never re-delivered);
+  the boundary datagram popped during an exhausted drain is stashed
+  (bounded: one datagram) and flushed first next drain; and
+  `failMessageStream` reserves BEFORE resetting, so under exhaustion the
+  whole failure handling — reset AND notification — defers to the next
+  drain instead of the notification being silently dropped. Four
+  regression tests in `tests/integration/budgets.zig`.
+- **RFC conformance sweep**: field names/values are validated per
+  RFC 9110 §5.1/§5.5 (lowercase tchar names; values limited to HTAB,
+  SP, VCHAR, obs-text) and mapped to H3_MESSAGE_ERROR; an invalid index
+  in a QPACK encoder-stream instruction now closes with
+  QPACK_ENCODER_STREAM_ERROR (0x201, RFC 9204 §4.3.2) while
+  field-section decoding keeps QPACK_DECOMPRESSION_FAILED; an
+  unknown/GREASE frame first on the control stream is H3_MISSING_SETTINGS
+  (RFC 9114 §6.2.1) instead of silently ignored; the standalone message
+  codec enforces SETTINGS_MAX_FIELD_SECTION_SIZE on the DECODED size
+  (RFC 9114 §4.2.2); the QPACK decode budget no longer applies the
+  Huffman expansion bound to non-Huffman literals (valid sections near
+  the cap were over-rejected); the fabricated "RFC 9220 §4.5" masking
+  citations are corrected to RFC 6455 §5.1 with a new
+  `websocket.frame.DecodeOptions.forRole` helper for the conforming
+  per-role posture; and QPACK encoder-stream string decoding is gated
+  at the receiver-advertised max table capacity before the transient
+  Huffman allocation (`decodeEncoderInstructionWithOptions`).
 - Fixed the request-time `priority` header being parsed but never
   applied: only the PRIORITY_UPDATE frame path reached the transport
   scheduler, so the common-case RFC 9218 signal silently no-opped. The
