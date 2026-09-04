@@ -530,3 +530,98 @@ test "classic CONNECT tunnel carries opaque bytes both directions" {
         }
     }
 }
+
+test "a reclaimed stream is not resurrected by continued pumping" {
+    const allocator = std.testing.allocator;
+
+    // Regression: `gcClosedStreams` can reclaim the http3-side
+    // StreamState while quic-zig still yields the finished stream's
+    // terminal recv state (.data_recvd / .data_read). The drain loop
+    // must skip those iterator entries — recreating state would emit a
+    // DUPLICATE `stream_finished` and leave a permanently half-closed
+    // registry entry (its `locally_finished` flag is unrecoverable
+    // after the reclaim). The second pumping window below drives many
+    // drains past completion precisely to exercise that window.
+    var pair: H3Pair = undefined;
+    try pair.initStarted(allocator, .{}, .{});
+    defer pair.deinit();
+    try exchangePairSettings(allocator, &pair);
+
+    var h3_client = http3_zig.Client.init(&pair.client_h3);
+    var h3_server = http3_zig.Server.init(&pair.server_h3);
+    const stream_id = try openGetAndAwaitServerHeaders(allocator, &pair, &h3_client);
+    _ = try h3_server.respond(allocator, stream_id, .{
+        .status = "200",
+        .body = "done",
+    });
+
+    var client_events: std.ArrayList(http3_zig.session.Event) = .empty;
+    defer {
+        pair.client_h3.clearEvents(&client_events);
+        client_events.deinit(allocator);
+    }
+    var server_events: std.ArrayList(http3_zig.session.Event) = .empty;
+    defer {
+        pair.server_h3.clearEvents(&server_events);
+        server_events.deinit(allocator);
+    }
+
+    var stream_finished_count: usize = 0;
+    var now_us: u64 = 1_000_000;
+
+    // The exchange's first `stream_finished` was already emitted and
+    // drained inside openGetAndAwaitServerHeaders' pump loop — the
+    // regression signal is any ADDITIONAL emission from here on.
+    // Window 1: drive the exchange to completion.
+    var iters: u32 = 0;
+    while (pair.server_h3.openRequestStreamCount() != 0 or
+        pair.client_h3.openRequestStreamCount() != 0) : (iters += 1)
+    {
+        try std.testing.expect(iters < 20_000);
+        try pumpH3(
+            &pair.client,
+            &pair.server,
+            &pair.client_h3,
+            &pair.server_h3,
+            &client_events,
+            &server_events,
+            &now_us,
+        );
+        for (server_events.items) |event| switch (event) {
+            .stream_finished => |finished| {
+                if (finished.stream_id == stream_id) stream_finished_count += 1;
+            },
+            else => {},
+        };
+        pair.client_h3.clearEvents(&client_events);
+        pair.server_h3.clearEvents(&server_events);
+    }
+    try std.testing.expectEqual(@as(usize, 0), stream_finished_count);
+
+    // Window 2: long after completion, quic may still be yielding the
+    // terminal stream to the drain iterator (its own GC reaps
+    // independently). Every one of these drains must skip the
+    // reclaimed entry: no duplicate stream_finished, no lingering
+    // half-closed registry entry.
+    for (0..500) |_| {
+        try pumpH3(
+            &pair.client,
+            &pair.server,
+            &pair.client_h3,
+            &pair.server_h3,
+            &client_events,
+            &server_events,
+            &now_us,
+        );
+        for (server_events.items) |event| switch (event) {
+            .stream_finished => |finished| {
+                if (finished.stream_id == stream_id) stream_finished_count += 1;
+            },
+            else => {},
+        };
+        pair.client_h3.clearEvents(&client_events);
+        pair.server_h3.clearEvents(&server_events);
+    }
+    try std.testing.expectEqual(@as(usize, 0), stream_finished_count);
+    try std.testing.expectEqual(@as(usize, 0), pair.server_h3.openRequestStreamCount());
+}

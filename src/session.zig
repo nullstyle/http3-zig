@@ -6742,3 +6742,51 @@ test "remembered peer settings feed the datagram gates until real SETTINGS arriv
         );
     }
 }
+
+test "every session Error member classifies to an explicit close code" {
+    // The merged set has 200+ members; the cross-products below need a
+    // raised comptime branch quota.
+    @setEvalBranchQuota(1_000_000);
+    // errors.codeForError takes anyerror and ends in an open `else`
+    // (general_protocol_error). Members of this CLOSED set must never
+    // silently land there: each is either explicitly mapped in
+    // errors.zig, listed in the deliberately-generic policy list below
+    // (local policy/state errors whose close code genuinely is the
+    // generic one), or a member of the transport-tier set
+    // (quic.conn.state.Error — transport failures close with transport
+    // codes; the H3-level mapping is intentionally generic). Walking
+    // @typeInfo means a newly added H3-level member without an explicit
+    // mapping fails this test instead of quietly absorbing into the
+    // catch-all.
+    const deliberately_generic = [_][]const u8{
+        // Explicitly mapped to H3_GENERAL_PROTOCOL_ERROR in errors.zig
+        // (RFC 9114 §7.2.5 ¶6) — resolves to the generic code by
+        // design, so the != general assertion below must exempt it.
+        "InconsistentPushPromise",
+        "InvalidParameter",
+        "PeerStreamLimitExceeded",
+        "PushBlockedByGoaway",
+        "RememberedSettingsTooLate",
+        "RememberedSettingsViolated",
+        "SessionClosed",
+        "WebTransportEraUnsupported",
+        "WebTransportSessionDraining",
+        "WebTransportSessionLimitReached",
+    };
+    const transport_tier = @typeInfo(quic.conn.state.Error).error_set.error_names.?;
+    inline for (@typeInfo(Error).error_set.error_names.?) |name| {
+        var allowed = false;
+        inline for (deliberately_generic) |generic| {
+            if (comptime std.mem.eql(u8, generic, name)) allowed = true;
+        }
+        inline for (transport_tier) |transport| {
+            if (comptime std.mem.eql(u8, transport, name)) allowed = true;
+        }
+        if (!allowed) {
+            const err: Error = @field(anyerror, name);
+            try std.testing.expect(
+                errors_mod.codeForError(err) != protocol.ErrorCode.general_protocol_error,
+            );
+        }
+    }
+}

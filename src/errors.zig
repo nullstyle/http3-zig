@@ -206,6 +206,10 @@ pub fn codeForError(err: anyerror) u64 {
         error.DynamicTableUnsupported,
         error.UnsupportedRepresentation,
         error.MalformedFieldSection,
+        // Malformed QPACK prefixed-integer prefix surfaced raw from
+        // field-section decoding (the encoder/decoder-instruction paths
+        // translate it to their stream-specific errors first).
+        error.InvalidPrefix,
         error.InvalidStaticIndex,
         error.InvalidDynamicIndex,
         error.InvalidRequiredInsertCount,
@@ -305,6 +309,11 @@ pub fn codeForError(err: anyerror) u64 {
         error.MissingStream,
         error.WrongMessageKind,
         => protocol.ErrorCode.internal_error,
+        // RFC 9218 §7.2: a malformed PRIORITY_UPDATE priority field
+        // value is a connection error of type H3_GENERAL_PROTOCOL_ERROR
+        // (pinned by the priority integration test).
+        error.InvalidParameter,
+        => protocol.ErrorCode.general_protocol_error,
         else => protocol.ErrorCode.general_protocol_error,
     };
 }

@@ -61,6 +61,13 @@ pub fn earlyDataApplicationContext(
     return earlydata.applicationContext(dst, settings);
 }
 
+/// Error union of `installEarlyDataContext`: the settings-digest
+/// encode (`earlydata.Error` — buffer sizing and SETTINGS encoding) or
+/// the transport-side context build (quic's SHA-256 early-data-context
+/// error).
+pub const InstallEarlyDataContextError = earlydata.Error ||
+    quic.Connection.early_data_context_mod.Error;
+
 /// Raw-`Connection` variant of the wrapper path: build and install the
 /// H3-aware early-data context (transport params + "h3" ALPN + settings
 /// digest) on a server connection before its handshake. `context_buf`
@@ -70,7 +77,7 @@ pub fn installEarlyDataContext(
     params: quic.tls.TransportParams,
     settings: settings_mod.Settings,
     context_buf: []u8,
-) !void {
+) InstallEarlyDataContextError!void {
     const ctx = try earlydata.applicationContext(context_buf, settings);
     _ = try conn.setEarlyDataContextForParams(params, protocol.alpn_h3, ctx);
 }

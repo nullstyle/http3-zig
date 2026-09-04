@@ -3,9 +3,9 @@
 These suites are **conformance** tests, not behaviour tests. Each test
 asserts a specific normative requirement from an RFC, named with the
 BCP 14 keyword the RFC uses, and cited back to its section. The shape
-follows the [RFC-traceable ZSpec testing
-guide](../../../zspec-rfc-testing.md), adapted to plain `std.testing`
-(no third-party runner). The layout mirrors `quic-zig/tests/conformance/`.
+follows an RFC-traceable testing style (every test named for the BCP 14
+keyword it asserts, cited back to its section), adapted to plain
+`std.testing` (no third-party runner). The layout mirrors `quic-zig/tests/conformance/`.
 
 ## Run
 

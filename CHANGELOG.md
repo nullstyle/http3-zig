@@ -454,6 +454,29 @@ breaking changes; see notes per release.
 
 ### Fixed
 
+- Closed the audit's remaining polish items:
+  `server.installEarlyDataContext` now returns the named
+  `InstallEarlyDataContextError` union instead of a bare `!void`; the
+  broken intra-repo link in the conformance README is gone; `go` is
+  pinned in mise.toml (1.27.0, matching the interop workflows); and a
+  new drain-ordering regression test drives 500 extra pumps past
+  exchange completion to prove a GC-reclaimed stream is never
+  resurrected (no duplicate `stream_finished`, no lingering half-closed
+  entry). A new exhaustiveness test walks the merged session `Error`
+  set at comptime and requires every H3-level member to classify
+  explicitly in `errors.zig` — writing it surfaced two genuinely
+  unmapped errors, now explicit: `InvalidPrefix` →
+  QPACK_DECOMPRESSION_FAILED and `InvalidParameter` →
+  H3_GENERAL_PROTOCOL_ERROR (RFC 9218 §7.2, pinned by the priority
+  integration test).
+- Hardened frame-size enforcement at read time: the new
+  `SessionConfig.max_incoming_frame_length` cap rejects a non-DATA
+  frame whose DECLARED length exceeds it before any payload is
+  reassembled (a peer could previously pin the receive buffer up to
+  the QUIC flow-control window with a single oversized declared
+  frame), and a DATA frame larger than `max_event_payload_size` is
+  split into chunked events so the stream makes progress instead of
+  livelocking against the per-event cap every drain.
 - **Fixed three OOM-path memory-safety bugs found by a new
   fault-injection sweep** (`tests/integration/fault_injection.zig`
   drives the WT datagram / substream / close flow with an allocator

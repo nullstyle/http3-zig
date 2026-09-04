@@ -12,6 +12,10 @@ just = "1.58.0"
 # CONTRIBUTING.md "Running CI locally with act"). Not used by the build
 # itself — a developer-experience tool like `just`.
 act = "0.2.89"
+# Go, pinned to the same version the interop workflows' setup-go steps
+# install, for locally running the quic-go / webtransport-go peers and
+# `just qpack-interop`.
+go = "1.27.0"
 
 [env]
 # Keep dependency archives project-local. This prevents a malformed archive
