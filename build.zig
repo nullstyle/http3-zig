@@ -54,10 +54,12 @@ pub fn build(b: *std.Build) void {
     http3_zig_mod.addImport("boringssl", boringssl_mod);
     http3_zig_mod.addImport("build_options", h3_build_options_mod);
 
-    // Compile the library as an artifact so a bare `zig build`
-    // actually compiles the library (and installs libhttp3_zig.a to
-    // zig-out/lib) — previously the default install step was empty
-    // and reported success without compiling anything.
+    // The default install step builds libhttp3_zig.a. NOTE: Zig compiles
+    // only what something references, and this library exports no
+    // symbols, so the archive holds no http3-zig code and a bare
+    // `zig build` checks only the build graph. The code is checked by
+    // `zig build test` / `check-api` and by `just build-all`; consumers
+    // use the module, not this archive.
     const lib = b.addLibrary(.{
         .name = "http3_zig",
         .root_module = http3_zig_mod,

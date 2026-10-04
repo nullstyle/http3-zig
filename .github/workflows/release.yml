@@ -10,7 +10,8 @@ on:
 # http3-zig tracks Zig master via mise (mise.toml), matching the test
 # workflow. The release job validates that the tag matches .version
 # in build.zig.zon, runs the full test suite, and cuts a GitHub
-# release with auto-generated notes plus the project CHANGELOG.md.
+# release whose notes are this version's CHANGELOG section plus the
+# package hash consumers pin.
 permissions:
   contents: write
 
@@ -77,18 +78,36 @@ jobs:
         timeout-minutes: 20
         run: zig build examples --summary all
 
-      # Build the library artifact in ReleaseSafe so the release ships
-      # a real, downloadable static library with safety checks intact
-      # (matches the posture of the CI matrix legs), plus a SHA-256
-      # checksum file for consumers.
-      - name: Build the ReleaseSafe library artifact
-        run: zig build -Doptimize=ReleaseSafe --summary all
-
-      - name: Checksum the artifact
+      # A Zig package ships as source: consumers pin the tag tarball by
+      # its package hash, so that hash is what the release publishes.
+      # (Through v0.5.0 the release attached a ReleaseSafe
+      # libhttp3_zig.a. It held no http3-zig code: the library exports
+      # no symbols, and Zig compiles only what something references.)
+      - name: Compute the tag tarball's package hash
+        id: pkg
         run: |
-          cd zig-out/lib
-          shasum -a 256 libhttp3_zig.a > libhttp3_zig.a.sha256
-          cat libhttp3_zig.a.sha256
+          url="https://github.com/${GITHUB_REPOSITORY}/archive/refs/tags/${GITHUB_REF_NAME}.tar.gz"
+          hash=""
+          for i in 1 2 3 4 5; do
+            if hash=$(tools/fetch-package-hash.sh "$url"); then break; fi
+            echo "fetch attempt $i failed; retrying in $((i * 10))s"
+            sleep $((i * 10))
+          done
+          if [ -z "$hash" ]; then
+            echo "::error::could not compute the package hash of $url"
+            exit 1
+          fi
+          echo "package hash: $hash"
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+          echo "hash=$hash" >> "$GITHUB_OUTPUT"
+
+      # Notes: this version's CHANGELOG section (not the whole file),
+      # then the build.zig.zon entry to pin it.
+      - name: Write the release notes
+        env:
+          PKG_URL: ${{ steps.pkg.outputs.url }}
+          PKG_HASH: ${{ steps.pkg.outputs.hash }}
+        run: tools/release-notes.sh "${GITHUB_REF_NAME#v}" "$PKG_URL" "$PKG_HASH" > release-notes.md
 
       - name: Create GitHub release
         env:
@@ -96,7 +115,4 @@ jobs:
         run: |
           gh release create "${GITHUB_REF_NAME}" \
             --title "${GITHUB_REF_NAME}" \
-            --generate-notes \
-            --notes-file CHANGELOG.md \
-            zig-out/lib/libhttp3_zig.a \
-            zig-out/lib/libhttp3_zig.a.sha256
+            --notes-file release-notes.md
