@@ -90,20 +90,39 @@ if [[ ! -x "$WT_SERVER_BIN" ]]; then
     exit 2
 fi
 
-# In-run P-256 cert, 10-day validity: matches run_chrome.sh so the same
-# cert recipe covers both browsers and the manual hash-pinning variant.
+# In-run P-256 certs, 10-day validity. Firefox needs a real chain: a
+# self-signed `openssl req -x509` cert carries `CA:TRUE`, and Firefox's
+# verifier (mozilla::pkix) refuses a CA cert as the server cert
+# (MOZILLA_PKIX_ERROR_CA_CERT_USED_AS_END_ENTITY). The first real run,
+# 2026-10-04, failed exactly so: TLS alert 42, transport close 0x12a.
+# So: a throwaway CA, and a CA:FALSE serverAuth leaf it signs.
 openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -sha256 \
-    -keyout "$WORK/key.pem" -out "$WORK/cert.pem" -days 10 -nodes \
-    -subj "/CN=127.0.0.1" -addext "subjectAltName=IP:127.0.0.1" \
+    -keyout "$WORK/ca-key.pem" -out "$WORK/ca.pem" -days 10 -nodes \
+    -subj "/CN=http3-zig wt-interop test CA" \
+    -addext "basicConstraints=critical,CA:TRUE" \
+    -addext "keyUsage=critical,keyCertSign,cRLSign" \
+    2>/dev/null
+openssl req -new -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -sha256 \
+    -keyout "$WORK/key.pem" -out "$WORK/leaf.csr" -nodes \
+    -subj "/CN=127.0.0.1" \
+    2>/dev/null
+printf '%s\n' \
+    "basicConstraints=critical,CA:FALSE" \
+    "keyUsage=critical,digitalSignature" \
+    "extendedKeyUsage=serverAuth" \
+    "subjectAltName=IP:127.0.0.1" \
+    > "$WORK/leaf.ext"
+openssl x509 -req -in "$WORK/leaf.csr" -CA "$WORK/ca.pem" -CAkey "$WORK/ca-key.pem" \
+    -CAcreateserial -days 10 -sha256 -extfile "$WORK/leaf.ext" \
+    -out "$WORK/cert.pem" \
     2>/dev/null
 
-# Fresh profile with the self-signed leaf installed as a trusted CA
-# ("C,,"): self-signed means it is its own issuer, so CA trust makes the
-# chain verify without touching the system trust store.
+# Fresh profile with only the CA trusted ("C,,"), so the leaf chain
+# verifies without touching the system trust store.
 PROFILE="$WORK/ff-profile"
 mkdir -p "$PROFILE"
 certutil -N -d "sql:$PROFILE" --empty-password
-certutil -A -n wt-interop -t "C,," -i "$WORK/cert.pem" -d "sql:$PROFILE"
+certutil -A -n wt-interop-ca -t "C,," -i "$WORK/ca.pem" -d "sql:$PROFILE"
 
 # All eras advertised: shipped Firefox must land on draft02 on its own -
 # that negotiation (not a pinned-era server) is what this leg verifies.
