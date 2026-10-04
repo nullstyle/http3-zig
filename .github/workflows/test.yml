@@ -58,6 +58,14 @@ jobs:
             optimize: Debug
             target: native
             advisory: true
+          # Windows: every library, test and tool binary compiles for
+          # x86_64-windows-gnu (checked locally 2026-10-04), but no test
+          # had ever run there. Advisory until two consecutive green
+          # runs (sprint 2026-10-W1 task A4); then drop `advisory`.
+          - os: windows-latest
+            optimize: Debug
+            target: native
+            advisory: true
           # 32-bit wire-parsing leg: u64->usize narrow-cast panics and
           # varint length arithmetic only bite on 32-bit targets.
           # x86-linux-musl binaries execute natively on x86_64 runners.
@@ -67,6 +75,11 @@ jobs:
             advisory: false
     runs-on: ${{ matrix.os }}
     continue-on-error: ${{ matrix.advisory }}
+    # bash everywhere (Git Bash on Windows): the steps call shell
+    # scripts, and an explicit `bash` also turns on pipefail.
+    defaults:
+      run:
+        shell: bash
     steps:
       - name: Checkout http3-zig
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
