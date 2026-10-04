@@ -58,14 +58,13 @@ jobs:
             optimize: Debug
             target: native
             advisory: true
-          # Windows: every library, test and tool binary compiles for
-          # x86_64-windows-gnu (checked locally 2026-10-04), but no test
-          # had ever run there. Advisory until two consecutive green
-          # runs (sprint 2026-10-W1 task A4); then drop `advisory`.
+          # Windows: promoted 2026-10-04 after two consecutive green
+          # runs that ran all 1317 tests (ea21922, 7c5f0ff). The first
+          # run failed zig fmt on CRLF checkouts (.gitattributes fix).
           - os: windows-latest
             optimize: Debug
             target: native
-            advisory: true
+            advisory: false
           # 32-bit wire-parsing leg: u64->usize narrow-cast panics and
           # varint length arithmetic only bite on 32-bit targets.
           # x86-linux-musl binaries execute natively on x86_64 runners.

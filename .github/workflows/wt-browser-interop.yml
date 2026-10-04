@@ -20,9 +20,12 @@ on:
 # wt-interop-self-test.yml (its draft-02 client leg mirrors this wire
 # shape with in-tree binaries only).
 #
-# PROMOTION CRITERION: promote the chrome job to a hard gate (drop
-# `continue-on-error`) after two consecutive green workflow_dispatch runs
-# post-landing. The firefox job is workflow_dispatch-gated until it has
+# PROMOTED 2026-10-04 (chrome job): two consecutive green
+# workflow_dispatch runs, read at the log line "PASS chrome browser
+# interop (era=draft02)": 37233767659, 37234405745 (plus 37234953527,
+# 37235460219, and six weekly scheduled passes 2026-08-30..10-04).
+# PROMOTION CRITERION (kept for the firefox job, and for re-promotion):
+# two consecutive green workflow_dispatch runs post-landing. The firefox job is workflow_dispatch-gated until it has
 # two green runs; lift its `if:` with the same criterion.
 #
 # DEMOTION RULE (pre-agreed, not a debate): two failures within a week
@@ -39,7 +42,6 @@ jobs:
     name: WT browser interop (Chrome stable vs http3-zig server)
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    continue-on-error: true
     steps:
       - name: Checkout http3-zig
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7

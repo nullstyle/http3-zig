@@ -22,9 +22,9 @@ on:
 # promoted 2026-08-13 after the post-GREASE soak criterion (two consecutive
 # green dispatched runs: 31667803157, 31668176311) - it is the most
 # deterministic foreign peer (pinned quic-go/http3 module, cached Go
-# toolchain, one automatic retry on the matrix step). The aioquic leg stays
-# weekly-advisory (Python environment variance); the in-tree per-push gate
-# remains h3-interop-self-test.yml.
+# toolchain, one automatic retry on the matrix step). The aioquic leg was
+# promoted to a per-push hard gate on 2026-10-04 (see its job). The
+# in-tree per-push gate remains h3-interop-self-test.yml.
 #
 # DEMOTION RULE (pre-agreed, not a debate): if the quic-go leg fails twice
 # within a week for causes not attributable to http3-zig (peer build
@@ -112,12 +112,14 @@ jobs:
           retention-days: 14
 
   aioquic:
-    # Weekly-advisory only: does not run on push (Python env variance).
-    if: github.event_name != 'push'
+    # PROMOTED 2026-10-04 to a per-push hard gate: two consecutive green
+    # workflow_dispatch runs read at "PASS aioquic" (37233769358,
+    # 37234407940) plus six weekly scheduled passes 2026-08-30..10-04.
+    # It was weekly-advisory for Python environment variance; none
+    # showed in that window. The demotion rule above applies.
     name: H3 interop (http3-zig client vs aioquic server)
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    continue-on-error: true
     env:
       TIMEOUT_MS: ${{ github.event.inputs.timeout_ms || '30000' }}
       KEEP_WORK_DIR: "1"

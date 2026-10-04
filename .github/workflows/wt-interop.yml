@@ -27,8 +27,11 @@ on:
         required: false
         default: "30000"
 
-# WebTransport interop runs are intentionally tolerant: a regression
-# here is a signal to investigate, not a hard merge gate. The matrix
+# PROMOTED 2026-10-04 to a hard gate: two consecutive green
+# workflow_dispatch runs with `--require-all`, read at the log line
+# "external_wt matrix: 2 passed, 0 failed (of 2)": 37233765828,
+# 37234403477 (plus five weekly scheduled 2-of-2 runs, 2026-09-06..10-04).
+# The matrix
 # always exercises two third-party servers in different language /
 # library stacks so a regression in either is easier to localize:
 #
@@ -43,9 +46,9 @@ on:
 # hard per-push gate after TWO consecutive green workflow_dispatch runs
 # on the release-tag peer pins (webtransport-go v0.13.0 +
 # pywebtransport 0.20.0) — record the run ids in this header when it
-# happens. Until then it stays advisory (`continue-on-error` on the
-# matrix step); the per-push hard gates are wt-interop-self-test.yml's
-# two in-tree legs (modern matrix + the draft-02 era leg).
+# happens. Met on 2026-10-04 (run ids at the top of this header); the
+# in-tree hard gates in wt-interop-self-test.yml (modern matrix + the
+# draft-02 era leg) still run on every push too.
 # DEMOTION RULE (pre-agreed, not a debate): if a promoted leg fails
 # twice within a week for causes not attributable to http3-zig (peer
 # build breakage, runner infrastructure), demote it by restoring
@@ -239,16 +242,15 @@ jobs:
 
       - name: Run the matrix
         # `--require-all`: the step fails when any peer fails (or none
-        # runs), so the step outcome shows each regression instead of
-        # one passing peer hiding the other. `continue-on-error: true`
-        # keeps that advisory until promotion — interop runs are
+        # runs), so one passing peer cannot hide the other. Promoted to
+        # a hard gate 2026-10-04 (see the header); before that, interop
+        # runs were
         # advisory, not a hard merge gate (the per-push real-socket
         # gate in `wt-interop-self-test.yml` covers our own pump path
         # against our own server, which IS treated as gating).
         # See <docs/wt-third-party-interop.md> for current status; this
         # remains advisory because third-party peer setup is more
         # flake-prone than the in-tree self-test.
-        continue-on-error: true
         run: zig build wt-interop-matrix -- --require-all --timeout-ms "${TIMEOUT_MS}"
 
       - name: Tear down the webtransport-go peer
