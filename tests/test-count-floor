@@ -1,0 +1,5 @@
+# Minimum number of tests `zig build test` must run and pass, read by
+# tools/check-test-count.sh in CI. Every CI leg ran the same count on
+# 2026-10-04 (no skips). Raise it when you add tests if you like; lower
+# it only in the commit that deliberately removes tests, and say why.
+1317
