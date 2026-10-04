@@ -238,10 +238,10 @@ jobs:
           echo "$URLS"
 
       - name: Run the matrix
-        # `wt-interop-matrix` exits 0 when at least one target passes
-        # and 1 when every non-skipped target fails. That plus
-        # `continue-on-error: true` keeps a third-party peer
-        # regression from masking the whole signal — interop runs are
+        # `--require-all`: the step fails when any peer fails (or none
+        # runs), so the step outcome shows each regression instead of
+        # one passing peer hiding the other. `continue-on-error: true`
+        # keeps that advisory until promotion — interop runs are
         # advisory, not a hard merge gate (the per-push real-socket
         # gate in `wt-interop-self-test.yml` covers our own pump path
         # against our own server, which IS treated as gating).
@@ -249,7 +249,7 @@ jobs:
         # remains advisory because third-party peer setup is more
         # flake-prone than the in-tree self-test.
         continue-on-error: true
-        run: zig build wt-interop-matrix -- --timeout-ms "${TIMEOUT_MS}"
+        run: zig build wt-interop-matrix -- --require-all --timeout-ms "${TIMEOUT_MS}"
 
       - name: Tear down the webtransport-go peer
         if: always()

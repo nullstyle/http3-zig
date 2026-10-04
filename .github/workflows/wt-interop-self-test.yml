@@ -94,7 +94,9 @@ jobs:
       - name: Run the matrix against the in-tree server
         env:
           WT_INTEROP_MATRIX_URLS: "https://127.0.0.1:${{ env.WT_SERVER_PORT }}/wt-self-test"
-        run: zig build wt-interop-matrix
+        # --require-all: an unset/empty URL list or any failed target
+        # fails the gate (without it, both are a green run).
+        run: zig build wt-interop-matrix -- --require-all
 
       - name: Tear down the server
         if: always()

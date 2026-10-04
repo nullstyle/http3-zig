@@ -193,3 +193,9 @@ echo "external-h3 matrix: passed=${passed} skipped=${skipped} failed=${failed}"
 if [[ "$failed" -ne 0 ]]; then
     exit 1
 fi
+# A run where every peer was skipped tested nothing. It must not pass
+# (a missing or misspelled *_H3_SERVER_CMD skips its peer).
+if [[ "$passed" -eq 0 ]]; then
+    echo "external-h3 matrix: FAIL: no peer ran (every peer skipped)" >&2
+    exit 1
+fi

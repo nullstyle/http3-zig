@@ -24,6 +24,10 @@
 //!   client as `--max-time-ms`. Kept under the more conventional
 //!   `--timeout-ms` spelling so the CI workflow doesn't need to know
 //!   the client's flag name.
+//! * `--require-all` — the gate mode CI uses. Every target must pass,
+//!   and at least one must run: an unset or empty URL list is a
+//!   failure (exit 1), not a skip. Without it, one passing target hides
+//!   the failed ones, and a missing URL list is a green run of nothing.
 //! * `--` — sentinel; everything that follows is appended verbatim to
 //!   the client's argv.
 //! * Anything else is appended verbatim to the client's argv.
@@ -49,6 +53,7 @@ const MatrixCli = struct {
     client_bin: []const u8 = default_client_bin,
     /// Wall-clock cap (ms) forwarded to the client as `--max-time-ms`.
     timeout_ms: ?u64 = null,
+    require_all: bool = false,
     extra_args: std.ArrayList([]const u8) = .empty,
 
     fn deinit(self: *MatrixCli, allocator: std.mem.Allocator) void {
@@ -70,6 +75,8 @@ fn parseCli(allocator: std.mem.Allocator, raw_args: []const []const u8) !MatrixC
             i += 1;
             if (i >= raw_args.len) return error.MissingTimeoutMs;
             cli.timeout_ms = try std.fmt.parseInt(u64, raw_args[i], 10);
+        } else if (std.mem.eql(u8, arg, "--require-all")) {
+            cli.require_all = true;
         } else if (std.mem.eql(u8, arg, "--")) {
             i += 1;
             while (i < raw_args.len) : (i += 1) {
@@ -136,11 +143,11 @@ pub fn main(init: std.process.Init) !void {
 
     const raw = init.environ_map.get(env_var) orelse {
         try stdout.print(
-            "external_wt: SKIP — set {s}=<url1>[,<url2>...] (or newline-separated) to run the matrix\n",
-            .{env_var},
+            "external_wt: {s} — set {s}=<url1>[,<url2>...] (or newline-separated) to run the matrix\n",
+            .{ if (cli.require_all) "FAIL (--require-all)" else "SKIP", env_var },
         );
         try stdout.flush();
-        std.process.exit(0);
+        std.process.exit(matrixExitCode(cli.require_all, 0, 0));
     };
 
     var urls: std.ArrayList([]const u8) = .empty;
@@ -156,11 +163,11 @@ pub fn main(init: std.process.Init) !void {
 
     if (urls.items.len == 0) {
         try stdout.print(
-            "external_wt: SKIP — {s} parsed to zero non-empty URLs\n",
-            .{env_var},
+            "external_wt: {s} — {s} parsed to zero non-empty URLs\n",
+            .{ if (cli.require_all) "FAIL (--require-all)" else "SKIP", env_var },
         );
         try stdout.flush();
-        std.process.exit(0);
+        std.process.exit(matrixExitCode(cli.require_all, 0, 0));
     }
 
     var results: std.ArrayList(TargetResult) = .empty;
@@ -209,10 +216,15 @@ pub fn main(init: std.process.Init) !void {
     );
     try stdout.flush();
 
-    // Exit non-zero only if **every** target failed. A single passing
-    // target is enough to satisfy the matrix.
-    if (passed == 0 and failed > 0) std.process.exit(1);
-    std.process.exit(0);
+    std.process.exit(matrixExitCode(cli.require_all, passed, failed));
+}
+
+/// Default: exit non-zero only if **every** target failed; one passing
+/// target satisfies the matrix, and nothing to run is a skip.
+/// `--require-all`: any failed target, or no target at all, fails.
+fn matrixExitCode(require_all: bool, passed: usize, failed: usize) u8 {
+    if (require_all) return if (failed == 0 and passed > 0) 0 else 1;
+    return if (passed == 0 and failed > 0) 1 else 0;
 }
 
 fn runOne(
@@ -340,4 +352,24 @@ test "buildClientArgv puts user --max-time-ms after the translation so user valu
     try std.testing.expectEqualStrings("30000", argv.items[2]);
     try std.testing.expectEqualStrings("--max-time-ms", argv.items[3]);
     try std.testing.expectEqualStrings("5000", argv.items[4]);
+}
+
+test "parseCli recognizes --require-all" {
+    const allocator = std.testing.allocator;
+    var cli = try parseCli(allocator, &.{"--require-all"});
+    defer cli.deinit(allocator);
+    try std.testing.expect(cli.require_all);
+    try std.testing.expectEqual(@as(usize, 0), cli.extra_args.items.len);
+}
+
+test "matrixExitCode: --require-all fails on any failure and on an empty run" {
+    // Default mode: lenient.
+    try std.testing.expectEqual(@as(u8, 0), matrixExitCode(false, 0, 0));
+    try std.testing.expectEqual(@as(u8, 0), matrixExitCode(false, 1, 1));
+    try std.testing.expectEqual(@as(u8, 1), matrixExitCode(false, 0, 2));
+    // Gate mode: every target ran and passed, and at least one ran.
+    try std.testing.expectEqual(@as(u8, 1), matrixExitCode(true, 0, 0));
+    try std.testing.expectEqual(@as(u8, 1), matrixExitCode(true, 1, 1));
+    try std.testing.expectEqual(@as(u8, 1), matrixExitCode(true, 0, 2));
+    try std.testing.expectEqual(@as(u8, 0), matrixExitCode(true, 2, 0));
 }
