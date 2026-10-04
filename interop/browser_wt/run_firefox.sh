@@ -124,6 +124,16 @@ mkdir -p "$PROFILE"
 certutil -N -d "sql:$PROFILE" --empty-password
 certutil -A -n wt-interop-ca -t "C,," -i "$WORK/ca.pem" -d "sql:$PROFILE"
 
+# Firefox turns HTTP/3 off for a chain whose root is not a built-in
+# root (pref network.http.http3.disable_when_third_party_roots_found,
+# default true): it authenticates the cert, then closes with
+# NS_ERROR_NET_RESET. Our test CA is such a root, so the second real
+# run (2026-10-04) closed right after "Authenticated error=0x0" with
+# "hasThirdPartyRoots=1". web-platform-tests sets the same pref.
+cat > "$PROFILE/user.js" <<'PREFS'
+user_pref("network.http.http3.disable_when_third_party_roots_found", false);
+PREFS
+
 # All eras advertised: shipped Firefox must land on draft02 on its own -
 # that negotiation (not a pinned-era server) is what this leg verifies.
 "$WT_SERVER_BIN" \
