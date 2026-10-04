@@ -30,4 +30,5 @@ test {
     _ = @import("integration/production_preset.zig");
     _ = @import("integration/public_api_smoke.zig");
     _ = @import("integration/fault_injection.zig");
+    _ = @import("integration/unauthenticated_datagram.zig");
 }
