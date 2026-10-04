@@ -9,6 +9,16 @@ breaking changes; see notes per release.
 
 ## [Unreleased]
 
+### Changed
+
+- **quic-zig v0.26.0** ("every legal peer connects": RFC 9000/9001
+  repairs; boringssl pin unchanged). No http3-zig API change. One
+  visible behavior: an HTTP/3 close sent before the client has
+  confirmed the handshake now reaches it, as RFC 9000 §10.2.3 requires,
+  as a transport `APPLICATION_ERROR` (0x0c) with no reason; the H3 code
+  and reason arrive only after HANDSHAKE_DONE. Before, the client read
+  the 1-RTT close or timed out. A new test pins this.
+
 ### Fixed
 
 - **A tight peer uni window no longer breaks `Session.start`.** The

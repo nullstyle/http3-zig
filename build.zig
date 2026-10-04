@@ -28,7 +28,7 @@ pub fn build(b: *std.Build) void {
     // pinned in build.zig.zon; tools/check-boringssl-pin.sh lints this
     // on tag pins (bare-SHA pins skip the check).
     const quic_build_options = b.addOptions();
-    quic_build_options.addOption([]const u8, "version", "0.25.0");
+    quic_build_options.addOption([]const u8, "version", "0.26.0");
     const quic_build_options_mod = quic_build_options.createModule();
 
     // Single-source http3-zig's own version() from build.zig.zon so it can

@@ -4,9 +4,10 @@
     .fingerprint = 0x71cd45b0dc74266b,
     .minimum_zig_version = "0.17.0",
     .dependencies = .{
-        // quic — latest release. v0.25.0 carries the security fix for
+        // quic — latest release. v0.26.0 ("every legal peer connects":
+        // RFC 9000/9001 repairs) on top of v0.25.0's security fix for
         // pre-authentication datagrams (one forged short-header datagram
-        // made `Connection.handle` fail; now it is dropped), and the
+        // made `Connection.handle` fail; now it is dropped) and the
         // v0.24 stream-limit window (no lifetime stream cap;
         // StreamLimitExceeded is always temporary).
         //
@@ -25,8 +26,8 @@
         // hashes. The tarball is the canonical pin form upstream
         // publishes — same convention as boringssl below.
         .quic = .{
-            .url = "https://github.com/nullstyle/quic-zig/archive/refs/tags/v0.25.0.tar.gz",
-            .hash = "quic-0.25.0-DnSYvcRANgAnmiJVo3UPd3XOuezmr8Ia1mXeqXgow4vw",
+            .url = "https://github.com/nullstyle/quic-zig/archive/refs/tags/v0.26.0.tar.gz",
+            .hash = "quic-0.26.0-DnSYvXvxNwDWO2vGjU5Puuv1FlpgAmBahRmUxawCD_KE",
         },
         // MUST match quic's boringssl entry byte-for-byte so the
         // package manager dedupes to a single boringssl module instance;
@@ -35,7 +36,7 @@
         // boringssl.tls.Context" type errors at the boundary.
         //
         // Commit-SHA tarball rather than a tag: this is the boringssl-zig
-        // 0.6.7 package at ff30fe9, exactly the entry quic v0.25.0 pins.
+        // 0.6.7 package at ff30fe9, exactly the entry quic v0.26.0 pins.
         .boringssl = .{
             .url = "https://github.com/nullstyle/boringssl-zig/archive/ff30fe9953b07f838d7ac09ace84dacfb1e896ca.tar.gz",
             .hash = "boringssl-0.6.7-Vv5DN8RMAgDGST3F3NpoMjez8Z_J60megIom9Ru9XqD2",

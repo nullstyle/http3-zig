@@ -30,6 +30,32 @@ const exchangePairSettings = fixt.exchangePairSettings;
 const openGetAndAwaitServerHeaders = fixt.openGetAndAwaitServerHeaders;
 const sendRawH3Datagram = fixt.sendRawH3Datagram;
 
+fn pumpUntilConfirmed(
+    allocator: std.mem.Allocator,
+    client: *quic.Connection,
+    server: *quic.Connection,
+    client_h3: *http3_zig.Session,
+    server_h3: *http3_zig.Session,
+    client_events: *std.ArrayList(http3_zig.session.Event),
+    server_events: *std.ArrayList(http3_zig.session.Event),
+    now_us: *u64,
+) !void {
+    // The client side is what decides which close it reads: once it has
+    // HANDSHAKE_DONE it has discarded its Handshake keys, and a
+    // Handshake-level close no longer reaches it. (The server's latch
+    // never sets in this fixture: the client's Finished travels through
+    // the in-process handshake shim, not a Handshake packet.)
+    var iters: u32 = 0;
+    while (client_h3.peer_settings == null or server_h3.peer_settings == null or
+        !client.handshake_keys_discarded) : (iters += 1)
+    {
+        try std.testing.expect(iters < 20_000);
+        try pumpH3(client, server, client_h3, server_h3, client_events, server_events, now_us);
+        clearSessionEvents(allocator, client_events);
+        clearSessionEvents(allocator, server_events);
+    }
+}
+
 test "session surfaces quic connection close events" {
     const allocator = std.testing.allocator;
 
@@ -63,6 +89,14 @@ test "session surfaces quic connection close events" {
         server_events.deinit(allocator);
     }
 
+    // Confirm the handshake first (SETTINGS both ways; the client has
+    // HANDSHAKE_DONE and dropped its Handshake keys). Until then a close also goes
+    // out in a Handshake packet as a bare transport APPLICATION_ERROR
+    // (RFC 9000 §10.2.3; quic v0.26.0) and the H3 code and reason do not
+    // reach the peer. The next test pins that case.
+    var now_us: u64 = 1_000_000;
+    try pumpUntilConfirmed(allocator, &client, &server, &client_h3, &server_h3, &client_events, &server_events, &now_us);
+
     server_h3.close(http3_zig.protocol.ErrorCode.no_error, "server shutdown");
     try server_h3.drain(&server_events);
     try std.testing.expectEqual(http3_zig.session.ShutdownState.closed, server_h3.shutdownState());
@@ -79,7 +113,6 @@ test "session surfaces quic connection close events" {
     }
     clearSessionEvents(allocator, &server_events);
 
-    var now_us: u64 = 1_000_000;
     var iters: u32 = 0;
     var client_saw_close = false;
     while (!client_saw_close) : (iters += 1) {
@@ -112,6 +145,70 @@ test "session surfaces quic connection close events" {
     }
 
     try std.testing.expectEqual(http3_zig.session.ShutdownState.draining, client_h3.shutdownState());
+}
+
+test "an H3 close before the client confirms the handshake reaches it as transport APPLICATION_ERROR" {
+    // RFC 9000 §10.2.3: before the handshake is confirmed the server also
+    // sends its close in a Handshake packet, where an application close
+    // MUST be a transport CONNECTION_CLOSE with APPLICATION_ERROR (0x0c)
+    // and no reason. quic v0.26.0 delivers it ("a close during the
+    // handshake reaches the peer"); the client sees that, not the H3
+    // code. Before v0.26.0 the client read the 1-RTT application close.
+    const allocator = std.testing.allocator;
+
+    var server_tls = try http3_zig.server.initTlsContext(.{}, test_cert_pem, test_key_pem);
+    defer server_tls.deinit();
+    var client_tls = try http3_zig.client.initTlsContext(.{ .verify = .none });
+    defer client_tls.deinit();
+
+    var client: quic.Connection = undefined;
+    var server: quic.Connection = undefined;
+    try initConnectedQuic(allocator, client_tls, server_tls, &client, &server);
+    defer client.deinit();
+    defer server.deinit();
+
+    var client_h3 = http3_zig.Session.init(allocator, .client, &client, .{});
+    defer client_h3.deinit();
+    var server_h3 = http3_zig.Session.init(allocator, .server, &server, .{});
+    defer server_h3.deinit();
+    try client_h3.start();
+    try server_h3.start();
+
+    var client_events: std.ArrayList(http3_zig.session.Event) = .empty;
+    defer {
+        clearSessionEvents(allocator, &client_events);
+        client_events.deinit(allocator);
+    }
+    var server_events: std.ArrayList(http3_zig.session.Event) = .empty;
+    defer {
+        clearSessionEvents(allocator, &server_events);
+        server_events.deinit(allocator);
+    }
+
+    try std.testing.expect(!client.handshake_keys_discarded);
+    server_h3.close(http3_zig.protocol.ErrorCode.no_error, "server shutdown");
+    try server_h3.drain(&server_events);
+    clearSessionEvents(allocator, &server_events);
+
+    var now_us: u64 = 1_000_000;
+    var iters: u32 = 0;
+    var client_saw_close = false;
+    while (!client_saw_close) : (iters += 1) {
+        try std.testing.expect(iters < 20_000);
+        try pumpH3(&client, &server, &client_h3, &server_h3, &client_events, &server_events, &now_us);
+        for (client_events.items) |event| switch (event) {
+            .connection_closed => |closed| {
+                client_saw_close = true;
+                try std.testing.expectEqual(quic.CloseSource.peer, closed.source);
+                try std.testing.expectEqual(quic.CloseErrorSpace.transport, closed.error_space);
+                try std.testing.expectEqual(quic.Connection.transport_error_application_error, closed.error_code);
+                try std.testing.expectEqualStrings("", closed.reason);
+            },
+            else => {},
+        };
+        clearSessionEvents(allocator, &client_events);
+        clearSessionEvents(allocator, &server_events);
+    }
 }
 
 test "client send-side reset is surfaced as server request reset" {
