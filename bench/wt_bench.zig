@@ -397,6 +397,14 @@ const Persistent = struct {
         self.client_tls.deinit();
     }
 
+    /// Feeds every queued event to its runner, then frees them.
+    fn observeAndClearEvents(self: *Persistent) !void {
+        for (self.server_events.items) |event| _ = try self.server_runner.observe(event);
+        clearEvents(self.allocator, &self.server_events);
+        for (self.client_events.items) |event| _ = try self.client_runner.observe(event);
+        clearEvents(self.allocator, &self.client_events);
+    }
+
     fn pumpOnce(self: *Persistent) !void {
         var driver = http3_zig.TransportLoopback.init(
             http3_zig.TransportEndpoint.withSession(&self.client_quic, &self.client_h3, &self.client_events),
@@ -515,7 +523,25 @@ fn benchStream(allocator: std.mem.Allocator, io: std.Io, samples: []u64) !void {
 fn streamRoundTrip(p: *Persistent, io: std.Io, payload: []const u8, out_ns: ?*u64) !void {
     const start_ts = nowNs(io);
 
-    const uni = try p.client_wt.openUniStream();
+    // The uni stream limit is an open-at-once window (quic v0.24.0+):
+    // 16 here, three of them held for life by the HTTP/3 control and
+    // QPACK streams. An id comes back only after the server finishes
+    // the previous stream and its MAX_STREAMS reaches the client, so
+    // `StreamLimitExceeded` is temporary: pump, then try again.
+    const uni = open: {
+        var tries: u32 = 0;
+        while (true) : (tries += 1) {
+            break :open p.client_wt.openUniStream() catch |err| switch (err) {
+                error.StreamLimitExceeded => {
+                    if (tries >= 5_000) return error.StreamWindowTimedOut;
+                    try p.pumpOnce();
+                    try p.observeAndClearEvents();
+                    continue;
+                },
+                else => return err,
+            };
+        }
+    };
     try uni.write(payload);
     try uni.finish();
 

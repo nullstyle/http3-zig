@@ -311,11 +311,10 @@ const Persistent = struct {
 
 fn doWorkUnit(p: *Persistent, stream_payload: []const u8, datagram_payload: []const u8) !void {
     // ---- Stream half ----
-    // The peer's `initial_max_streams_uni` (4096) is below our 10 000
-    // iteration count, so once the initial credit is exhausted we have
-    // to wait for the MAX_STREAMS replenishment quic sends as
-    // streams close. Pump until `openUniStream` succeeds — this is
-    // the same pattern the "16 concurrent uni streams" test uses.
+    // `StreamLimitExceeded` is always temporary (quic v0.24.0+): the
+    // uni window reopens when MAX_STREAMS for a closed stream arrives.
+    // Pump until `openUniStream` succeeds — this is the same pattern
+    // the "16 concurrent uni streams" test uses.
     const uni = blk: while (true) {
         if (p.client_wt.openUniStream()) |handle| {
             break :blk handle;
@@ -633,13 +632,13 @@ fn connectQuic(client: *quic.Connection, server: *quic.Connection) !void {
     server.peer = client;
 
     // The memory profile opens a fresh uni stream every iteration for
-    // 10 000 iterations on a single connection. The 16-stream cap used
-    // by the bench / fixtures runs out almost immediately. Set the
-    // initial uni-stream count to quic's per-connection ceiling
-    // (`max_streams_per_connection = 4096`) so the initial credit is
-    // as generous as possible; the MAX_STREAMS frames the peer sends
-    // as streams close will keep us going past that floor over the
-    // 10 000-iter run.
+    // 10 000 iterations on a single connection. quic's stream limit is
+    // an open-at-once window (v0.24.0+): a closed stream gives its id
+    // back through MAX_STREAMS, so the run never exhausts it. 4096 is
+    // the largest window quic accepts
+    // (`Connection.max_concurrent_streams_per_kind`); it keeps
+    // `doWorkUnit`'s pump-and-retry path cold, so the profile measures
+    // the work unit and not waits for credit.
     const tp: quic.tls.TransportParams = .{
         .initial_max_data = 1 << 22,
         .initial_max_stream_data_bidi_local = 1 << 20,
