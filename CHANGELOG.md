@@ -502,6 +502,16 @@ breaking changes; see notes per release.
   peer could open no more streams, and the client never learned its
   request was refused (RFC 9114 §4.1.1). Pinned by a 48-refusal test
   on a window of 16.
+- **The nightly coverage-guided fuzz job was green while it crashed
+  every night (2026-09-05 to 2026-10-04).** The `webtransport_session`
+  fuzz harness panicked with integer overflow on any input of 253+
+  bytes (`@min` against a comptime bound has a `u8` result; the
+  library has no such site), which stopped the fuzzer a minute in.
+  Zig 0.17's `zig build test --fuzz` exits 0 when a fuzz site fails,
+  and the workflow took exit 0 as a pass. Fixed all three: the harness
+  arithmetic, the workflow (a crash in the log or an early exit 0
+  fails it), and x86_64 coverage (`-Duse-llvm=true`: the self-hosted
+  backend emits no sancov sections).
 - Closed the audit's remaining polish items:
   `server.installEarlyDataContext` now returns the named
   `InstallEarlyDataContextError` union instead of a bare `!void`; the
