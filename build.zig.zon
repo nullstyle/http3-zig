@@ -2,12 +2,13 @@
     .name = .http3_zig,
     .version = "0.4.9",
     .fingerprint = 0x71cd45b0dc74266b,
-    .minimum_zig_version = "0.17.0-dev.1978+c961124d9",
+    .minimum_zig_version = "0.17.0",
     .dependencies = .{
-        // quic — latest release. This brings in the BBRv3 default,
-        // zero-copy stream reads, receive-side DATAGRAM shedding,
-        // SO_REUSEPORT support, and bounded handshake liveness from the
-        // 0.14.0–0.19.0 release series.
+        // quic — latest release. v0.25.0 carries the security fix for
+        // pre-authentication datagrams (one forged short-header datagram
+        // made `Connection.handle` fail; now it is dropped), and the
+        // v0.24 stream-limit window (no lifetime stream cap;
+        // StreamLimitExceeded is always temporary).
         //
         // To bump: run `tools/fetch-package-hash.sh <url>` and paste its
         // hash here by hand — do NOT `zig fetch --save`, which mangles a
@@ -24,8 +25,8 @@
         // hashes. The tarball is the canonical pin form upstream
         // publishes — same convention as boringssl below.
         .quic = .{
-            .url = "https://github.com/nullstyle/quic-zig/archive/refs/tags/v0.19.0.tar.gz",
-            .hash = "quic-0.19.0-DnSYvfDZMADCQvF3_9ZQ75Kwdz3nJ4CBLSwxWizuCsLI",
+            .url = "https://github.com/nullstyle/quic-zig/archive/refs/tags/v0.25.0.tar.gz",
+            .hash = "quic-0.25.0-DnSYvcRANgAnmiJVo3UPd3XOuezmr8Ia1mXeqXgow4vw",
         },
         // MUST match quic's boringssl entry byte-for-byte so the
         // package manager dedupes to a single boringssl module instance;
@@ -33,13 +34,11 @@
         // mismatch yields "expected boringssl.tls.Context, found
         // boringssl.tls.Context" type errors at the boundary.
         //
-        // Commit-SHA tarball rather than a tag: the latest boringssl-zig
-        // revision is the unreleased 0.6.5 package at b47af8c. It carries
-        // the SSL_get_client_random binding and the `boringssl` package
-        // identity expected by quic 0.19.0.
+        // Commit-SHA tarball rather than a tag: this is the boringssl-zig
+        // 0.6.7 package at ff30fe9, exactly the entry quic v0.25.0 pins.
         .boringssl = .{
-            .url = "https://github.com/nullstyle/boringssl-zig/archive/87d15bf7cdd7a65687d5921d3389dea7982b2c2d.tar.gz",
-            .hash = "boringssl-0.6.6-Vv5DNx8KAgCi6qYllvBlOXf0DwfFhk8OJ_sY5HGR7Kqh",
+            .url = "https://github.com/nullstyle/boringssl-zig/archive/ff30fe9953b07f838d7ac09ace84dacfb1e896ca.tar.gz",
+            .hash = "boringssl-0.6.7-Vv5DN8RMAgDGST3F3NpoMjez8Z_J60megIom9Ru9XqD2",
         },
     },
     .paths = .{

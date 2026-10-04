@@ -324,7 +324,7 @@ test "session surfaces quic flow blocked events" {
     try pair.initStarted(allocator, .{}, .{});
     defer pair.deinit();
 
-    pair.client.peer_max_streams_bidi = 0;
+    pair.client.local_bidi_ids.limit = 0;
 
     const fields = [_]http3_zig.FieldLine{
         .{ .name = ":method", .value = "GET" },

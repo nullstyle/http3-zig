@@ -13,9 +13,11 @@ pub fn build(b: *std.Build) void {
     // quic is a source-only dependency here: every quic module below is
     // recreated with this build's target, optimize mode, and shared
     // boringssl module. Do not forward build options to quic's own build
-    // script; quic 0.19 exposes a `release` policy option rather than the
-    // root project's `optimize` option, and its configured modules are not
-    // consumed by this build.
+    // script: its configured modules (and the Debug-by-default mode they
+    // get from an empty option map) are never consumed by this build, so
+    // the quic code in every artifact here is compiled at `optimize`.
+    // `zig build --verbose -Doptimize=ReleaseSafe` shows `-Osafe` in front
+    // of `-Mquic=`.
     const quic_dep = b.dependency("quic", .{});
     // quic-zig's root.zig single-sources version() from a `build_options`
     // module that its own build.zig provides. Because we recreate the
@@ -26,7 +28,7 @@ pub fn build(b: *std.Build) void {
     // pinned in build.zig.zon; tools/check-boringssl-pin.sh lints this
     // on tag pins (bare-SHA pins skip the check).
     const quic_build_options = b.addOptions();
-    quic_build_options.addOption([]const u8, "version", "0.19.0");
+    quic_build_options.addOption([]const u8, "version", "0.25.0");
     const quic_build_options_mod = quic_build_options.createModule();
 
     // Single-source http3-zig's own version() from build.zig.zon so it can

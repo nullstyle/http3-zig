@@ -1,12 +1,11 @@
 [tools]
-# Zig 0.17 is unreleased, so the toolchain pin is an exact dev build
-# rather than a floating master — builds must be reproducible, and a
-# floating toolchain let any upstream commit break local and CI
-# together. The pinned build is the one verified green (test +
-# ReleaseSafe + conformance + mem-profile) and matches the floor
-# recorded in build.zig.zon's minimum_zig_version. Bump both together
-# after re-verifying on a newer master.
-zig = "0.17.0-dev.1978+c961124d9"
+# The toolchain pin is the tagged Zig 0.17.0 release. Pin tagged
+# releases only: the Zig download mirror deletes old dev builds, so a
+# dev pin stops being installable. This matches the floor in
+# build.zig.zon's minimum_zig_version and quic-zig's own floor (quic
+# v0.23.0+ refuses every 0.17.0-dev build). Bump both together after
+# re-verifying (test + ReleaseSafe + conformance + mem-profile).
+zig = "0.17.0"
 just = "1.58.0"
 # act runs the GitHub Actions workflows locally under Docker (see
 # CONTRIBUTING.md "Running CI locally with act"). Not used by the build

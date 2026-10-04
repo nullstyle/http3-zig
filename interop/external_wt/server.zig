@@ -157,7 +157,8 @@ fn runServer(allocator: std.mem.Allocator, io: std.Io, options: Options) !void {
             self.socket.send(self.io, &self.peer, bytes) catch |err|
                 switch (quic.transport.classifySendError(err)) {
                     .tolerate => {},
-                    .fatal => return err,
+                    // The loop's own task was cancelled: return so it exits.
+                    .canceled, .fatal => return err,
                 };
         }
     };
