@@ -100,7 +100,24 @@ pub fn build(b: *std.Build) void {
     tests_mod.addImport("quic", quic_mod);
     tests_mod.addImport("boringssl", boringssl_mod);
     tests_mod.addImport("http3_zig_fuzz_codecs", fuzz_codecs_lib_mod);
-    const integration_tests = b.addTest(.{ .root_module = tests_mod });
+    // Coverage-guided fuzzing needs the LLVM backend: Zig's fuzzer reads
+    // its program-counter range from the `__sancov_*` sections, and only
+    // LLVM emits them. Zig 0.17 defaults x86_64 to the self-hosted
+    // backend, so an x86_64 `--fuzz` run (the nightly CI runner)
+    // collects zero coverage unless this is set (quic-zig measured 0
+    // sancov sections self-hosted, 2 with LLVM). An option, not the
+    // default, because the self-hosted backend builds faster for every
+    // ordinary test run. The one `std.testing.fuzz` site lives in this
+    // binary (tests/integration/codecs.zig).
+    const use_llvm_for_tests = b.option(
+        bool,
+        "use-llvm",
+        "Build the integration-test binary with the LLVM backend. Required for a meaningful `--fuzz` run on x86_64.",
+    );
+    const integration_tests = b.addTest(.{
+        .root_module = tests_mod,
+        .use_llvm = use_llvm_for_tests,
+    });
     const run_integration_tests = b.addRunArtifact(integration_tests);
     test_step.dependOn(&run_integration_tests.step);
 

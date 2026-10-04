@@ -156,8 +156,12 @@ jobs:
       # Compile the fuzz test binary up front so the timed window below
       # measures fuzzing, not compilation (also hands the full 30-minute
       # budget to the fuzzer itself).
+      #
+      # `-Duse-llvm=true`: Zig 0.17 builds x86_64 with its self-hosted
+      # backend, which emits no sancov sections, so without it the
+      # fuzzer collects zero coverage on this runner (see build.zig).
       - name: Pre-compile the ReleaseSafe fuzz test binary
-        run: zig build test -Doptimize=ReleaseSafe --summary all
+        run: zig build test -Doptimize=ReleaseSafe -Duse-llvm=true --summary all
 
       # The advisory skip is gated on a survival floor: the runner must
       # have fuzzed productively for at least five minutes before dying
@@ -175,25 +179,44 @@ jobs:
             # regaining compiler optimization — Debug fuzzing ran at a
             # fraction of the executions/sec the 30-minute budget could
             # deliver.
-            timeout 30m zig build test -Doptimize=ReleaseSafe --fuzz 2>&1 | tee fuzz-nightly.log
+            timeout 30m zig build test -Doptimize=ReleaseSafe -Duse-llvm=true --fuzz 2>&1 | tee fuzz-nightly.log
             status=${PIPESTATUS[0]}
             set -e
             fuzz_elapsed=$(( $(date +%s) - fuzz_started ))
+            # Zig 0.17.0: `zig build test --fuzz` EXITS 0 WHEN A FUZZ SITE
+            # FAILS, and stops the run there. Exit 0 hid a harness crash
+            # every night from 2026-09-05 to 2026-10-04. So the log
+            # decides first, and an unbounded run that stops on its own
+            # before the budget is a failure, never a pass.
+            if real_crash; then
+              echo "::error::fuzzer found a crash after ${fuzz_elapsed}s (see 'input saved to' / 'panic:' in the log)"
+              return 1
+            fi
             if [ "$status" -eq 124 ]; then return 0; fi
+            if [ "$status" -eq 0 ]; then
+              echo "::error::fuzzer stopped with exit 0 after ${fuzz_elapsed}s, before the 30-minute budget"
+              return 1
+            fi
             return "$status"
           }
           known_runner_bug() {
             grep -Eq "corrupted coverage file .*pcs_len was zero|panic: start index [0-9]+ is larger than end index [0-9]+" fuzz-nightly.log
           }
+          # A saved input, or any panic that is not the known runner bug.
+          real_crash() {
+            grep -q "input saved to" fuzz-nightly.log && return 0
+            grep -E "panic: " fuzz-nightly.log \
+              | grep -Evq "panic: start index [0-9]+ is larger than end index [0-9]+"
+          }
           survived_floor() {
             [ "$fuzz_elapsed" -ge 300 ]
           }
           if run_fuzz; then exit 0; fi
-          if known_runner_bug; then
+          if ! real_crash && known_runner_bug; then
             echo "::warning::Zig fuzz-runner infrastructure failure; retrying once with a clean fuzz cache"
             rm -rf .zig-cache/v
             if run_fuzz; then exit 0; fi
-            if known_runner_bug && survived_floor; then
+            if ! real_crash && known_runner_bug && survived_floor; then
               echo "::warning::Known Zig-master fuzz-runner bug reproduced twice after ${fuzz_elapsed}s of productive fuzzing (survival floor met); treating as advisory skip, artifacts uploaded"
               echo "known_runner_bug=true" >> "$GITHUB_OUTPUT"
               {
