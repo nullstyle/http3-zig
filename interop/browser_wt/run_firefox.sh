@@ -160,6 +160,13 @@ CTRL_PORT="$(awk '/^READY / {print $2; exit}' "$LOG_DIR/control.log")"
 # WebTransport is on by default (network.webtransport.enabled=true); no
 # geckodriver needed - the page POSTs its own verdict. --no-remote keeps
 # this instance from handing the URL to an already-running Firefox.
+# HTTP/3 + QUIC logs from Firefox (Necko and neqo), kept with the other
+# logs: a close before the handshake is confirmed hides the real HTTP/3
+# error code on the wire (RFC 9000 §10.2.3), so this is the only place
+# it shows.
+MOZ_LOG="timestamp,nsHttp:5,neqo_http3::connection:5,neqo_http3::connection_client:5,neqo_transport::connection:4" \
+MOZ_LOG_FILE="$LOG_DIR/firefox-http.log" \
+RUST_LOG="neqo_http3=debug,neqo_transport=info" \
 "$BROWSER" \
     --headless \
     --no-remote \

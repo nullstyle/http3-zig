@@ -265,6 +265,15 @@ const App = struct {
         // tracker's perspective, so we inspect them on the raw event
         // first.
         switch (event) {
+            // Proves the handshake finished and the peer's control
+            // stream parsed; a browser that closes before this line
+            // failed below HTTP/3 or on its first frames.
+            .peer_settings => |ps| {
+                std.debug.print("OBSERVED peer settings enable_connect_protocol={} h3_datagram={}\n", .{
+                    ps.enable_connect_protocol,
+                    ps.h3_datagram,
+                });
+            },
             .webtransport_stream_data => |data| {
                 std.debug.print(
                     "OBSERVED wt stream data session={d} stream={d} kind={s} bytes={d}\n",
