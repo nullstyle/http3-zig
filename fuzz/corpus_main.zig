@@ -57,8 +57,11 @@ pub fn main(init: std.process.Init) !void {
         const dir_path = std.fmt.bufPrint(&path_buf, "{s}/{s}", .{ corpus_root, name }) catch unreachable;
 
         var subdir = cwd.openDir(io, dir_path, .{ .iterate = true }) catch |err| switch (err) {
+            // A target with no corpus is a target the gate never runs:
+            // a failure, not a skip.
             error.FileNotFound => {
-                try stdout.print("  {s}: corpus dir missing — skipping\n", .{name});
+                try stdout.print("  {s}: FAIL: corpus dir missing\n", .{name});
+                total_fails += 1;
                 continue;
             },
             else => return err,
@@ -99,6 +102,10 @@ pub fn main(init: std.process.Init) !void {
             cases += 1;
         }
 
+        if (cases == 0) {
+            try stdout.print("  {s}: FAIL: corpus dir has no cases\n", .{name});
+            fails += 1;
+        }
         try stdout.print("  {s}: cases={d} fails={d}\n", .{ name, cases, fails });
         total_cases += cases;
         total_fails += fails;

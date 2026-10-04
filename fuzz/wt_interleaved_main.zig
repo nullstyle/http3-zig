@@ -47,10 +47,11 @@ pub fn main(init: std.process.Init) !void {
     if (seed_paths.items.len == 0) {
         // Walk the corpus dir.
         var dir = cwd.openDir(io, corpus_dir_path, .{ .iterate = true }) catch |err| switch (err) {
+            // No corpus means the gate ran nothing: a failure.
             error.FileNotFound => {
-                try stdout.print("wt-interleaved: corpus dir missing — nothing to do\n", .{});
+                try stdout.print("wt-interleaved: FAIL: corpus dir missing\n", .{});
                 try stdout.flush();
-                return;
+                std.process.exit(1);
             },
             else => return err,
         };
@@ -115,5 +116,5 @@ pub fn main(init: std.process.Init) !void {
     );
     try stdout.flush();
 
-    if (fails > 0) std.process.exit(1);
+    if (fails > 0 or cases == 0) std.process.exit(1);
 }
