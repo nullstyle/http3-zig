@@ -1,0 +1,11 @@
+# Check out every text file with LF on every OS. `zig fmt` rejects CRLF,
+# and Git for Windows converts LF to CRLF on checkout by default
+# (core.autocrlf=true on the GitHub Windows runners): the first Windows
+# CI run failed `zig fmt --check` on every file.
+* text=auto eol=lf
+
+# Fuzz inputs and test data are bytes, not text. Never convert them:
+# a corpus input with an LF must reach the harness byte-for-byte.
+fuzz/corpus/** -text
+fuzz/data/** -text
+tests/data/** -text
