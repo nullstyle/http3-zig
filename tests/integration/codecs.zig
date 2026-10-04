@@ -47,6 +47,21 @@ test "codec fuzz harness smoke corpus" {
     }
 }
 
+// Every codec target must take inputs up to the fuzz entry point's 4096-byte
+// cap. The seed corpus is short, so `zig build test` never fed a long input:
+// the `webtransport_session` harness block summed `3 + @min(input.len,
+// 253)`, and `@min` against a comptime bound has type `u8`, so any input of
+// 253+ bytes panicked with integer overflow. That crash stopped the nightly
+// coverage-guided fuzzer about a minute into every run since 2026-09-05.
+test "every codec fuzz target takes inputs up to the 4096-byte fuzz cap" {
+    var input: [4096]u8 = undefined;
+    for (&input, 0..) |*byte, i| byte.* = @truncate(i *% 131 +% 7);
+    const lengths = [_]usize{ 252, 253, 254, 255, 256, 257, 1024, 4096 };
+    for (lengths) |len| {
+        fuzz_codecs.runTarget(std.testing.allocator, .all, input[0..len]) catch {};
+    }
+}
+
 // Coverage-guided fuzz entry point over every codec target. Under plain
 // `zig build test` the seed corpus runs once (a per-commit regression gate);
 // under `zig build test --fuzz` the Zig fuzzer explores new inputs with

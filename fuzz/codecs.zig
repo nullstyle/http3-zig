@@ -376,7 +376,9 @@ fn fuzzWebTransportSession(allocator: std.mem.Allocator, input: []const u8) void
         buf[0] = lead;
         buf[1] = 0x40;
         buf[2] = 0x41;
-        const tail_len = @min(input.len, buf.len - 3);
+        // `usize`: `@min` against the comptime bound 253 would type the
+        // result `u8`, and `3 + tail_len` would overflow at 256.
+        const tail_len: usize = @min(input.len, buf.len - 3);
         if (tail_len > 0) @memcpy(buf[3 .. 3 + tail_len], input[0..tail_len]);
         const total = 3 + tail_len;
         if (http3_zig.webtransport.decodeAnyStreamHeader(buf[0..total])) |_| {} else |_| {}
@@ -390,7 +392,7 @@ fn fuzzWebTransportSession(allocator: std.mem.Allocator, input: []const u8) void
         var buf: [256]u8 = undefined;
         buf[0] = 0x40;
         buf[1] = 0x54;
-        const tail_len = @min(input.len, buf.len - 2);
+        const tail_len: usize = @min(input.len, buf.len - 2);
         if (tail_len > 0) @memcpy(buf[2 .. 2 + tail_len], input[0..tail_len]);
         const total = 2 + tail_len;
         if (http3_zig.webtransport.decodeAnyStreamHeader(buf[0..total])) |_| {} else |_| {}
