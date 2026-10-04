@@ -9,6 +9,18 @@ breaking changes; see notes per release.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A tight peer uni window no longer breaks `Session.start`.** The
+  GREASE uni stream (`Config.enable_grease`, default on) opened right
+  after the control stream and before the QPACK streams, and a
+  `StreamLimitExceeded` on it failed `start()`. With a peer that allows
+  the three uni streams RFC 9114 §6.2 asks for, and QPACK streams on,
+  the session could not start. The failure also unwound
+  `control_stream_id`, so a retried `start()` would open a second
+  control stream (RFC 9114 §6.2.1: a connection error). The GREASE
+  stream now opens last, once, and is skipped when the window is full.
+
 ## [0.5.0] - 2026-10-04
 
 Verified toolchain: zig 0.17.0 (tagged), quic-zig v0.25.0,

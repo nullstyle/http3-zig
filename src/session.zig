@@ -348,6 +348,9 @@ pub const Session = struct {
     control_stream_id: ?u64 = null,
     qpack_encoder_stream_id: ?u64 = null,
     qpack_decoder_stream_id: ?u64 = null,
+    /// Latch: `start` tried the GREASE uni stream (`Config.enable_grease`)
+    /// once. It is optional, so a full peer uni window skips it for good.
+    grease_stream_attempted: bool = false,
     peer_control_stream_id: ?u64 = null,
     peer_qpack_encoder_stream_id: ?u64 = null,
     peer_qpack_decoder_stream_id: ?u64 = null,
@@ -567,6 +570,13 @@ pub const Session = struct {
             (self.qpack_encoder_stream_id == null or self.qpack_decoder_stream_id == null))
         {
             try self.openQpackStreams();
+        }
+        // After the required streams: the GREASE stream must never take a
+        // uni-window place the control or QPACK streams need (RFC 9114
+        // §6.2 asks peers for only three).
+        if (self.config.enable_grease and !self.grease_stream_attempted) {
+            self.grease_stream_attempted = true;
+            try self.openGreaseUniStream();
         }
     }
 
@@ -2850,16 +2860,22 @@ pub const Session = struct {
                 try self.writeControlFrame(.{ .max_push_id = max_push_id });
             }
         }
-        if (self.config.enable_grease) try self.openGreaseUniStream();
     }
 
     /// RFC 9114 §7.2.8 ¶2 + §6.2.3: open one stream of a reserved
     /// unidirectional type and FIN it immediately. Peers MUST either
     /// discard it or STOP_SENDING it (§6.2 ¶last); http3-zig's own receive
-    /// path does the latter. Runs once per session, from
-    /// `openControlStream` (guarded by `control_stream_id`).
+    /// path does the latter. Runs once per session, from `start` (guarded
+    /// by `grease_stream_attempted`). Best-effort: when the peer's uni
+    /// window is full the stream is skipped. Failing here would fail
+    /// `start`, and before this was split out of `openControlStream` it
+    /// also unwound `control_stream_id`, so the next `start` opened a
+    /// second control stream (RFC 9114 §6.2.1: a connection error).
     fn openGreaseUniStream(self: *Session) Error!void {
-        const id = (try self.quic.openNextUni()).id;
+        const id = (self.quic.openNextUni() catch |err| switch (err) {
+            error.StreamLimitExceeded => return,
+            else => return err,
+        }).id;
         try self.writeStreamType(id, protocol.greaseValue(grease_stream_type_n));
         try self.quic.streamFinish(id);
     }

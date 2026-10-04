@@ -34,12 +34,38 @@ pub fn handshake(client: *quic.Connection, server: *quic.Connection) !void {
     try std.testing.expect(server.handshakeDone());
 }
 
+/// The transport parameters every fixture connection advertises unless
+/// a test passes its own to `initConnectedQuicWith`.
+pub const default_transport_params: quic.tls.TransportParams = .{
+    .initial_max_data = 1 << 22,
+    .initial_max_stream_data_bidi_local = 1 << 20,
+    .initial_max_stream_data_bidi_remote = 1 << 20,
+    .initial_max_stream_data_uni = 1 << 20,
+    .initial_max_streams_bidi = 16,
+    .initial_max_streams_uni = 16,
+    .max_datagram_frame_size = 1200,
+};
+
 pub fn initConnectedQuic(
     allocator: std.mem.Allocator,
     client_tls: anytype,
     server_tls: anytype,
     client: *quic.Connection,
     server: *quic.Connection,
+) !void {
+    try initConnectedQuicWith(allocator, client_tls, server_tls, client, server, default_transport_params, default_transport_params);
+}
+
+/// `initConnectedQuic` with per-side transport parameters. Each side's
+/// `initial_max_streams_*` is the window it gives the OTHER side.
+pub fn initConnectedQuicWith(
+    allocator: std.mem.Allocator,
+    client_tls: anytype,
+    server_tls: anytype,
+    client: *quic.Connection,
+    server: *quic.Connection,
+    client_tp: quic.tls.TransportParams,
+    server_tp: quic.tls.TransportParams,
 ) !void {
     try quic.Connection.initClientAt(client, allocator, client_tls, "localhost");
     errdefer client.deinit();
@@ -56,17 +82,8 @@ pub fn initConnectedQuic(
     client.peer = server;
     server.peer = client;
 
-    const tp: quic.tls.TransportParams = .{
-        .initial_max_data = 1 << 22,
-        .initial_max_stream_data_bidi_local = 1 << 20,
-        .initial_max_stream_data_bidi_remote = 1 << 20,
-        .initial_max_stream_data_uni = 1 << 20,
-        .initial_max_streams_bidi = 16,
-        .initial_max_streams_uni = 16,
-        .max_datagram_frame_size = 1200,
-    };
-    try client.setTransportParams(tp);
-    try server.setTransportParams(tp);
+    try client.setTransportParams(client_tp);
+    try server.setTransportParams(server_tp);
 
     try handshake(client, server);
 
@@ -229,11 +246,29 @@ pub const H3Pair = struct {
     client_h3: http3_zig.Session,
     server_h3: http3_zig.Session,
 
+    pub const Options = struct {
+        client_transport_params: quic.tls.TransportParams = default_transport_params,
+        server_transport_params: quic.tls.TransportParams = default_transport_params,
+        /// Keep each config's `enable_grease`. Off by default: most tests
+        /// hand-open uni streams at fixed ids, which GREASE would shift.
+        keep_grease: bool = false,
+    };
+
     pub fn initStarted(
         self: *H3Pair,
         allocator: std.mem.Allocator,
         client_config: http3_zig.session.Config,
         server_config: http3_zig.session.Config,
+    ) !void {
+        try self.initStartedWith(allocator, client_config, server_config, .{});
+    }
+
+    pub fn initStartedWith(
+        self: *H3Pair,
+        allocator: std.mem.Allocator,
+        client_config: http3_zig.session.Config,
+        server_config: http3_zig.session.Config,
+        options: Options,
     ) !void {
         self.client_tls = try http3_zig.client.initTlsContext(.{ .verify = .none });
         errdefer self.client_tls.deinit();
@@ -241,7 +276,15 @@ pub const H3Pair = struct {
         self.server_tls = try http3_zig.server.initTlsContext(.{}, test_cert_pem, test_key_pem);
         errdefer self.server_tls.deinit();
 
-        try initConnectedQuic(allocator, self.client_tls, self.server_tls, &self.client, &self.server);
+        try initConnectedQuicWith(
+            allocator,
+            self.client_tls,
+            self.server_tls,
+            &self.client,
+            &self.server,
+            options.client_transport_params,
+            options.server_transport_params,
+        );
         errdefer {
             self.server.deinit();
             self.client.deinit();
@@ -253,8 +296,10 @@ pub const H3Pair = struct {
         // suite (keep_grease) and the real-socket examples/smokes.
         var client_cfg = client_config;
         var server_cfg = server_config;
-        client_cfg.enable_grease = false;
-        server_cfg.enable_grease = false;
+        if (!options.keep_grease) {
+            client_cfg.enable_grease = false;
+            server_cfg.enable_grease = false;
+        }
 
         self.client_h3 = http3_zig.Session.init(allocator, .client, &self.client, client_cfg);
         errdefer self.client_h3.deinit();

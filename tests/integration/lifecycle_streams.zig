@@ -625,3 +625,60 @@ test "a reclaimed stream is not resurrected by continued pumping" {
     try std.testing.expectEqual(@as(usize, 0), stream_finished_count);
     try std.testing.expectEqual(@as(usize, 0), pair.server_h3.openRequestStreamCount());
 }
+
+fn serverUniWindow(window: u64) http3_zig.quic.tls.TransportParams {
+    var tp = fixt.default_transport_params;
+    tp.initial_max_streams_uni = window;
+    return tp;
+}
+
+test "GREASE never stops session start when the peer's uni window fits only the required streams" {
+    // RFC 9114 §6.2: a peer SHOULD allow three uni streams (control and
+    // the two QPACK streams). The GREASE stream (§7.2.8) is optional, so
+    // it must not take one of those places, and it must not make
+    // `start()` fail when there is no room for it.
+    const allocator = std.testing.allocator;
+
+    var pair: H3Pair = undefined;
+    try pair.initStartedWith(
+        allocator,
+        .{ .enable_qpack_streams = true },
+        .{ .enable_qpack_streams = true },
+        .{ .server_transport_params = serverUniWindow(3), .keep_grease = true },
+    );
+    defer pair.deinit();
+
+    try std.testing.expect(pair.client_h3.control_stream_id != null);
+    try std.testing.expect(pair.client_h3.qpack_encoder_stream_id != null);
+    try std.testing.expect(pair.client_h3.qpack_decoder_stream_id != null);
+
+    try exchangePairSettings(allocator, &pair);
+    try std.testing.expectEqual(http3_zig.session.ShutdownState.active, pair.client_h3.shutdownState());
+    try std.testing.expectEqual(http3_zig.session.ShutdownState.active, pair.server_h3.shutdownState());
+}
+
+test "a GREASE stream that cannot open never leads to a second control stream" {
+    // RFC 9114 §6.2.1: a second control stream is a connection error
+    // (H3_STREAM_CREATION_ERROR). A failed optional stream must not undo
+    // the control stream that is already on the wire.
+    const allocator = std.testing.allocator;
+
+    var pair: H3Pair = undefined;
+    try pair.initStartedWith(
+        allocator,
+        .{},
+        .{},
+        .{ .server_transport_params = serverUniWindow(1), .keep_grease = true },
+    );
+    defer pair.deinit();
+
+    const control_id = pair.client_h3.control_stream_id orelse return error.MissingControlStream;
+    try exchangePairSettings(allocator, &pair);
+    // `start()` runs again on every driver step; it must stay a no-op.
+    try pair.client_h3.start();
+    try exchangePairSettings(allocator, &pair);
+
+    try std.testing.expectEqual(@as(?u64, control_id), pair.client_h3.control_stream_id);
+    try std.testing.expectEqual(http3_zig.session.ShutdownState.active, pair.client_h3.shutdownState());
+    try std.testing.expectEqual(http3_zig.session.ShutdownState.active, pair.server_h3.shutdownState());
+}
