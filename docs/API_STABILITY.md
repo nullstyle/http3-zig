@@ -49,8 +49,8 @@ but changes will be deliberate, called out in `CHANGELOG.md`, and kept minimal.
 
 ### Unstable / evolving — usable, but expect movement
 
-- **HTTP/3 early data (0-RTT).** The whole surface is new in the post-0.4.9
-  cycle and lands Unstable: `http3_zig.earlydata` (H3RS envelope codec,
+- **HTTP/3 early data (0-RTT).** The whole surface is new in 0.5.0
+  and lands Unstable: `http3_zig.earlydata` (H3RS envelope codec,
   `validateRememberedSettings`, `applicationContext`, `TicketBinder`),
   `Session.rememberPeerSettings` / `earlyDataStatus` /
   `requestArrivedInEarlyData`, `Event.early_data` /

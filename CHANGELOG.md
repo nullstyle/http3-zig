@@ -9,6 +9,14 @@ breaking changes; see notes per release.
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-10-04
+
+Verified toolchain: zig 0.17.0 (tagged), quic-zig v0.25.0,
+boringssl-zig 0.6.7. This release carries the quic-zig v0.25.0
+security fix: on every earlier http3-zig tag, one forged datagram can
+end a live connection. Upgrade. It also contains BREAKING changes
+since 0.4.9 (see "Changed (BREAKING)").
+
 ### Security
 
 - **quic-zig v0.25.0: one forged datagram no longer ends a
