@@ -56,12 +56,12 @@ For real-network numbers, see the WebTransport interop matrix
 | Field | Value |
 | --- | --- |
 | Host | Apple M5 Max, 18 cores |
-| OS | macOS (Darwin 25.6.0), arm64 |
-| Zig | 0.17.0-dev.1978+c961124d9 |
-| quic-zig | 0.19.0 |
+| OS | macOS (Darwin 27.0.0), arm64 |
+| Zig | 0.17.0 |
+| quic-zig | 0.25.0 |
 | Build mode | `ReleaseFast` |
 | Cache dirs | project defaults (`.zig-cache`, `.zig-global-cache`) |
-| Date | 2026-09-03 (send-path/QPACK allocation pass) |
+| Date | 2026-10-04 (Zig 0.17.0 + quic v0.25.0 pin move) |
 | Iterations | 10 warmup + 1000 measured |
 
 Reproduce with:
@@ -75,9 +75,9 @@ mise exec -- zig build bench -Doptimize=ReleaseFast
 ```
 | Operation | p50 | p99 | mean | max |
 | --- | ---: | ---: | ---: | ---: |
-| Session establish | 122.29 µs | 150.17 µs | 124.95 µs | 193.63 µs |
-| Datagram RT (64B) | 5.67 µs | 11.42 µs | 5.89 µs | 33.13 µs |
-| Uni stream RT (1KiB) | 5.25 µs | 8.96 µs | 5.21 µs | 24.25 µs |
+| Session establish | 128.79 µs | 164.75 µs | 130.63 µs | 198.83 µs |
+| Datagram RT (64B) | 4.33 µs | 6.83 µs | 4.36 µs | 14.17 µs |
+| Uni stream RT (1KiB) | 4.71 µs | 8.17 µs | 4.70 µs | 22.71 µs |
 ```
 
 Raw nanoseconds (the format the bench prints — useful for diffing
@@ -86,9 +86,20 @@ against future runs):
 ```
 | Operation | p50 ns | p99 ns | mean ns | max ns |
 | --- | ---: | ---: | ---: | ---: |
-| Session establish | 122290 | 150170 | 124950 | 193630 |
-| Datagram RT (64B) | 5670 | 11420 | 5890 | 33130 |
-| Uni stream RT (1KiB) | 5250 | 8960 | 5210 | 24250 |
+| Session establish | 128792 | 164750 | 130628 | 198833 |
+| Datagram RT (64B) | 4333 | 6833 | 4363 | 14166 |
+| Uni stream RT (1KiB) | 4708 | 8167 | 4703 | 22708 |
+
+The 2026-10-04 pin move (Zig 0.17.0-dev.1978 → 0.17.0, quic v0.19.0 →
+v0.25.0), measured same-machine with both trees built ReleaseFast and
+three alternating runs each (lowest p50 of each side; the table above
+is one later run, verbatim): establish 128.7 →
+127.8 µs (flat), datagram RT 5.96 → 4.08 µs (−32%), uni-stream RT
+5.42 → 4.71 µs (−13%). The gain is in the transport; http3-zig's
+code on these paths did not change. The previous published p50s were
+122.29 / 5.67 / 5.25 µs (2026-09-03, Darwin 25.6.0, quic v0.19.0); the
+establish row reads higher today on both pins, so compare same-day runs
+only.
 
 The 2026-09-03 allocation pass (zero-copy DATA/capsule stream writes,
 reused datagram send scratch, static-table borrows in QPACK decode,
@@ -116,7 +127,7 @@ example, session establishment is roughly 7.3 ms rather than
 - **CI regression check.** A future commit that bumps p50 by more
   than ~20% on this hardware is worth investigating.
 - **Rough cost model.** If you're sketching a feature that involves
-  N WT datagrams, multiply by ~6 µs per RT for an order-of-magnitude
+  N WT datagrams, multiply by ~4-5 µs per RT for an order-of-magnitude
   CPU estimate.
 - **Do not** treat these as latency commitments to consumers. Real
   network paths are dominated by RTT, not by these CPU costs.

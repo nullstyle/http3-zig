@@ -1,7 +1,7 @@
 # http3-zig
 
-A Zig-first HTTP/3 implementation for Zig 0.17.0-dev — the stack tracks
-Zig master; see [`mise.toml`](mise.toml) and `minimum_zig_version` in
+A Zig-first HTTP/3 implementation for Zig 0.17.0 — the stack pins tagged
+Zig releases; see [`mise.toml`](mise.toml) and `minimum_zig_version` in
 [`build.zig.zon`](build.zig.zon) for the verified floor. Built on top of
 [`quic-zig`](https://github.com/nullstyle/quic-zig) for QUIC transport
 and [`boringssl-zig`](https://github.com/nullstyle/boringssl-zig)

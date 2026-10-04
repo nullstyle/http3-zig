@@ -9,6 +9,22 @@ breaking changes; see notes per release.
 
 ## [Unreleased]
 
+### Security
+
+- **quic-zig v0.25.0: one forged datagram no longer ends a
+  connection.** On every earlier quic pin, 12 bytes (a short-header
+  first byte, the connection ID, three more bytes) made
+  `Connection.handle` return an error before anything was
+  authenticated. Anyone who saw one packet of a connection could send
+  them. Every loop in this repo ends on an error from `handle`
+  (`TransportEndpoint.handle`, the interop harnesses,
+  `examples/manual_pump_get.zig`), so a live HTTP/3 connection died.
+  quic v0.25.0 drops such a datagram inside `handle`; `try` is correct
+  again and no loop needed a change. Embedders that call `handle`
+  themselves get the fix with the pin. Regression test:
+  `tests/integration/unauthenticated_datagram.zig` (fails on the old
+  pin with `error.InsufficientCiphertext`).
+
 ### Added
 
 - The two deferred allocation/CPU follow-ups from the performance
@@ -199,6 +215,30 @@ breaking changes; see notes per release.
 
 ### Changed
 
+- **Toolchain: the tagged Zig 0.17.0 release; quic-zig v0.25.0;
+  boringssl-zig 0.6.7.** `mise.toml` and `minimum_zig_version` pin
+  `0.17.0` (quic v0.23.0+ refuses every 0.17.0-dev build, and the Zig
+  mirror deletes old dev builds). boringssl is repinned byte-for-byte
+  to quic v0.25.0's entry (0.6.7 at ff30fe9), so the diamond still
+  resolves to one `boringssl` module. The quic module http3-zig builds
+  is compiled at the build's own `-Doptimize` (it is recreated from
+  `src/root.zig`; quic's own Debug-by-default module is never used).
+  What the quic v0.20–v0.25 series changes for embedders:
+  - **No lifetime stream cap** (v0.24.0). A connection carries any
+    number of streams. `initial_max_streams_bidi` / `_uni` is now an
+    open-at-once window: a stream gives its id back when both
+    directions are finished. `StreamLimitExceeded` is always
+    temporary: pump, then retry. See the embedding guide, "Transport
+    Tuning", for window sizing (`W / (2 × RTT)` requests per second).
+  - `quic.transport.classifySendError` has a `.canceled` case (the
+    loop's own task was cancelled); exhaustive switches need it.
+  - Fixed upstream with no action here: a ~780 KB per-handshake
+    BoringSSL AEAD leak (v0.21.1), handshake recovery at the pace of
+    the round trip instead of a 1 s timer, `poll` no longer failing
+    with `TooManyInFlight`, and an honest `canSend` after the
+    handshake.
+- `bench/wt_bench.zig` pumps and retries when the uni stream window is
+  full instead of failing on `StreamLimitExceeded`.
 - **Toolchain advanced to Zig 0.17.0-dev.1978+c961124d9 and quic-zig
   v0.19.0.** The quic 0.14.0–0.19.0 series makes BBRv3 the default
   congestion controller, adds zero-copy stream reads, sheds inbound
@@ -454,6 +494,14 @@ breaking changes; see notes per release.
 
 ### Fixed
 
+- **A peer bidi stream refused by `Config.max_concurrent_peer_streams`
+  now also gets RESET_STREAM(H3_REQUEST_REJECTED).** The refusal sent
+  STOP_SENDING only, so our send half stayed open. On quic v0.24.0+
+  that keeps one stream-window place per refused stream for the life
+  of the connection: after `initial_max_streams_bidi` refusals the
+  peer could open no more streams, and the client never learned its
+  request was refused (RFC 9114 §4.1.1). Pinned by a 48-refusal test
+  on a window of 16.
 - Closed the audit's remaining polish items:
   `server.installEarlyDataContext` now returns the named
   `InstallEarlyDataContextError` union instead of a bare `!void`; the

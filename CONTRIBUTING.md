@@ -19,8 +19,9 @@ for what has shipped, and [`ROADMAP.md`](ROADMAP.md) for what's planned.
 
 http3-zig pins its toolchain via [`mise`](https://mise.jdx.dev/).
 The project file at [`mise.toml`](mise.toml) installs the pinned
-Zig 0.17.0 dev build (0.17.0-dev.1978+c961124d9) plus the project's
-auxiliary tools.
+Zig 0.17.0 release plus the project's auxiliary tools. In agent or
+scripted shells, run `mise exec -- zig ...`: another `zig` on `PATH`
+(for example zvm's) can shadow the mise pin.
 
 ```sh
 mise install

@@ -15,7 +15,7 @@ client-initiated uni stream, and `CLOSE_WEBTRANSPORT_SESSION`. The current
 `main` CI posture treats the WT matrix as advisory signal and the in-tree WT
 self-test as the hard gate.
 
-http3-zig pins **quic v0.19.0**; its external peers pin
+http3-zig pins **quic v0.25.0**; its external peers pin
 **webtransport-go v0.13.0** and **pywebtransport 0.20.0**, both on the
 current draft. The full flow is locally verified against both with the
 modern `webtransport-h3` token (we are a first-class draft-16 peer, not

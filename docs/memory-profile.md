@@ -39,16 +39,16 @@ working-set claim.
 ## The numbers
 
 2 000-iteration trace on the current tree (http3-zig against quic
-0.19.0):
+0.25.0, Zig 0.17.0, 2026-10-04):
 
 | Stage | iters | bytes-in-use | max-bytes-ever | Δ vs warm-up |
 | --- | ---: | ---: | ---: | ---: |
-| warm-up | 0 | 2 014 127 | 2 014 529 | +0 |
-| 500 iters | 500 | 2 144 383 | 2 147 064 | +130 256 |
-| 1k iters | 1 000 | 2 273 791 | 2 276 472 | +259 664 |
-| 2k iters | 2 000 | 2 532 607 | 2 535 288 | +518 480 |
+| warm-up | 0 | 2 014 127 | 2 014 488 | +0 |
+| 500 iters | 500 | 2 144 513 | 2 147 194 | +130 386 |
+| 1k iters | 1 000 | 2 273 921 | 2 276 602 | +259 794 |
+| 2k iters | 2 000 | 2 532 737 | 2 535 418 | +518 610 |
 
-**Δ bytes-in-use warm-up → 2k iters: +518 480 bytes over 2 000 iters
+**Δ bytes-in-use warm-up → 2k iters: +518 610 bytes over 2 000 iters
 (≈ 259 bytes/iter).** `gpa.deinit()` reports **ok** — every allocation
 made during the loop is reachable from the `Session` deinit chain.
 
@@ -58,10 +58,24 @@ transport grew its modern congestion-control spine, then quic 0.13.0's
 sent-packet tracker right-sizing (Initial/Handshake trackers 4096 → 256
 slots, capacity now an init-time choice) took it down to **≈ 1.87 MB /
 pair** — below even the 0.10 figure. On quic 0.19.0 the warm-up is
-**≈ 2.01 MB / pair** and the slope is ≈ 259 bytes/iter. The modest
+**≈ 2.01 MB / pair** and the slope is ≈ 259 bytes/iter; quic 0.25.0
+reads the same (warm-up identical to the byte, slope +130 bytes over
+2 000 iterations). The modest
 increase spans six transport releases and this aggregate profile does
 not isolate a single cause; teardown remains leak-clean and the slope
 stays well below the regression gate.
+
+**What this profile cannot see: the C heap.** The counting allocator
+wraps Zig allocations only. BoringSSL allocates with `malloc`, so the
+~640-byte-per-derivation AEAD-context leak that quic v0.21.1 fixed
+(Handshake and 0-RTT packet keys, re-derived per packet and per poll)
+never showed here. It also never ran here: the in-process fixture
+completes the handshake through quic's outbox→inbox shim, not through
+Handshake-level packets. Process peak memory agrees: the ReleaseFast
+`http3-zig-wt-bench` binary (1 010 fresh handshakes) peaked at
+10.8 MB RSS on quic 0.19.0 and 9.9 MB on 0.25.0, with an identical
+9.9 MB peak footprint. A real-socket, many-handshake workload is the
+place that leak would show.
 
 ## Verdict
 

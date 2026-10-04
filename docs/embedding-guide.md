@@ -254,6 +254,32 @@ Batched datapath, on `quic.transport.RunUdpOptions` (server) and
   kernel, probed per socket and degraded automatically; no effect on
   other platforms.
 
+Stream windows, on `quic.tls.TransportParams` (since quic 0.24):
+
+- `initial_max_streams_bidi` / `initial_max_streams_uni` is the number
+  of streams the peer may have open **at once**, not over the
+  connection's life. There is no lifetime stream cap: a stream gives its
+  id back when both of its directions are finished. The largest
+  accepted value is `quic.Connection.max_concurrent_streams_per_kind`
+  (4096).
+- Size the bidi window from the request rate you need. A request
+  stream gives its id back about two round trips after it opens, so a
+  window of `W` carries about `W / (2 × RTT)` requests per second
+  (quic measured 221.5/s for `W = 16` at a 30 ms RTT). 100 is the
+  value other stacks' interop servers use.
+- Count HTTP/3's own streams in the uni window. Each side holds its
+  control stream for the connection's life, plus the QPACK encoder and
+  decoder streams when dynamic QPACK (or `enable_qpack_streams`) is on:
+  up to three per side. The GREASE stream (`enable_grease`, default on)
+  takes one more place at session start and gives it back once the peer
+  stops it. WebTransport uni streams and push streams share what is
+  left.
+- `error.StreamLimitExceeded` from `openRequest` or a WebTransport
+  `openUniStream` / `openBidiStream` is always temporary: pump the
+  connection (the peer's MAX_STREAMS arrives as streams close), then
+  try again. `bench/wt_bench.zig` and `bench/wt_memory.zig` show the
+  pattern.
+
 For observing the result: `Session.transportStats()` (also on
 `TransportEndpoint`) snapshots the transport's `ConnectionStats` —
 bytes/packets/loss counters plus the active path's cwnd, RTT estimates,
