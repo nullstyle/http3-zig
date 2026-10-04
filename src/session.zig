@@ -2443,7 +2443,8 @@ pub const Session = struct {
             const state = self.ensureIncomingState(stream_id) catch |err| switch (err) {
                 // PeerStreamLimitExceeded is a per-stream rejection,
                 // not a fatal session error: ensureIncomingState
-                // already sent STOP_SENDING. Skip this stream and let
+                // already sent STOP_SENDING (and, for bidi, reset our
+                // send half). Skip this stream and let
                 // the pump advance to the next one. Subsequent peer
                 // bytes on the rejected stream are silently dropped
                 // when QUIC's reset/ack flow eventually fires.
@@ -4670,9 +4671,19 @@ pub const Session = struct {
         // error give the peer a clear signal and the application a
         // surfaced event (`request_rejected` for bidi via the existing
         // path; uni rejections fail the call).
+        //
+        // A bidi refusal also resets our send half. quic's stream limit
+        // is an open-at-once window (v0.24.0+): a stream gives its id
+        // back only when both directions are finished, so STOP_SENDING
+        // alone would keep one window place per refused stream for the
+        // life of the connection. The reset also tells a client its
+        // request was not processed (RFC 9114 §4.1.1).
         if (self.config.max_concurrent_peer_streams) |limit| {
             if (self.streams.count() >= limit) {
                 self.quic.streamStopSending(stream_id, protocol.ErrorCode.request_rejected) catch {};
+                if (!stream_mod.isUnidirectional(stream_id)) {
+                    self.quic.streamReset(stream_id, protocol.ErrorCode.request_rejected) catch {};
+                }
                 return Error.PeerStreamLimitExceeded;
             }
         }

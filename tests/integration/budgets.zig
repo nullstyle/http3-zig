@@ -282,6 +282,91 @@ test "session caps concurrent peer-opened streams via max_concurrent_peer_stream
     );
 }
 
+test "a peer bidi stream refused by max_concurrent_peer_streams gives its window place back" {
+    // quic v0.24.0+: `initial_max_streams_bidi` is an open-at-once
+    // window, and a stream gives its id back only when BOTH directions
+    // are finished. A refusal with STOP_SENDING alone leaves the
+    // server's send half open, so each refused stream holds a window
+    // place for the life of the connection. The refusal must also
+    // reset the send half (RFC 9114 §4.1.1: H3_REQUEST_REJECTED).
+    const allocator = std.testing.allocator;
+
+    var pair: H3Pair = undefined;
+    try pair.initStarted(allocator, .{}, .{});
+    defer pair.deinit();
+    try exchangePairSettings(allocator, &pair);
+
+    // Refuse every new peer stream from here on.
+    pair.server_h3.config.max_concurrent_peer_streams = pair.server_h3.streams.count();
+
+    var client_events: std.ArrayList(http3_zig.session.Event) = .empty;
+    defer {
+        clearSessionEvents(allocator, &client_events);
+        client_events.deinit(allocator);
+    }
+    var server_events: std.ArrayList(http3_zig.session.Event) = .empty;
+    defer {
+        clearSessionEvents(allocator, &server_events);
+        server_events.deinit(allocator);
+    }
+    var driver = http3_zig.TransportLoopback.init(
+        http3_zig.TransportEndpoint.withSession(&pair.client, &pair.client_h3, &client_events),
+        http3_zig.TransportEndpoint.withSession(&pair.server, &pair.server_h3, &server_events),
+        .{},
+    );
+    var packet: [2048]u8 = undefined;
+
+    const fields = [_]http3_zig.FieldLine{
+        .{ .name = ":method", .value = "GET" },
+        .{ .name = ":scheme", .value = "https" },
+        .{ .name = ":path", .value = "/refused" },
+        .{ .name = ":authority", .value = "localhost" },
+    };
+
+    // Three times the fixture's bidi window (16): with a leaked place
+    // per refusal, the window is full after 16 and never reopens.
+    const window = 16;
+    var refused: usize = 0;
+    while (refused < 3 * window) : (refused += 1) {
+        const stream_id = open: {
+            var tries: u32 = 0;
+            while (tries < 500) : (tries += 1) {
+                break :open pair.client_h3.openRequest(&fields) catch |err| switch (err) {
+                    // Always temporary: pump, then try again.
+                    error.StreamLimitExceeded => {
+                        _ = try driver.step(&packet);
+                        clearSessionEvents(allocator, &server_events);
+                        clearSessionEvents(allocator, &client_events);
+                        continue;
+                    },
+                    else => return err,
+                };
+            }
+            return error.StreamWindowNeverReopened;
+        };
+        try pair.client_h3.finishStream(stream_id);
+
+        var saw_reset = false;
+        var steps: u32 = 0;
+        while (!saw_reset and steps < 500) : (steps += 1) {
+            _ = try driver.step(&packet);
+            for (client_events.items) |event| switch (event) {
+                .stream_reset => |reset| if (reset.stream_id == stream_id) {
+                    try std.testing.expectEqual(http3_zig.protocol.ErrorCode.request_rejected, reset.error_code);
+                    saw_reset = true;
+                },
+                else => {},
+            };
+            clearSessionEvents(allocator, &server_events);
+            clearSessionEvents(allocator, &client_events);
+        }
+        try std.testing.expect(saw_reset);
+    }
+
+    try std.testing.expectEqual(http3_zig.session.ShutdownState.active, pair.server_h3.shutdownState());
+    try std.testing.expectEqual(http3_zig.session.ShutdownState.active, pair.client_h3.shutdownState());
+}
+
 test "session caps tracked request priorities under a PRIORITY_UPDATE flood" {
     // A peer flooding PRIORITY_UPDATE for distinct request stream ids must
     // not grow `request_priorities` unboundedly. Priorities are advisory
