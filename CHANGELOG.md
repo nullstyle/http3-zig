@@ -34,6 +34,9 @@ breaking changes; see notes per release.
   connection (16), and the soak's malloc slope (16 bytes/connection).
   Wall time is reported, never gated. CI gates Linux on every push;
   `just bench-e2e` gates the local OS. See `bench/baselines/README.md`.
+  WebTransport cells on one session of one connection: `wt_session`
+  (open + close), `wt_datagram` and `wt_uni` (echo round trips), with
+  retained bytes per operation gated too.
 - `RequestTracker.release` / `ResponseTracker.release` and
   `ServerRunner.release` / `ClientRunner.release`: free a finished
   exchange in one call.
@@ -44,6 +47,24 @@ breaking changes; see notes per release.
   connection closed (~380 bytes per request): the runner never drops
   state on its own and the example never released it. It now calls
   `runner.release` after serving; the embedding guide says to.
+- **A finished or reset WebTransport substream kept its stream state**
+  until the connection closed (~250 bytes each), and counted against
+  `max_concurrent_peer_streams`. With the production preset (1024) a
+  long-lived session stopped taking new uni streams after ~1000.
+  `finishWebTransportStream` and `resetWebTransportStream(WithCode)`
+  now mark the local side finished, as `finishStream` and
+  `resetStream` do.
+- **The embedding guide taught a loop order that can lose a FIN.** Its
+  "Pump Order" said handle, then `tick`, then drain. quic's `tick`
+  ends with its stream GC, which can reap a stream whose bare FIN
+  arrived before HTTP/3 read it; HTTP/3 then keeps that stream's
+  state until the connection closes (~390 bytes per WebTransport
+  session in bench-e2e). The guide now says handle, drain, process,
+  clear, then `tick` and `poll`. The interop clients use this order.
+  quic v0.27.0's `quic.transport.runUdpClient` calls its
+  `on_iteration` hook after `tick`, so a hook that drains HTTP/3 has
+  this risk until quic changes; see
+  `docs/upstream/quic-stream-gc-bare-fin.md`.
 
 ## [0.5.1] - 2026-10-05
 
