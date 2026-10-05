@@ -1017,6 +1017,17 @@ pub const ResponseTracker = struct {
         return entry.value;
     }
 
+    /// Removes a finished response and frees its state (`remove`, then
+    /// `deinit` and `destroy` with this tracker's allocator). Call it
+    /// once a response is consumed: the tracker never drops state on
+    /// its own, so a long-lived connection would otherwise keep every
+    /// response until `deinit`. No-op for an unknown stream id.
+    pub fn release(self: *ResponseTracker, stream_id: u64) void {
+        const state = self.remove(stream_id) orelse return;
+        state.deinit(self.allocator);
+        self.allocator.destroy(state);
+    }
+
     pub fn observe(
         self: *ResponseTracker,
         event: ResponseEvent,

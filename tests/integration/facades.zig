@@ -187,6 +187,41 @@ test "request tracker owns server request lifecycle" {
     try std.testing.expect(tracker.get(0) == null);
 }
 
+test "release frees finished tracker and runner state, and ignores unknown ids" {
+    // A long-lived connection must be able to drop each finished
+    // exchange; std.testing.allocator fails the test on a leak.
+    const allocator = std.testing.allocator;
+
+    var requests = http3_zig.RequestTracker.init(allocator);
+    defer requests.deinit();
+    _ = try requests.observe(.{ .data = .{ .stream_id = 0, .bytes = "body" } });
+    try std.testing.expect(requests.get(0) != null);
+    requests.release(0);
+    try std.testing.expect(requests.get(0) == null);
+    requests.release(0); // already gone: no-op
+    requests.release(1234); // never seen: no-op
+
+    var responses = http3_zig.ResponseTracker.init(allocator);
+    defer responses.deinit();
+    _ = try responses.observe(.{ .data = .{ .stream_id = 0, .bytes = "body" } });
+    try std.testing.expect(responses.get(0) != null);
+    responses.release(0);
+    try std.testing.expect(responses.get(0) == null);
+    responses.release(0);
+
+    var server_runner = http3_zig.ServerRunner.init(allocator);
+    defer server_runner.deinit();
+    _ = try server_runner.tracker.observe(.{ .data = .{ .stream_id = 4, .bytes = "x" } });
+    server_runner.release(4);
+    try std.testing.expect(server_runner.getRequest(4) == null);
+
+    var client_runner = http3_zig.ClientRunner.init(allocator);
+    defer client_runner.deinit();
+    _ = try client_runner.tracker.observe(.{ .data = .{ .stream_id = 4, .bytes = "x" } });
+    client_runner.release(4);
+    try std.testing.expect(client_runner.getResponse(4) == null);
+}
+
 test "request tracker enforces body budget" {
     const allocator = std.testing.allocator;
     var tracker = http3_zig.RequestTracker.initWithConfig(allocator, .{ .max_body_bytes = 5 });

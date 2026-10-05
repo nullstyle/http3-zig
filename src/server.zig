@@ -1781,6 +1781,18 @@ pub const RequestTracker = struct {
         return entry.value;
     }
 
+    /// Removes a finished request and frees its state (`remove`, then
+    /// `deinit` and `destroy` with this tracker's allocator). Call it
+    /// once a request is served: the tracker never drops state on its
+    /// own, so a long-lived connection would otherwise keep every
+    /// request until `deinit` (bench-e2e measured ~380 bytes per
+    /// request). No-op for an unknown stream id.
+    pub fn release(self: *RequestTracker, stream_id: u64) void {
+        const state = self.remove(stream_id) orelse return;
+        state.deinit(self.allocator);
+        self.allocator.destroy(state);
+    }
+
     pub fn observe(
         self: *RequestTracker,
         event: RequestEvent,

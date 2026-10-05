@@ -283,6 +283,13 @@ pub const ClientRunner = struct {
         return self.tracker.get(stream_id);
     }
 
+    /// Frees a finished response (`ResponseTracker.release`). Call it
+    /// once the response is consumed; the runner keeps every response
+    /// until then.
+    pub fn release(self: *ClientRunner, stream_id: u64) void {
+        self.tracker.release(stream_id);
+    }
+
     pub fn getPushedResponse(self: *const ClientRunner, push_id: u64) ?*client_mod.PushedResponseState {
         return self.push_tracker.get(push_id);
     }
@@ -398,6 +405,13 @@ pub const ServerRunner = struct {
 
     pub fn getRequest(self: *const ServerRunner, stream_id: u64) ?*server_mod.RequestState {
         return self.tracker.get(stream_id);
+    }
+
+    /// Frees a finished request (`RequestTracker.release`). Call it once
+    /// the request is served (or reset/rejected); the runner keeps every
+    /// request until then, so a long-lived connection grows without it.
+    pub fn release(self: *ServerRunner, stream_id: u64) void {
+        self.tracker.release(stream_id);
     }
 
     pub fn observe(
