@@ -1368,6 +1368,29 @@ test "WebTransport CLOSE capsule ends the session natively with typed events" {
     // sent CLOSE+FIN, the server the moment the CLOSE capsule folded.
     try std.testing.expect(pair.client_h3.webTransportSessionState(session_id) == .none);
     try std.testing.expect(pair.server_h3.webTransportSessionState(session_id) == .none);
+
+    // The server answers the CLOSE by finishing its side of the CONNECT
+    // stream (draft §6). Then the stream is closed both ways and neither
+    // end may keep its StreamState: a client that kept one per closed
+    // session grew ~380 bytes per session on a long-lived connection
+    // (bench-e2e wt_session).
+    try server_wt.?.finish();
+    var settle: u32 = 0;
+    while (settle < 200) : (settle += 1) {
+        try pumpH3(
+            &pair.client,
+            &pair.server,
+            &pair.client_h3,
+            &pair.server_h3,
+            &client_events,
+            &server_events,
+            &now_us,
+        );
+        clearSessionEvents(allocator, &server_events);
+        clearSessionEvents(allocator, &client_events);
+    }
+    try std.testing.expect(pair.server_h3.streams.get(session_id) == null);
+    try std.testing.expect(pair.client_h3.streams.get(session_id) == null);
 }
 
 test "WebTransport server-sent CLOSE surfaces natively on the client" {
@@ -2588,6 +2611,31 @@ test "WebTransport: 16 concurrent uni streams round-trip" {
         var expected_buf: [32]u8 = undefined;
         const expected = try std.fmt.bufPrint(&expected_buf, "stream-{d}-payload", .{i});
         try std.testing.expectEqualStrings(expected, per_stream_received[i].items);
+    }
+
+    // Every finished uni stream is reclaimed on both ends: the client
+    // opened and finished each one, the server read each to its FIN. A
+    // StreamState left per stream grows a long-lived session without
+    // bound and, past `max_concurrent_peer_streams`, refuses new streams
+    // (found by bench-e2e's wt_uni cell: ~250 bytes kept per stream).
+    var settle: u32 = 0;
+    while (settle < 200) : (settle += 1) {
+        try pumpH3(
+            &pair.client,
+            &pair.server,
+            &pair.client_h3,
+            &pair.server_h3,
+            &client_events,
+            &server_events,
+            &now_us,
+        );
+        clearSessionEvents(allocator, &server_events);
+        clearSessionEvents(allocator, &client_events);
+    }
+    var ids = stream_index_by_id.keyIterator();
+    while (ids.next()) |id| {
+        try std.testing.expect(pair.client_h3.streams.get(id.*) == null);
+        try std.testing.expect(pair.server_h3.streams.get(id.*) == null);
     }
 }
 

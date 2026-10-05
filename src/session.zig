@@ -939,6 +939,13 @@ pub const Session = struct {
     /// Sends a FIN on a WebTransport stream.
     pub fn finishWebTransportStream(self: *Session, stream_id: u64) Error!void {
         try self.quic.streamFinish(stream_id);
+        // As in `finishStream`: the send side is done, so a locally
+        // opened uni substream is fully closed and `gcClosedStreams`
+        // reclaims it. Without this every finished substream kept its
+        // StreamState for the life of the connection (~250 bytes each,
+        // bench-e2e wt_uni) and counted against
+        // `max_concurrent_peer_streams`.
+        if (self.streams.get(stream_id)) |state| state.locally_finished = true;
     }
 
     /// Resets a WebTransport stream with the application's 32-bit error code
@@ -950,6 +957,7 @@ pub const Session = struct {
         app_error_code: u32,
     ) Error!void {
         try self.quic.streamReset(stream_id, webtransport_mod.appErrorToHttp3(app_error_code));
+        if (self.streams.get(stream_id)) |state| state.locally_finished = true;
     }
 
     /// Resets a WebTransport stream with one of the reserved wire codes
@@ -961,6 +969,7 @@ pub const Session = struct {
         wire_code: u64,
     ) Error!void {
         try self.quic.streamReset(stream_id, wire_code);
+        if (self.streams.get(stream_id)) |state| state.locally_finished = true;
     }
 
     // ----------------------------------------------------------------------
