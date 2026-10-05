@@ -185,6 +185,18 @@ fn sendTolerant(io: std.Io, sock: anytype, dst: *const Net.IpAddress, bytes: []c
     };
 }
 
+/// The H3 cells and the WT cells run on separate servers so the WT
+/// settings and DATAGRAM parameter do not move the H3 baselines.
+fn sessionConfig(wt: bool) http3_zig.session.Config {
+    return http3_zig.SessionConfig.production(.{ .enable_webtransport = wt });
+}
+
+fn transportParamsFor(wt: bool) quic.tls.TransportParams {
+    var tp = transportParams();
+    if (wt) tp.max_datagram_frame_size = 1200;
+    return tp;
+}
+
 fn transportParams() quic.tls.TransportParams {
     return .{
         .max_idle_timeout_ms = 30_000,
@@ -210,6 +222,8 @@ const ServerConn = struct {
     endpoint: http3_zig.TransportEndpoint,
     events: std.ArrayList(http3_zig.session.Event),
     runner: http3_zig.ServerRunner,
+    /// WT server: accepted sessions by CONNECT stream id.
+    accepted: std.AutoHashMapUnmanaged(u64, http3_zig.WebTransportServerStream) = .empty,
 };
 
 const ServerTask = struct {
@@ -225,6 +239,8 @@ const ServerTask = struct {
     /// the runner (what examples/udp_server.zig did), to show what a
     /// long-lived connection then retains per request.
     keep_requests: bool = false,
+    /// Advertise WebTransport and echo WT datagrams and uni streams.
+    wt: bool = false,
     /// Live slots after the last loop iteration (closing ones included).
     live_slots: std.atomic.Value(u64) = .init(0),
 
@@ -246,6 +262,7 @@ const ServerTask = struct {
         const allocator = task.counting.allocator();
         state.session.clearEvents(&state.events);
         state.events.deinit(allocator);
+        state.accepted.deinit(allocator);
         state.runner.deinit();
         state.session.deinit();
         allocator.destroy(state);
@@ -257,7 +274,7 @@ const ServerTask = struct {
         const allocator = task.counting.allocator();
         const state = try allocator.create(ServerConn);
         state.* = .{
-            .session = http3_zig.Session.init(allocator, .server, slot.conn, http3_zig.SessionConfig.production(.{})),
+            .session = http3_zig.Session.init(allocator, .server, slot.conn, sessionConfig(task.wt)),
             .facade = undefined,
             .endpoint = undefined,
             .events = .empty,
@@ -274,9 +291,51 @@ const ServerTask = struct {
         _ = try state.endpoint.drainSession();
         defer _ = state.endpoint.clearEvents();
         for (state.events.items) |event| {
+            // WT echo first: datagrams back on the session, each uni
+            // stream's bytes back on a new server uni stream.
+            switch (event) {
+                .datagram => |dg| if (state.accepted.getPtr(dg.stream_id)) |wt| try wt.sendDatagram(dg.payload),
+                .webtransport_stream_data => |data| if (state.accepted.getPtr(data.session_id)) |wt| {
+                    const stream = try wt.openUniStream();
+                    try stream.write(data.data);
+                    try stream.finish();
+                },
+                .webtransport_session_closed => |closed| {
+                    // The peer's CLOSE ended the session; answer it by
+                    // finishing our side of the CONNECT stream (draft
+                    // §6: the receiver closes the stream). http3-zig
+                    // leaves this to the application; skipping it leaves
+                    // the client's CONNECT stream half-open for good.
+                    if (state.accepted.getPtr(closed.session_id)) |wt| wt.finish() catch {};
+                    _ = state.accepted.remove(closed.session_id);
+                    state.runner.release(closed.session_id);
+                    continue;
+                },
+                else => {},
+            }
             switch (try state.runner.observe(event)) {
+                .request_updated => |request| {
+                    // Accept only a session still waiting for its answer:
+                    // after it closes, a late event on the CONNECT stream
+                    // re-creates runner state, and accepting a closed
+                    // stream fails with StreamClosed.
+                    if (request.isWebTransport() and !state.accepted.contains(request.stream_id) and
+                        state.session.webTransportSessionState(request.stream_id) == .pending)
+                    {
+                        const wt = try state.facade.acceptWebTransport(allocator, request.reader(), .{});
+                        try state.accepted.put(allocator, request.stream_id, wt);
+                    }
+                },
                 .request_complete => |request| {
                     const stream_id = request.stream_id;
+                    // A WT session's CONNECT stream completes when the
+                    // client closes it, and a late FIN after the session
+                    // closed re-creates an empty request (no headers):
+                    // neither gets an answer. Free what the runner made.
+                    if (request.isWebTransport() or request.headers == null) {
+                        state.runner.release(stream_id);
+                        continue;
+                    }
                     _ = try state.facade.respond(allocator, stream_id, .{ .status = "200", .body = response_body });
                     // Release the finished exchange: a long-lived
                     // connection must not keep every request it served.
@@ -296,7 +355,7 @@ const ServerTask = struct {
             .tls_cert_pem = task.cert_pem,
             .tls_key_pem = task.key_pem,
             .alpn_protocols = &alpn,
-            .transport_params = transportParams(),
+            .transport_params = transportParamsFor(task.wt),
             .on_connection_will_close = onWillClose,
             .on_connection_will_close_user_data = task,
             // Thousands of handshakes from one source address are this
@@ -329,7 +388,12 @@ const ServerTask = struct {
             }
             for (server.iterator()) |slot| {
                 const state = task.ensureState(slot) catch continue;
-                task.pump(state) catch state.session.close(http3_zig.protocol.ErrorCode.internal_error, "");
+                task.pump(state) catch |err| {
+                    // A bench server error is a bench failure: say which.
+                    std.debug.print("bench-e2e: server session error: {s}\n", .{@errorName(err)});
+                    task.failed.store(true, .release);
+                    state.session.close(http3_zig.protocol.ErrorCode.internal_error, "");
+                };
             }
             for (server.iterator()) |slot| {
                 if (slot.conn.closeState() == .closed) continue;
@@ -366,6 +430,9 @@ const ClientConn = struct {
     /// `--seed-allocs`: extra allocate+free pairs per GET, to prove the
     /// allocation gate trips (ablation).
     seed_allocs: usize = 0,
+    /// WT echoes seen (counted in `step`).
+    wt_datagrams: u64 = 0,
+    wt_uni_bytes: u64 = 0,
 
     /// Opens the socket and the connection; `self` must stay at this
     /// address (the facade and endpoint point into it).
@@ -375,6 +442,7 @@ const ClientConn = struct {
         io: std.Io,
         tls: boringssl.tls.Context,
         server_addr: Net.IpAddress,
+        wt: bool,
     ) !void {
         const local = try Net.IpAddress.parseLiteral("127.0.0.1:0");
         const sock = try Net.IpAddress.bind(&local, io, .{ .mode = .dgram, .protocol = .udp });
@@ -388,7 +456,7 @@ const ClientConn = struct {
         try conn.setInitialDcid(&initial_dcid);
         try conn.setPeerDcid(&initial_dcid);
         try conn.setLocalScid(&local_scid);
-        try conn.setTransportParams(transportParams());
+        try conn.setTransportParams(transportParamsFor(wt));
 
         self.* = .{
             .allocator = allocator,
@@ -396,7 +464,7 @@ const ClientConn = struct {
             .sock = sock,
             .server_addr = server_addr,
             .conn = conn,
-            .h3 = http3_zig.Session.init(allocator, .client, conn, http3_zig.SessionConfig.production(.{})),
+            .h3 = http3_zig.Session.init(allocator, .client, conn, sessionConfig(wt)),
             .facade = undefined,
             .runner = http3_zig.ClientRunner.init(allocator),
             .events = .empty,
@@ -415,14 +483,14 @@ const ClientConn = struct {
         self.sock.close(self.io);
     }
 
-    /// One loop step: drive TLS, drain H3, send, wait up to 1 ms for a
-    /// datagram, handle it, tick.
+    /// One loop step: drive TLS, send, wait up to 1 ms for a datagram,
+    /// handle it, drain H3, tick. Read before `tick`: `tick` runs
+    /// quic's stream GC, which can reap a stream whose last FIN arrived
+    /// before the H3 session saw it (a WT CONNECT stream's FIN then left
+    /// its H3 state orphaned: ~380 bytes per closed session).
     fn step(self: *ClientConn) !void {
         const now_us = nowUs(self.io);
         try self.conn.advance();
-        _ = try self.endpoint.drainSession();
-        for (self.events.items) |event| _ = try self.runner.observe(event);
-        _ = self.endpoint.clearEvents();
         while (try self.conn.poll(&self.tx, now_us)) |n| {
             try sendTolerant(self.io, self.sock, &self.server_addr, self.tx[0..n]);
         }
@@ -433,6 +501,16 @@ const ClientConn = struct {
             .fatal => return err,
         };
         if (maybe_msg) |msg| try self.conn.handle(msg.data, null, nowUs(self.io));
+        _ = try self.endpoint.drainSession();
+        for (self.events.items) |event| {
+            switch (event) {
+                .datagram => self.wt_datagrams += 1,
+                .webtransport_stream_data => |data| self.wt_uni_bytes += data.data.len,
+                else => {},
+            }
+            _ = try self.runner.observe(event);
+        }
+        _ = self.endpoint.clearEvents();
         try self.conn.tick(nowUs(self.io));
     }
 
@@ -465,6 +543,75 @@ const ClientConn = struct {
         }
     }
 
+    fn waitSettings(self: *ClientConn) !void {
+        const deadline = nowUs(self.io) + op_timeout_us;
+        while (self.h3.peer_settings == null) {
+            if (nowUs(self.io) > deadline) return error.SettingsTimedOut;
+            try self.step();
+        }
+    }
+
+    /// Extended CONNECT and wait for the 2xx.
+    fn wtOpen(self: *ClientConn) !http3_zig.WebTransportClientStream {
+        const wt = try self.facade.startWebTransport(self.allocator, .{
+            .scheme = "https",
+            .authority = "localhost",
+            .path = "/wt",
+        });
+        const deadline = nowUs(self.io) + op_timeout_us;
+        while (true) {
+            if (nowUs(self.io) > deadline) return error.WebTransportTimedOut;
+            try self.step();
+            const response = self.runner.getResponse(wt.sessionId()) orelse continue;
+            if (response.headers == null) continue;
+            if (!response.webTransportAccepted()) return error.WebTransportRejected;
+            return wt;
+        }
+    }
+
+    /// CLOSE_WEBTRANSPORT_SESSION, then wait until the peer's transport
+    /// has acknowledged the whole CONNECT stream, then free its state.
+    fn wtClose(self: *ClientConn, wt: *http3_zig.WebTransportClientStream) !void {
+        const id = wt.sessionId();
+        try wt.close(0, "");
+        const deadline = nowUs(self.io) + op_timeout_us;
+        while (true) {
+            if (nowUs(self.io) > deadline) return error.WebTransportCloseTimedOut;
+            try self.step();
+            const acked = if (self.h3.streamSendState(id)) |s|
+                s.acked_bytes == s.written_bytes and !s.has_pending
+            else |err| switch (err) {
+                error.MissingStream => true,
+                else => return err,
+            };
+            if (acked) break;
+        }
+        self.runner.release(id);
+    }
+
+    fn wtDatagramRoundTrip(self: *ClientConn, wt: *http3_zig.WebTransportClientStream) !void {
+        const before = self.wt_datagrams;
+        try wt.sendDatagram("bench-datagram-payload-0123456789abcdef0123456789abcdef0123");
+        const deadline = nowUs(self.io) + op_timeout_us;
+        while (self.wt_datagrams == before) {
+            if (nowUs(self.io) > deadline) return error.DatagramTimedOut;
+            try self.step();
+        }
+    }
+
+    fn wtUniRoundTrip(self: *ClientConn, wt: *http3_zig.WebTransportClientStream) !void {
+        const payload = "bench-uni-payload-0123456789abcdef0123456789abcdef0123456789ab";
+        const target = self.wt_uni_bytes + payload.len;
+        const stream = try wt.openUniStream();
+        try stream.write(payload);
+        try stream.finish();
+        const deadline = nowUs(self.io) + op_timeout_us;
+        while (self.wt_uni_bytes < target) {
+            if (nowUs(self.io) > deadline) return error.UniStreamTimedOut;
+            try self.step();
+        }
+    }
+
     /// H3 close plus a few steps so the CONNECTION_CLOSE leaves.
     fn close(self: *ClientConn) void {
         self.h3.close(http3_zig.protocol.ErrorCode.no_error, "");
@@ -476,7 +623,7 @@ const ClientConn = struct {
 // Cells
 // ---------------------------------------------------------------------
 
-const Cell = enum { h3_connect, h3_get, soak };
+const Cell = enum { h3_connect, h3_get, soak, wt_session, wt_datagram, wt_uni };
 
 const Latency = struct {
     samples: std.ArrayList(u64) = .empty,
@@ -525,6 +672,9 @@ const Bench = struct {
     server: *ServerTask,
     server_addr: Net.IpAddress,
     tls: boringssl.tls.Context,
+    /// The WT server (WT cells only).
+    wt_server: ?*ServerTask = null,
+    wt_server_addr: Net.IpAddress = undefined,
     seed_leak_bytes: usize = 0,
     seed_allocs: usize = 0,
 
@@ -537,7 +687,7 @@ const Bench = struct {
     fn oneConnection(self: *Bench, totals: *quic.ConnectionStats) !void {
         const conn = try self.allocator.create(ClientConn);
         defer self.allocator.destroy(conn);
-        try conn.init(self.allocator, self.io, self.tls, self.server_addr);
+        try conn.init(self.allocator, self.io, self.tls, self.server_addr, false);
         defer conn.deinit();
         try conn.get();
         conn.close();
@@ -586,7 +736,7 @@ const Bench = struct {
         try latency.samples.ensureTotalCapacity(std.heap.page_allocator, n);
         const conn = try self.allocator.create(ClientConn);
         defer self.allocator.destroy(conn);
-        try conn.init(self.allocator, self.io, self.tls, self.server_addr);
+        try conn.init(self.allocator, self.io, self.tls, self.server_addr, false);
         defer conn.deinit();
         conn.seed_allocs = self.seed_allocs;
         // Warm-up: handshake, SETTINGS, QPACK state, first stream.
@@ -648,6 +798,76 @@ const Bench = struct {
             if (nowUs(self.io) > deadline) return error.ServerNeverQuiesced;
             try std.Io.sleep(self.io, std.Io.Duration.fromMilliseconds(5), .awake);
         }
+    }
+
+    /// One WT session on one connection: N session open+close pairs
+    /// (`wt_session`), or N datagram / uni-stream round trips on one
+    /// open session. Same counts as `h3_get`, retained bytes included.
+    fn wtCell(self: *Bench, cell: Cell, n: u64) !CellResult {
+        const server = self.wt_server.?;
+        var latency: Latency = .{};
+        defer latency.samples.deinit(std.heap.page_allocator);
+        try latency.samples.ensureTotalCapacity(std.heap.page_allocator, n);
+        const conn = try self.allocator.create(ClientConn);
+        defer self.allocator.destroy(conn);
+        try conn.init(self.allocator, self.io, self.tls, self.wt_server_addr, true);
+        defer conn.deinit();
+        try conn.waitSettings();
+        var wt = try conn.wtOpen();
+
+        const op = struct {
+            fn run(c: *ClientConn, which: Cell, session: *http3_zig.WebTransportClientStream) !void {
+                switch (which) {
+                    .wt_session => {
+                        var s = try c.wtOpen();
+                        try c.wtClose(&s);
+                    },
+                    .wt_datagram => try c.wtDatagramRoundTrip(session),
+                    .wt_uni => try c.wtUniRoundTrip(session),
+                    else => unreachable,
+                }
+            }
+        }.run;
+        for (0..16) |_| try op(conn, cell, &wt);
+        const settle_deadline = nowUs(self.io) + op_timeout_us;
+        while (server.live_slots.load(.monotonic) > 1) {
+            if (nowUs(self.io) > settle_deadline) return error.ServerNeverQuiesced;
+            try conn.step();
+        }
+
+        const before = conn.conn.stats();
+        const client_heap0 = self.client_counting.bytes_in_use.load(.monotonic);
+        const server_heap0 = server.counting.bytes_in_use.load(.monotonic);
+        const c0 = self.client_counting.allocs.load(.monotonic);
+        const s0 = server.counting.allocs.load(.monotonic);
+        const t0 = nowUs(self.io);
+        for (0..n) |_| {
+            const start = nowUs(self.io);
+            try op(conn, cell, &wt);
+            latency.samples.appendAssumeCapacity(nowUs(self.io) - start);
+        }
+        const wall = nowUs(self.io) - t0;
+        const after = conn.conn.stats();
+        for (0..50) |_| try conn.step();
+        const client_heap1 = self.client_counting.bytes_in_use.load(.monotonic);
+        const server_heap1 = server.counting.bytes_in_use.load(.monotonic);
+        try conn.wtClose(&wt);
+        conn.close();
+        return .{
+            .cell = cell,
+            .ops = n,
+            .wall_us = wall,
+            .p50_us = latency.percentile(50),
+            .p99_us = latency.percentile(99),
+            .client_allocs_per_op = perOp(self.client_counting.allocs.load(.monotonic) - c0, n),
+            .server_allocs_per_op = perOp(server.counting.allocs.load(.monotonic) - s0, n),
+            .client_packets_sent_per_op = perOp(after.packets_sent - before.packets_sent, n),
+            .client_packets_received_per_op = perOp(after.packets_received - before.packets_received, n),
+            .client_bytes_sent_per_op = perOp(after.bytes_sent - before.bytes_sent, n),
+            .client_bytes_received_per_op = perOp(after.bytes_received - before.bytes_received, n),
+            .client_retained_bytes_per_op = signedPerOp(client_heap1, client_heap0, n),
+            .server_retained_bytes_per_op = signedPerOp(server_heap1, server_heap0, n),
+        };
     }
 
     /// N connections, with the C-heap seed leak when asked for.
@@ -723,8 +943,8 @@ fn printResult(r: CellResult) void {
             r.client_bytes_sent_per_op,   r.client_bytes_received_per_op,
         });
     }
-    if (r.cell == .h3_get) {
-        std.debug.print("  Zig heap retained per request on the open connection: client {d:.1}, server {d:.1} bytes\n", .{
+    if (r.client_retained_bytes_per_op != 0 or r.server_retained_bytes_per_op != 0 or r.cell == .h3_get) {
+        std.debug.print("  Zig heap retained per op on the open connection: client {d:.1}, server {d:.1} bytes\n", .{
             r.client_retained_bytes_per_op, r.server_retained_bytes_per_op,
         });
     }
@@ -832,12 +1052,12 @@ fn checkAgainst(io: std.Io, allocator: std.mem.Allocator, path: []const u8, resu
     var ok = true;
     for (results) |r| {
         const name = @tagName(r.cell);
-        if (r.cell == .h3_get) {
+        if (r.cell == .h3_get or r.cell == .wt_session or r.cell == .wt_datagram or r.cell == .wt_uni) {
             inline for (.{ "client", "server" }) |side| {
                 const v = if (comptime std.mem.eql(u8, side, "client")) r.client_retained_bytes_per_op else r.server_retained_bytes_per_op;
                 const pass = v <= max_retained_bytes_per_op;
-                std.debug.print("  h3_get {s} retained: {d:.1} bytes/request (limit {d:.1}) {s}\n", .{
-                    side, v, max_retained_bytes_per_op, if (pass) "ok" else "FAIL",
+                std.debug.print("  {s} {s} retained: {d:.1} bytes/op (limit {d:.1}) {s}\n", .{
+                    name, side, v, max_retained_bytes_per_op, if (pass) "ok" else "FAIL",
                 });
                 ok = ok and pass;
             }
@@ -870,7 +1090,7 @@ fn checkAgainst(io: std.Io, allocator: std.mem.Allocator, path: []const u8, resu
 pub fn main(init: std.process.Init) !void {
     const io = init.io;
 
-    var cells: [3]Cell = undefined;
+    var cells: [6]Cell = undefined;
     var cell_count: usize = 0;
     var n_override: ?u64 = null;
     var json_path: ?[]const u8 = null;
@@ -903,8 +1123,8 @@ pub fn main(init: std.process.Init) !void {
         }
     }
     if (cell_count == 0) {
-        cells = .{ .h3_connect, .h3_get, .soak };
-        cell_count = 3;
+        cells = .{ .h3_connect, .h3_get, .soak, .wt_session, .wt_datagram, .wt_uni };
+        cell_count = 6;
     }
 
     var cert_buf: [16 * 1024]u8 = undefined;
@@ -945,15 +1165,44 @@ pub fn main(init: std.process.Init) !void {
     };
 
     std.debug.print("bench-e2e: real loopback UDP, server on 127.0.0.1:{d}, {s}\n", .{ server_addr.getPort(), @tagName(builtin.mode) });
-    var results: [3]CellResult = undefined;
+    // WT cells get their own server (WT settings, DATAGRAM parameter).
+    var wants_wt = false;
+    for (cells[0..cell_count]) |cell| switch (cell) {
+        .wt_session, .wt_datagram, .wt_uni => wants_wt = true,
+        else => {},
+    };
+    const wt_sock = try Net.IpAddress.bind(&listen, io, .{ .mode = .dgram, .protocol = .udp });
+    defer wt_sock.close(io);
+    var wt_server: ServerTask = .{
+        .counting = .{ .backing = std.heap.c_allocator },
+        .io = io,
+        .sock = wt_sock,
+        .cert_pem = cert_pem,
+        .key_pem = key_pem,
+        .wt = true,
+    };
+    var wt_thread: ?std.Thread = null;
+    if (wants_wt) {
+        wt_thread = try std.Thread.spawn(.{}, ServerTask.run, .{&wt_server});
+        bench.wt_server = &wt_server;
+        bench.wt_server_addr = wt_sock.address;
+    }
+    defer if (wt_thread) |t| {
+        wt_server.stop.store(true, .release);
+        t.join();
+    };
+
+    var results: [6]CellResult = undefined;
     for (cells[0..cell_count], 0..) |cell, i| {
         results[i] = switch (cell) {
             .h3_connect => try bench.h3Connect(n_override orelse 200),
             .h3_get => try bench.h3Get(n_override orelse 2000),
             .soak => try bench.soak(n_override orelse 1000),
+            .wt_session => try bench.wtCell(cell, n_override orelse 500),
+            .wt_datagram, .wt_uni => try bench.wtCell(cell, n_override orelse 2000),
         };
         printResult(results[i]);
-        if (server.failed.load(.acquire)) return error.ServerLoopFailed;
+        if (server.failed.load(.acquire) or wt_server.failed.load(.acquire)) return error.ServerLoopFailed;
     }
     if (json_path) |path| try writeJson(io, path, results[0..cell_count]);
     if (check_path) |path| {
