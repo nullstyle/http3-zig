@@ -138,9 +138,6 @@ pub fn main(init: std.process.Init) !void {
         // to bootstrap from, so the very first ClientHello has to come out of
         // `advance` → `flush` → wire.
         try conn.advance();
-        _ = try endpoint.drainSession();
-        _ = try runner.observeBatch(events.items, &completed);
-        clearEvents(allocator, &events);
 
         var sink = UdpSink{ .socket = sock, .io = io, .peer = remote_addr };
         _ = try endpoint.flush(&tx, now_us, &sink);
@@ -157,6 +154,12 @@ pub fn main(init: std.process.Init) !void {
         if (maybe_msg) |msg| {
             try endpoint.handle(msg.data, null, now_us);
         }
+
+        // Read before `tick`: tick runs quic's stream GC, which can reap
+        // a stream whose last FIN arrived before HTTP/3 saw it.
+        _ = try endpoint.drainSession();
+        _ = try runner.observeBatch(events.items, &completed);
+        clearEvents(allocator, &events);
 
         try endpoint.tick(now_us);
         now_us += http3_zig.driver.default_step_us;

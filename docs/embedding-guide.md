@@ -92,28 +92,40 @@ order:
 
 0. Clients only, once at connect time: run the handshake state machine with
    `quic.advance()` (or `TransportEndpoint.advance`) so the first ClientHello
-   is queued for step 3. `quic.Client.connect` deliberately defers this
+   is queued for step 6. `quic.Client.connect` deliberately defers this
    so 0-RTT data can be staged first — on a real network there is no inbound
    packet to bootstrap from, so a client that skips `advance` hangs before
    its first flight. `quic.transport.runUdpClient` performs the call
    itself; loopback examples/tests rely on the in-process peer shim instead
    and never need it.
 1. Read UDP datagrams from your socket and pass each one to `quic.handle`.
-2. Advance QUIC timers with `quic.tick(now_us)`.
-3. Poll outgoing QUIC datagrams with `quic.poll` until it returns `null`, then
-   send those bytes through your socket.
-4. Start the HTTP/3 session once the QUIC connection is usable. `Session.start`
-   is idempotent, and `TransportEndpoint.drainSession` calls it automatically.
-5. Drain HTTP/3 events with `h3.drain(&events)`.
-6. Process events and call back into `Client`, `Server`, writer handles, or
+2. Start the HTTP/3 session once the QUIC connection is usable and drain
+   HTTP/3 events with `h3.drain(&events)`. `Session.start` is idempotent,
+   and `TransportEndpoint.drainSession` calls it automatically.
+3. Process events and call back into `Client`, `Server`, writer handles, or
    `Session` as your application policy requires.
-7. Free drained events with `h3.clearEvents(&events)`, then reuse or deinit
+4. Free drained events with `h3.clearEvents(&events)`, then reuse or deinit
    the event list according to your loop's allocation policy. The
    session-bound call is the recommended form: event payloads are cloned out
    of the *session's* allocator, and this binding supplies it implicitly.
    (`http3_zig.clearEvents(allocator, &events)` exists for contexts without
    a session pointer; handing it any other allocator — e.g. the events
    list's — is silent memory corruption.)
+5. Advance QUIC timers with `quic.tick(now_us)`.
+6. Poll outgoing QUIC datagrams with `quic.poll` until it returns `null`, then
+   send those bytes through your socket.
+
+Drain (step 2) before `tick` (step 5). `tick` runs quic's stream garbage
+collection. It can reap a stream whose last FIN arrived in step 1 before
+HTTP/3 has read that FIN. HTTP/3 then never sees the stream end, and its
+per-stream state stays until the connection closes. With
+`handle` → `tick` → `drain`, a WebTransport session whose CONNECT
+stream the peer ends with a bare FIN kept about 390 bytes per session
+on a long-lived connection; the real-socket bench
+(`zig build bench-e2e`) found it. quic v0.27.0's
+`quic.transport.runUdpClient` calls its `on_iteration` hook after
+`tick`, so a hook that drains HTTP/3 has this risk
+(`docs/upstream/quic-stream-gc-bare-fin.md`).
 
 The small `http3_zig.TransportEndpoint` helper keeps the repeated QUIC/H3 order
 in one place without owning sockets or clocks:
@@ -121,14 +133,8 @@ in one place without owning sockets or clocks:
 ```zig
 var endpoint = http3_zig.TransportEndpoint.withSession(&quic, &h3, &events);
 
-try endpoint.tick(now_us);
-
 while (try udpRecv(socket, packet_buf[0..])) |packet| {
     try endpoint.handle(packet.bytes, packet.from, now_us);
-}
-
-while (try endpoint.poll(packet_buf[0..], now_us)) |n| {
-    try udpSend(socket, peer_addr, packet_buf[0..n]);
 }
 
 _ = try endpoint.drainSession();
@@ -136,6 +142,12 @@ for (events.items) |event| {
     // Classify, route, and respond here.
 }
 _ = endpoint.clearEvents();
+
+try endpoint.tick(now_us);
+
+while (try endpoint.poll(packet_buf[0..], now_us)) |n| {
+    try udpSend(socket, peer_addr, packet_buf[0..n]);
+}
 ```
 
 `TransportLoopback` is just the in-process version of this pattern for examples

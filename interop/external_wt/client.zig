@@ -439,7 +439,6 @@ fn pumpOnce(
     // bootstrap the handshake from — the very first ClientHello has
     // to come out of `advance` → `poll` → wire.
     try conn.advance();
-    _ = try endpoint.drainSession();
 
     const Sink = struct {
         socket: @TypeOf(sock),
@@ -474,6 +473,10 @@ fn pumpOnce(
     if (maybe_msg) |msg| {
         try endpoint.handle(msg.data, null, now_us);
     }
+    // Drain after handle and before the caller's `tick`: tick runs
+    // quic's stream GC, which can reap a stream whose last FIN arrived
+    // before HTTP/3 saw it (docs/embedding-guide.md, "Pump Order").
+    _ = try endpoint.drainSession();
 }
 
 fn clearEvents(

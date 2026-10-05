@@ -487,7 +487,7 @@ const ClientConn = struct {
     /// handle it, drain H3, tick. Read before `tick`: `tick` runs
     /// quic's stream GC, which can reap a stream whose last FIN arrived
     /// before the H3 session saw it (a WT CONNECT stream's FIN then left
-    /// its H3 state orphaned: ~380 bytes per closed session).
+    /// its H3 state orphaned: ~390 bytes per closed session).
     fn step(self: *ClientConn) !void {
         const now_us = nowUs(self.io);
         try self.conn.advance();
