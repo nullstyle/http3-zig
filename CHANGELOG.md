@@ -9,6 +9,17 @@ breaking changes; see notes per release.
 
 ## [Unreleased]
 
+### Changed
+
+- **quic-zig v0.27.0** (session tickets that live through a restart;
+  boringssl pin unchanged). No http3-zig code change: we pass
+  `Client.Config.resumption_state` and never call
+  `setRememberedPeerTransportParams`. Visible behavior: a resumed client
+  can no longer open more early (0-RTT) request streams than the server
+  allowed on the ticket's connection (the next one fails locally with
+  `StreamLimitExceeded`), and 0-RTT data behind a Retry now goes early.
+  bench-e2e allocation counts are unchanged.
+
 ### Added
 
 - **Real-socket bench tier: `zig build bench-e2e`** (always
