@@ -9,6 +9,20 @@ breaking changes; see notes per release.
 
 ## [Unreleased]
 
+### Added
+
+- **Firefox WebTransport interop.** The `wt-browser-interop` Firefox
+  job ran for the first time and passes (`era=draft02`); it now runs on
+  every push (advisory until it soaks). Its first runs found three
+  harness faults, none in http3-zig's protocol code: a self-signed CA
+  cert as the server cert, Firefox's HTTP/3 opt-out for non-built-in
+  roots, and an in-tree WT server that served one QUIC connection
+  (Firefox opens two).
+- The in-tree WT interop server (`interop/external_wt/server.zig`) runs
+  on `quic.Server` and serves any number of connections; the WT and H3
+  interop clients pick random connection IDs (RFC 9000 §7.2). New gate
+  `interop/external_wt/two_clients.sh`.
+
 ### Changed
 
 - **quic-zig v0.26.0** ("every legal peer connects": RFC 9000/9001

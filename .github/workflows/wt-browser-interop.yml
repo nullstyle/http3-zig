@@ -24,9 +24,18 @@ on:
 # workflow_dispatch runs, read at the log line "PASS chrome browser
 # interop (era=draft02)": 37233767659, 37234405745 (plus 37234953527,
 # 37235460219, and six weekly scheduled passes 2026-08-30..10-04).
-# PROMOTION CRITERION (kept for the firefox job, and for re-promotion):
-# two consecutive green workflow_dispatch runs post-landing. The firefox job is workflow_dispatch-gated until it has
-# two green runs; lift its `if:` with the same criterion.
+# PROMOTION CRITERION (for re-promotion, and for the firefox job's last
+# step): two consecutive green runs, read at the PASS log line.
+#
+# FIREFOX (2026-10-04/05): its first real runs found three faults, all
+# in our harness, none in http3-zig's protocol code: a self-signed CA
+# cert as the server cert (TLS alert 42), Firefox's HTTP/3 opt-out for
+# non-built-in roots, and a test server that served one QUIC connection
+# when Firefox opens two. Then two consecutive green dispatched runs,
+# "PASS firefox browser interop (era=draft02)": 37273251146,
+# 37273727252. Its dispatch-only `if:` is lifted, so it runs on every
+# push and schedule; it stays advisory until two consecutive green runs
+# there, then drop its `continue-on-error`.
 #
 # DEMOTION RULE (pre-agreed, not a debate): two failures within a week
 # for causes not attributable to http3-zig (browser rollout breakage,
@@ -102,8 +111,8 @@ jobs:
           retention-days: 14
 
   firefox:
-    # Dispatch-gated until two green runs (see promotion criterion above).
-    if: github.event_name == 'workflow_dispatch'
+    # Runs on every event since 2026-10-05; advisory until two green
+    # push/schedule runs (see the FIREFOX note above).
     name: WT browser interop (Firefox latest vs http3-zig server)
     runs-on: ubuntu-latest
     timeout-minutes: 20
