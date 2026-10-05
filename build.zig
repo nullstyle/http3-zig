@@ -789,6 +789,32 @@ pub fn build(b: *std.Build) void {
     );
     mem_profile_step.dependOn(&run_wt_memory.step);
 
+    // Real-socket bench tier (sprint 2026-10-W2): a `quic.Server` loop
+    // on a background thread and real QUIC clients over loopback UDP.
+    // Same private ReleaseSafe module set as mem-profile. Run from the
+    // repository root (reads tests/data/ certs).
+    const bench_e2e_mod = b.createModule(.{
+        .root_source_file = b.path("bench/e2e.zig"),
+        .target = target,
+        .optimize = mem_profile_optimize,
+        .link_libc = true,
+    });
+    bench_e2e_mod.addImport("http3_zig", http3_zig_safe_mod);
+    bench_e2e_mod.addImport("quic", quic_safe_mod);
+    bench_e2e_mod.addImport("boringssl", boringssl_safe_mod);
+    const bench_e2e = b.addExecutable(.{
+        .name = "http3-zig-bench-e2e",
+        .root_module = bench_e2e_mod,
+    });
+    const install_bench_e2e = b.addInstallArtifact(bench_e2e, .{});
+    const bench_e2e_build_step = b.step("bench-e2e-build", "Build the real-socket bench tier (always ReleaseSafe)");
+    bench_e2e_build_step.dependOn(&install_bench_e2e.step);
+    const run_bench_e2e = b.addRunArtifact(bench_e2e);
+    run_bench_e2e.setCwd(b.path("."));
+    run_bench_e2e.addPassthruArgs();
+    const bench_e2e_step = b.step("bench-e2e", "Run the real-socket bench tier: H3 connect/GET and a memory soak over loopback UDP (always ReleaseSafe)");
+    bench_e2e_step.dependOn(&run_bench_e2e.step);
+
     // WebTransport concurrent-session load test. Spins up 100 WT
     // sessions on a single QUIC connection and exercises uni
     // streams, bidirectional datagrams, and per-session WT_MAX_DATA

@@ -205,3 +205,49 @@ jobs:
 
       - name: zig build mem-profile (memory regression gate)
         run: zig build mem-profile
+
+  # Real-socket bench tier (docs/sprints/2026-10-W2.md): H3 connect/GET
+  # over loopback UDP and a many-connection memory soak. Report-only
+  # until the Linux baseline lands (task B3); the JSON is uploaded.
+  bench-e2e:
+    timeout-minutes: 30
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout http3-zig
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Set up mise (zig master + project tools)
+        uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4
+        with:
+          install: true
+          cache: true
+
+      - name: Cache Zig packages
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: .zig-global-cache
+          key: zig-global-cache-${{ hashFiles('build.zig.zon') }}
+          restore-keys: zig-global-cache-
+
+      - name: Prefetch Zig dependencies (retry on network flake)
+        run: |
+          for i in 1 2 3 4 5; do
+            if zig build --fetch; then exit 0; fi
+            echo "fetch attempt $i failed; retrying in $((i * 10))s"
+            sleep $((i * 10))
+          done
+          echo "::error::dependency prefetch failed after 5 attempts"
+          exit 1
+
+      - name: zig build bench-e2e
+        run: zig build bench-e2e -- --json bench-e2e.json
+
+      - name: Upload the bench report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: bench-e2e-${{ github.run_id }}
+          path: bench-e2e.json
+          if-no-files-found: ignore
+          retention-days: 30
+
