@@ -9,6 +9,14 @@ breaking changes; see notes per release.
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-10-05
+
+Verified toolchain: zig 0.17.0, quic-zig v0.26.0, boringssl-zig 0.6.7.
+No API change. quic-zig v0.26.0 (RFC 9000/9001 repairs), a fix for
+session start against a peer with a tight uni-stream window, and
+Firefox joins the hard-gated WebTransport interop. Releases now
+publish the package hash instead of an empty library archive.
+
 ### Added
 
 - **Firefox WebTransport interop.** The `wt-browser-interop` Firefox
