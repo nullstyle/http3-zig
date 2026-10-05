@@ -77,6 +77,33 @@ Handshake-level packets. Process peak memory agrees: the ReleaseFast
 9.9 MB peak footprint. A real-socket, many-handshake workload is the
 place that leak would show.
 
+## Real-socket soak (`zig build bench-e2e -- --cell soak`)
+
+The profile above counts the Zig heap of an in-process pair. The
+real-socket tier adds the C heap. It opens connections over loopback
+UDP (handshake through real Handshake packets, SETTINGS, one GET,
+close), waits until the server has reaped every connection, and reads
+the bytes **malloc** reports in use (`malloc_zone_statistics` on macOS,
+`mallinfo2` on Linux glibc) — BoringSSL's allocations and, in this
+binary, the Zig side too. The slope is taken over the second of two
+phases of N connections, so tables that grow once to a new high-water
+mark do not count.
+
+2026-10-05: macOS reads exactly 0.0 bytes per connection over 1,000 and
+2,000 connections (584,688 bytes before and after); Linux CI reads 3.1.
+A seeded C-heap leak (`--seed-leak 64`) reads back as exactly 64.0, so
+the gate (16 bytes per connection) would catch a leak of that size or
+larger. RSS is printed too, but it is not a leak signal: it grew 10-40
+KB per connection on macOS with nothing leaking, from the allocator
+keeping freed pages.
+
+Two numbers from the same runs, for context: a `quic.Server` holds about
+1.1 MB of Zig heap per live connection, and a closed connection stays
+live while it drains. And `h3_get` reads the Zig heap a long-lived
+connection retains per request: 0.0 on both sides with
+`ServerRunner.release`, 377 bytes on the server without it (what
+`examples/udp_server.zig` did until 2026-10-05).
+
 ## Verdict
 
 Per-iteration growth is **≈ 259 bytes/iter**, down **~91 %** from the

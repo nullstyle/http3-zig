@@ -9,6 +9,31 @@ breaking changes; see notes per release.
 
 ## [Unreleased]
 
+### Added
+
+- **Real-socket bench tier: `zig build bench-e2e`** (always
+  ReleaseSafe). A `quic.Server` loop on a background thread and real
+  QUIC clients over loopback UDP. Cells: `h3_connect` (connections:
+  handshake, SETTINGS, GET, close), `h3_get` (requests on one
+  connection), and `soak` (bytes malloc reports in use, C heap
+  included, after the server has reaped every connection, over the
+  second of two phases). `--check bench/baselines/e2e-<os>.json` gates
+  allocations per operation (one new allocation fails), packets/bytes
+  per operation (25%), bytes retained per request on a long-lived
+  connection (16), and the soak's malloc slope (16 bytes/connection).
+  Wall time is reported, never gated. CI gates Linux on every push;
+  `just bench-e2e` gates the local OS. See `bench/baselines/README.md`.
+- `RequestTracker.release` / `ResponseTracker.release` and
+  `ServerRunner.release` / `ClientRunner.release`: free a finished
+  exchange in one call.
+
+### Fixed
+
+- **`examples/udp_server.zig` kept every request it served** until the
+  connection closed (~380 bytes per request): the runner never drops
+  state on its own and the example never released it. It now calls
+  `runner.release` after serving; the embedding guide says to.
+
 ## [0.5.1] - 2026-10-05
 
 Verified toolchain: zig 0.17.0, quic-zig v0.26.0, boringssl-zig 0.6.7.

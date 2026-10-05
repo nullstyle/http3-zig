@@ -110,6 +110,31 @@ RT); first post-rebuild runs read ~5-8% hot and are discarded per the
 lowest-of-runs convention below.
 ```
 
+## Real-socket tier (`zig build bench-e2e`)
+
+The numbers above are in-process. `bench/e2e.zig` runs a `quic.Server`
+loop on a background thread and real QUIC clients over loopback UDP
+(ReleaseSafe), so the packet path, the server's connection-ID demux,
+and the kernel are in the loop. Recorded 2026-10-05 in
+`bench/baselines/`:
+
+| Cell | macOS arm64 (M5 Max) | Linux x86_64 (CI runner) |
+| --- | --- | --- |
+| `h3_connect` (handshake, SETTINGS, GET, close) | 491/s, p50 2.0 ms | 985/s, p50 1.1 ms |
+| `h3_get` (one connection) | 3,131/s, p50 123 us | 15,890/s, p50 53 us |
+| allocations per connection (client / server) | 74 / 88 | 74 / 88 |
+| allocations per GET (client / server) | 17 / 22 | 17 / 22 |
+| client packets per connection (sent / received) | 9.0 / 7.5 | 9.0 / 7.0 |
+| client bytes per connection (sent / received) | 1,571 / 3,867 | 1,571 / 2,652 |
+| client bytes per GET (sent / received) | 82 / 48 | 82 / 48 |
+
+What CI gates (`bench/baselines/README.md`): the allocation counts
+(identical on both systems; one new allocation per operation fails),
+packets and bytes (25%), retained bytes per request, and the memory
+soak. Not the times: the macOS loop waits on a 1 ms receive timer more
+often, so its times are mostly a measure of that timer, and on a
+shared runner they move with nothing changed.
+
 ## Notes on variance
 
 p50 was stable across re-runs (within ~5%). p99 / max jitter is
