@@ -307,7 +307,12 @@ switch (request_event) {
 Use `ClientRunner` and `ServerRunner` when you want owned request/response
 lifecycle state that outlives the current drain. Runners accumulate headers,
 body bytes, trailers, and terminal state, and their body growth can be capped
-with tracker configs. Raw events are better for large uploads/downloads,
+with tracker configs. **Release each exchange when you are done with it**
+(`ServerRunner.release(stream_id)` after serving a request, reset and
+rejected ones included; `ClientRunner.release(stream_id)` after reading a
+response). A runner never drops state on its own: a long-lived connection
+that skips this keeps every request it served, ~380 bytes each
+(bench-e2e). Raw events are better for large uploads/downloads,
 proxies, or tools that stream directly into an application buffer.
 `observeBatch` returns `RunnerBatchStats`; use `stats.madeProgress()` and
 `total.accumulate(stats)` when a harness wants to detect or aggregate runner

@@ -352,7 +352,16 @@ pub const App = struct {
         _ = try state.endpoint.drainSession();
         for (state.events.items) |event| {
             switch (try state.runner.observe(event)) {
-                .request_complete => |request| try app.serveRequest(state, request),
+                .request_complete => |request| {
+                    // Free the finished exchange once served (reset and
+                    // rejected ones too). The runner keeps every request
+                    // until released: without this a long-lived
+                    // connection holds ~380 bytes per request served
+                    // (bench-e2e, `--server-keep-requests`).
+                    const stream_id = request.stream_id;
+                    defer state.runner.release(stream_id);
+                    try app.serveRequest(state, request);
+                },
                 .connection_closed => |closed| std.debug.print(
                     "[server] conn {d}: close observed (source={s} code={d})\n",
                     .{ state.slot_id, @tagName(closed.source), closed.error_code },
