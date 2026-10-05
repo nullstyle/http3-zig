@@ -116,9 +116,9 @@ order:
    send those bytes through your socket.
 
 Drain (step 2) before `tick` (step 5). `tick` runs quic's stream garbage
-collection. It can reap a stream whose last FIN arrived in step 1 before
-HTTP/3 has read that FIN. HTTP/3 then never sees the stream end, and its
-per-stream state stays until the connection closes. With
+collection. It can reap a stream whose last FIN (or RESET_STREAM)
+arrived in step 1 before HTTP/3 has read it. HTTP/3 then never sees the
+stream end, and its per-stream state stays until the connection closes. With
 `handle` → `tick` → `drain`, a WebTransport session whose CONNECT
 stream the peer ends with a bare FIN kept about 390 bytes per session
 on a long-lived connection; the real-socket bench

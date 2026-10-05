@@ -1,7 +1,8 @@
 # quic-zig: `tick` can reap a stream before the app sees its FIN
 
 For: the quic-zig session. Found by http3-zig on 2026-10-05, on quic
-v0.27.0 (`bench-e2e`, cell `wt_session`). Not sent yet.
+v0.27.0 (`bench-e2e`, cell `wt_session`). Sent to the quic-zig session
+on 2026-10-05 (user approved).
 
 ## What happens
 
@@ -22,9 +23,11 @@ no read has reported is not "done" for the app. RFC 9000 section 3.2
 calls the terminal state "Data Read": the app read all data, FIN
 included.
 
-By reading the code only (not tested): `.reset_recvd` is in
-`recvFullyTerminated` too. A RESET_STREAM that arrives before a `tick`
-can be reaped before the app sees the reset.
+`.reset_recvd` is in `recvFullyTerminated` too. A RESET_STREAM that
+arrives before a `tick` is reaped before the app sees the reset. The
+quic-zig session measured both cases on v0.27.0 (2026-10-05): after a
+`tick`, `streamReadFin` gives `error.StreamNotFound` for a clean end
+and for a reset. The app cannot tell a complete stream from a cut one.
 
 ## Effect in http3-zig
 
@@ -50,10 +53,11 @@ We cannot do this with `quic.transport.runUdpClient`. It calls its
 ## Possible fixes in quic-zig (your choice)
 
 1. GC reaps a receive half only at `.data_read` or `.reset_read`: the
-   app saw the end. `streamReadFin` already calls `markRead` when it
-   reports `fin`. An app that never reads a stream keeps it (as for
-   any unread stream); `recv_stopped` streams are already discarded by
-   the GC.
+   app saw the end. Correction from the quic-zig session: no read path
+   calls `markRead` today (only tests do), so every read path needs
+   new marking. Risk: an app that reads by length and never asks for
+   the end keeps every stream, and the stream window gives no credit
+   back. `recv_stopped` streams are already discarded by the GC.
 2. Keep the GC. Document "read every readable stream before `tick`".
    Move the `runUdpClient` hook to run before `tick` (after `handle`).
 
@@ -72,3 +76,15 @@ mise exec -- zig build bench-e2e -- --cell wt_session --check bench/baselines/e2
 On quic v0.27.0 this fails: `wt_session client retained: 392.7
 bytes/op (limit 16.0) FAIL` (measured 2026-10-05). With a fix it
 passes. The current order (drain, then `tick`) passes on v0.27.0.
+
+## Answer from quic-zig (2026-10-05)
+
+Confirmed and measured. Not repaired yet: the repair is a design
+choice for a later quic-zig sprint. Done now in quic-zig (docs only, on
+main): a "KNOWN TRAP" paragraph in `src/transport/udp_client.zig` and a
+"Measured, not changed" CHANGELOG entry. Their record:
+`~/.claude/projects/-Users-nullstyle-prj-zig-quic-zig/handoff/FINDING-2026-10-05-stream-end-lost-after-tick.md`.
+Their first idea (not measured): run the `runUdpClient` hook before
+`tick`, and add an event for the end of a stream (FIN, or reset with
+its code), so no loop order can lose it. They tell us with the
+release. Keep drain-before-tick after a repair too: it costs nothing.
