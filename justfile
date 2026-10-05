@@ -119,6 +119,6 @@ build-all:
     zig build examples
     zig build fuzz-codecs fuzz-corpus fuzz-wt-interleaved seed-fuzz-corpus
     zig build qpack-dynamic-fixtures install-wt-interop-matrix
-    zig build bench-build mem-profile-build wt-load-build
+    zig build bench-build mem-profile-build wt-load-build bench-e2e-build
 
 check: fmt test build-all
