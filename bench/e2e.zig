@@ -14,10 +14,13 @@
 //!     connection: allocations (client and server) and packets/bytes.
 //!   * `h3_get` — N sequential `GET /` on ONE connection. Requests per
 //!     second, latency, and per request: allocations and packets/bytes.
-//!   * `soak` — N sequential connections (as `h3_connect`) while peak
-//!     process RSS (C heap included) is sampled; reports bytes of RSS
-//!     growth per connection after a warm-up. A leak in BoringSSL's C
-//!     heap (quic v0.21.1 fixed one) shows here and nowhere else.
+//!   * `soak` — two phases of N connections (as `h3_connect`). After
+//!     each phase the server reaps every connection, then the bytes
+//!     malloc reports in use (C heap: BoringSSL and the Zig side) are
+//!     read; the slope over phase 2 is bytes left behind per
+//!     connection. A leak in BoringSSL's C heap (quic v0.21.1 fixed
+//!     one) shows here and nowhere else. RSS is printed too, but it is
+//!     not a leak signal: allocators keep freed pages.
 //!
 //! Wall-clock numbers are reported, not gated: on a shared runner they
 //! move by several percent with nothing changed (quic-zig measured ~5%
@@ -359,6 +362,9 @@ const ClientConn = struct {
     endpoint: http3_zig.TransportEndpoint,
     rx: [64 * 1024]u8 = undefined,
     tx: [64 * 1024]u8 = undefined,
+    /// `--seed-allocs`: extra allocate+free pairs per GET, to prove the
+    /// allocation gate trips (ablation).
+    seed_allocs: usize = 0,
 
     /// Opens the socket and the connection; `self` must stay at this
     /// address (the facade and endpoint point into it).
@@ -431,6 +437,11 @@ const ClientConn = struct {
 
     /// `GET /` and wait for the complete 200. Frees the response state.
     fn get(self: *ClientConn) !void {
+        for (0..self.seed_allocs) |_| {
+            const extra = try self.allocator.alloc(u8, 32);
+            std.mem.doNotOptimizeAway(extra.ptr);
+            self.allocator.free(extra);
+        }
         const request = try self.facade.request(self.allocator, .{
             .method = "GET",
             .scheme = "https",
@@ -513,6 +524,7 @@ const Bench = struct {
     server_addr: Net.IpAddress,
     tls: boringssl.tls.Context,
     seed_leak_bytes: usize = 0,
+    seed_allocs: usize = 0,
 
     fn perOp(total: u64, ops: u64) f64 {
         return @as(f64, @floatFromInt(total)) / @as(f64, @floatFromInt(@max(ops, 1)));
@@ -574,6 +586,7 @@ const Bench = struct {
         defer self.allocator.destroy(conn);
         try conn.init(self.allocator, self.io, self.tls, self.server_addr);
         defer conn.deinit();
+        conn.seed_allocs = self.seed_allocs;
         // Warm-up: handshake, SETTINGS, QPACK state, first stream.
         for (0..16) |_| try conn.get();
         const before = conn.conn.stats();
@@ -614,21 +627,10 @@ const Bench = struct {
         }
     }
 
-    fn soak(self: *Bench, n: u64) !CellResult {
-        var totals = std.mem.zeroes(quic.ConnectionStats);
-        // Warm-up: allocator pools, TLS caches, the server's slot table.
-        const warm = @max(n / 10, 50);
-        for (0..warm) |_| try self.oneConnection(&totals);
-        try self.quiesce();
-        const rss_warm = try currentRssBytes(self.io);
-        const malloc_warm = try mallocInUseBytes();
-        const client_heap_warm = self.client_counting.bytes_in_use.load(.monotonic);
-        const server_heap_warm = self.server.counting.bytes_in_use.load(.monotonic);
-        const c0 = self.client_counting.allocs.load(.monotonic);
-        const s0 = self.server.counting.allocs.load(.monotonic);
-        const t0 = nowUs(self.io);
+    /// N connections, with the C-heap seed leak when asked for.
+    fn soakPhase(self: *Bench, n: u64, totals: *quic.ConnectionStats) !void {
         for (0..n) |_| {
-            try self.oneConnection(&totals);
+            try self.oneConnection(totals);
             // `--seed-leak`: a C-heap leak per connection, to prove the
             // gate trips (ablation). Never freed, by design.
             if (self.seed_leak_bytes != 0) {
@@ -639,6 +641,26 @@ const Bench = struct {
                 std.mem.doNotOptimizeAway(p);
             }
         }
+    }
+
+    /// Two phases of N connections; the reported slope is over phase 2
+    /// only. Phase 1 lets one-time growth settle: tables that grow to a
+    /// new high-water mark of live (draining) connections keep their
+    /// capacity, which is not a leak (first Linux CI run: +7.7 KB of
+    /// server Zig heap once, 16.6 B/connection over one phase). A real
+    /// leak grows by the same amount in both phases.
+    fn soak(self: *Bench, n: u64) !CellResult {
+        var totals = std.mem.zeroes(quic.ConnectionStats);
+        try self.soakPhase(n, &totals);
+        try self.quiesce();
+        const rss_warm = try currentRssBytes(self.io);
+        const malloc_warm = try mallocInUseBytes();
+        const client_heap_warm = self.client_counting.bytes_in_use.load(.monotonic);
+        const server_heap_warm = self.server.counting.bytes_in_use.load(.monotonic);
+        const c0 = self.client_counting.allocs.load(.monotonic);
+        const s0 = self.server.counting.allocs.load(.monotonic);
+        const t0 = nowUs(self.io);
+        try self.soakPhase(n, &totals);
         const wall = nowUs(self.io) - t0;
         try self.quiesce();
         const rss_end = try currentRssBytes(self.io);
@@ -723,6 +745,86 @@ fn writeJson(io: std.Io, path: []const u8, results: []const CellResult) !void {
     try w.flush();
 }
 
+// ---------------------------------------------------------------------
+// Gate (`--check <baseline.json>`, sprint task B3)
+// ---------------------------------------------------------------------
+
+/// The numbers a baseline holds, as `writeJson` writes them.
+const BaselineCell = struct {
+    cell: []const u8,
+    client_allocs_per_op: f64,
+    server_allocs_per_op: f64,
+    client_packets_sent_per_op: f64,
+    client_packets_received_per_op: f64,
+    client_bytes_sent_per_op: f64,
+    client_bytes_received_per_op: f64,
+};
+
+const Baseline = struct {
+    schema: []const u8,
+    cells: []const BaselineCell,
+};
+
+/// Tolerances. Allocation counts are deterministic (same code path per
+/// operation; macOS and Linux CI read 74/88 and 17/22, with at most
+/// +0.02 of noise), so the limit is the baseline plus half an
+/// allocation: one new allocation per operation fails. Packet and byte
+/// counts move with ACK timing on a busy machine, so they get 25%.
+/// Wall time is never gated. The soak's malloc slope is absolute: after the
+/// server has reaped every connection nothing may stay behind (a
+/// 64-byte-per-connection seeded leak reads as exactly 64.0).
+const alloc_ratio = 1.0;
+const alloc_slack = 0.5;
+const wire_ratio = 1.25;
+const packet_slack = 0.5;
+const byte_slack = 64.0;
+const max_malloc_growth_bytes_per_op = 16.0;
+
+fn checkMetric(name: []const u8, cell: []const u8, current: f64, baseline: f64, ratio: f64, slack: f64) bool {
+    const limit = baseline * ratio + slack;
+    const ok = current <= limit;
+    std.debug.print("  {s} {s}: {d:.2} (baseline {d:.2}, limit {d:.2}) {s}\n", .{
+        cell, name, current, baseline, limit, if (ok) "ok" else "FAIL",
+    });
+    return ok;
+}
+
+fn checkAgainst(io: std.Io, allocator: std.mem.Allocator, path: []const u8, results: []const CellResult) !bool {
+    var buf: [64 * 1024]u8 = undefined;
+    const text = try std.Io.Dir.cwd().readFile(io, path, &buf);
+    const parsed = try std.json.parseFromSlice(Baseline, allocator, text, .{ .ignore_unknown_fields = true });
+    defer parsed.deinit();
+    if (!std.mem.eql(u8, parsed.value.schema, "http3-zig-bench-e2e-v1")) return error.UnknownBaselineSchema;
+
+    std.debug.print("gate: {s}\n", .{path});
+    var ok = true;
+    for (results) |r| {
+        const name = @tagName(r.cell);
+        if (r.cell == .soak) {
+            const pass = r.malloc_growth_bytes_per_op <= max_malloc_growth_bytes_per_op;
+            std.debug.print("  soak malloc growth: {d:.1} bytes/connection (limit {d:.1}) {s}\n", .{
+                r.malloc_growth_bytes_per_op, max_malloc_growth_bytes_per_op, if (pass) "ok" else "FAIL",
+            });
+            ok = ok and pass;
+        }
+        const base = for (parsed.value.cells) |c| {
+            if (std.mem.eql(u8, c.cell, name)) break c;
+        } else {
+            std.debug.print("  {s}: no baseline entry, not gated\n", .{name});
+            continue;
+        };
+        ok = checkMetric("client allocs/op", name, r.client_allocs_per_op, base.client_allocs_per_op, alloc_ratio, alloc_slack) and ok;
+        ok = checkMetric("server allocs/op", name, r.server_allocs_per_op, base.server_allocs_per_op, alloc_ratio, alloc_slack) and ok;
+        if (r.cell == .soak) continue; // its wire counts are not collected
+        ok = checkMetric("packets sent/op", name, r.client_packets_sent_per_op, base.client_packets_sent_per_op, wire_ratio, packet_slack) and ok;
+        ok = checkMetric("packets received/op", name, r.client_packets_received_per_op, base.client_packets_received_per_op, wire_ratio, packet_slack) and ok;
+        ok = checkMetric("bytes sent/op", name, r.client_bytes_sent_per_op, base.client_bytes_sent_per_op, wire_ratio, byte_slack) and ok;
+        ok = checkMetric("bytes received/op", name, r.client_bytes_received_per_op, base.client_bytes_received_per_op, wire_ratio, byte_slack) and ok;
+    }
+    std.debug.print("gate: {s}\n", .{if (ok) "PASS" else "FAIL"});
+    return ok;
+}
+
 pub fn main(init: std.process.Init) !void {
     const io = init.io;
 
@@ -731,6 +833,8 @@ pub fn main(init: std.process.Init) !void {
     var n_override: ?u64 = null;
     var json_path: ?[]const u8 = null;
     var seed_leak_bytes: usize = 0;
+    var check_path: ?[]const u8 = null;
+    var seed_allocs: usize = 0;
     {
         var args = try std.process.Args.Iterator.initAllocator(init.minimal.args, init.gpa);
         defer args.deinit();
@@ -744,6 +848,10 @@ pub fn main(init: std.process.Init) !void {
                 n_override = try std.fmt.parseInt(u64, args.next() orelse return error.MissingN, 10);
             } else if (std.mem.eql(u8, arg, "--seed-leak")) {
                 seed_leak_bytes = try std.fmt.parseInt(usize, args.next() orelse return error.MissingSeedLeak, 10);
+            } else if (std.mem.eql(u8, arg, "--seed-allocs")) {
+                seed_allocs = try std.fmt.parseInt(usize, args.next() orelse return error.MissingSeedAllocs, 10);
+            } else if (std.mem.eql(u8, arg, "--check")) {
+                check_path = try init.arena.allocator().dupe(u8, args.next() orelse return error.MissingCheckPath);
             } else if (std.mem.eql(u8, arg, "--json")) {
                 json_path = try init.arena.allocator().dupe(u8, args.next() orelse return error.MissingJsonPath);
             } else return error.UnknownArgument;
@@ -787,6 +895,7 @@ pub fn main(init: std.process.Init) !void {
         .server_addr = server_addr,
         .tls = tls,
         .seed_leak_bytes = seed_leak_bytes,
+        .seed_allocs = seed_allocs,
     };
 
     std.debug.print("bench-e2e: real loopback UDP, server on 127.0.0.1:{d}, {s}\n", .{ server_addr.getPort(), @tagName(builtin.mode) });
@@ -801,4 +910,7 @@ pub fn main(init: std.process.Init) !void {
         if (server.failed.load(.acquire)) return error.ServerLoopFailed;
     }
     if (json_path) |path| try writeJson(io, path, results[0..cell_count]);
+    if (check_path) |path| {
+        if (!try checkAgainst(io, init.gpa, path, results[0..cell_count])) std.process.exit(1);
+    }
 }

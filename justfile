@@ -89,6 +89,11 @@ fmt:
     # Mirror the CI gate exactly: every tracked .zig/.zon file.
     git ls-files -z '*.zig' '*.zon' | xargs -0 zig fmt --check
 
+# Real-socket bench tier, gated on this OS's baseline
+# (bench/baselines/README.md).
+bench-e2e:
+    zig build bench-e2e -- --check bench/baselines/e2e-{{os()}}.json
+
 # --- Running CI locally with act (requires Docker; see CONTRIBUTING) ---
 
 # List every job act can see across the workflows.

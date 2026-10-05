@@ -207,8 +207,10 @@ jobs:
         run: zig build mem-profile
 
   # Real-socket bench tier (docs/sprints/2026-10-W2.md): H3 connect/GET
-  # over loopback UDP and a many-connection memory soak. Report-only
-  # until the Linux baseline lands (task B3); the JSON is uploaded.
+  # over loopback UDP and a many-connection memory soak. GATED on
+  # bench/baselines/e2e-linux.json: allocations per operation (one new
+  # allocation fails), packets/bytes per operation (25%), and the soak's
+  # malloc slope (16 bytes/connection). Wall time is reported only.
   bench-e2e:
     timeout-minutes: 30
     runs-on: ubuntu-latest
@@ -240,7 +242,7 @@ jobs:
           exit 1
 
       - name: zig build bench-e2e
-        run: zig build bench-e2e -- --json bench-e2e.json
+        run: zig build bench-e2e -- --json bench-e2e.json --check bench/baselines/e2e-linux.json
 
       - name: Upload the bench report
         if: always()
