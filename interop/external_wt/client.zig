@@ -44,8 +44,9 @@ const SkipReason = enum {
 /// Top-level error category used to map errors onto exit codes.
 const Category = enum { protocol, setup };
 
-const initial_dcid = [_]u8{ 0xd3, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02 };
-const local_scid = [_]u8{ 0xc3, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02 };
+/// Connection-ID length for the client's first Destination CID and its
+/// own Source CID (RFC 9000 §7.2: at least 8 bytes, unpredictable).
+const cid_len = 8;
 
 const datagram_payload = "hello-from-http3-zig";
 const uni_payload = "hello-uni";
@@ -146,6 +147,13 @@ fn runHarness(allocator: std.mem.Allocator, io: std.Io, options: Options) !void 
     const conn = try quic.Connection.createClient(allocator, client_tls, sni_z);
     defer conn.destroy();
 
+    // Fresh random IDs per run (RFC 9000 §7.2): a multi-connection
+    // server routes by them, so two clients with fixed IDs would look
+    // like one connection to it.
+    var initial_dcid: [cid_len]u8 = undefined;
+    var local_scid: [cid_len]u8 = undefined;
+    try boringssl.crypto.rand.fillBytes(&initial_dcid);
+    try boringssl.crypto.rand.fillBytes(&local_scid);
     try conn.setInitialDcid(&initial_dcid);
     try conn.setPeerDcid(&initial_dcid);
     try conn.setLocalScid(&local_scid);

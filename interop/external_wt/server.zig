@@ -8,31 +8,33 @@
 //!   * surfaces inbound peer-opened unidirectional WT streams via
 //!     `webtransport_stream_data` events and echoes the payload on a
 //!     server-initiated unidirectional WT stream while the session is open,
+//!   * serves any number of QUIC connections at once (`quic.Server`
+//!     routes by connection ID; Firefox opens two per origin),
 //!   * stays running until `--max-sessions` sessions have completed
-//!     (default 1) or the connection closes.
+//!     across all connections (default 1) or `--max-lifetime-ms` runs
+//!     out. A closed connection does not end the run: another one may
+//!     still be on its way.
 //!
 //! Used by `.github/workflows/wt-interop-self-test.yml` as the peer
 //! the existing `external-wt-client` / `wt-interop-matrix` runners
-//! exercise. The harness deliberately mirrors the structure of
-//! `interop/curl_h3/server.zig` (UDP receive + drive
-//! `quic.Connection` + `http3_zig.Session` + flush via
-//! `TransportEndpoint`), so the two are easy to read side-by-side.
+//! exercise. The loop is quic's foreign-loop shape: our own UDP
+//! socket (so READY can report an ephemeral port), `quic.Server.feed`,
+//! one `http3_zig.Session` per accepted slot (on `Slot.user_data`,
+//! freed by the will-close hook), then `tick` and a per-slot
+//! `pollDatagram` drain.
 //!
 //! Exit codes:
-//!   * 0 — the server completed `max_sessions` round-trips cleanly,
-//!         OR shut down because the peer closed the connection
-//!         (when `--allow-close` is set, the default).
+//!   * 0 — the server completed `max_sessions` sessions, or its
+//!         lifetime ran out (harness drivers read the OBSERVED lines,
+//!         not the exit code, to judge a run).
 //!   * 1 — a session ended in a protocol error.
 //!   * 2 — setup / network error (cert load, socket bind, ...).
 
 const std = @import("std");
-const boringssl = @import("boringssl");
 const quic = @import("quic");
 const http3_zig = @import("http3_zig");
 
 const Net = std.Io.net;
-
-const server_cid = [_]u8{ 0xc3, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01 };
 
 const Options = struct {
     listen: []const u8 = "127.0.0.1:0",
@@ -74,33 +76,35 @@ pub fn main(init: std.process.Init) !void {
     };
 }
 
-fn runServer(allocator: std.mem.Allocator, io: std.Io, options: Options) !void {
-    const listen_addr = try Net.IpAddress.parseLiteral(options.listen);
-    const sock = try Net.IpAddress.bind(&listen_addr, io, .{
-        .mode = .dgram,
-        .protocol = .udp,
-    });
-    defer sock.close(io);
+/// Transport parameters every accepted connection advertises. The
+/// connection-ID parameters are filled in by `quic.Server`.
+fn transportParams() quic.tls.TransportParams {
+    return .{
+        .max_idle_timeout_ms = 30_000,
+        .initial_max_data = 16 * 1024 * 1024,
+        .initial_max_stream_data_bidi_local = 16 * 1024 * 1024,
+        .initial_max_stream_data_bidi_remote = 16 * 1024 * 1024,
+        .initial_max_stream_data_uni = 1024 * 1024,
+        .initial_max_streams_bidi = 128,
+        .initial_max_streams_uni = 128,
+        .max_udp_payload_size = 65527, // RFC default — Chrome sends 1250-byte
+        // Initials (quiche kDefaultMaxPacketSize); the old 1200 pin made the
+        // transport close before the handshake, the exact bug class the
+        // client-side harness fixed once before.
+        .active_connection_id_limit = 8,
+        .max_datagram_frame_size = 1200,
+    };
+}
 
-    var cert_buf: [16 * 1024]u8 = undefined;
-    var key_buf: [16 * 1024]u8 = undefined;
-    const cert_pem = try std.Io.Dir.cwd().readFile(io, options.cert, &cert_buf);
-    const key_pem = try std.Io.Dir.cwd().readFile(io, options.key, &key_buf);
-
-    var server_tls = try http3_zig.server.initTlsContext(.{}, cert_pem, key_pem);
-    defer server_tls.deinit();
-
-    const conn = try quic.Connection.createServer(allocator, server_tls);
-    defer conn.destroy();
-    try conn.setLocalScid(&server_cid);
-
+/// The HTTP/3 session configuration of every accepted connection.
+fn sessionConfig(options: Options) http3_zig.session.Config {
     const era_modern = std.mem.indexOf(u8, options.eras, "modern") != null;
     const era_draft07 = std.mem.indexOf(u8, options.eras, "draft07") != null;
     const era_draft02 = std.mem.indexOf(u8, options.eras, "draft02") != null;
     // Advertisement equals enforcement: the draft-07 SETTINGS value and
     // the enforced cap both come from --max-sessions (min 1).
     const draft07_cap: u64 = @max(options.max_sessions, 1);
-    var h3 = http3_zig.Session.init(allocator, .server, conn, .{
+    return .{
         .settings = .{
             .qpack_max_table_capacity = 256,
             .qpack_blocked_streams = 4,
@@ -116,12 +120,52 @@ fn runServer(allocator: std.mem.Allocator, io: std.Io, options: Options) !void {
         .qpack_indexing = http3_zig.QpackIndexingPolicy.aggressive,
         .max_field_section_size = 16 * 1024 * 1024,
         .max_data_frame_payload = 16 * 1024,
-    });
-    defer h3.deinit();
-    var h3_server = http3_zig.Server.init(&h3);
+    };
+}
 
-    var app = App.init(allocator, options.max_sessions);
-    defer app.deinit();
+/// Monotonic microseconds: one clock for `feed`, `tick`, `pollDatagram`
+/// and the harness's own deadlines.
+fn nowUs(io: std.Io) u64 {
+    const ns = std.Io.Clock.awake.now(io).nanoseconds;
+    return @intCast(@divTrunc(@max(ns, 0), std.time.ns_per_us));
+}
+
+fn runServer(allocator: std.mem.Allocator, io: std.Io, options: Options) !void {
+    const listen_addr = try Net.IpAddress.parseLiteral(options.listen);
+    const sock = try Net.IpAddress.bind(&listen_addr, io, .{
+        .mode = .dgram,
+        .protocol = .udp,
+    });
+    defer sock.close(io);
+
+    var cert_buf: [16 * 1024]u8 = undefined;
+    var key_buf: [16 * 1024]u8 = undefined;
+    const cert_pem = try std.Io.Dir.cwd().readFile(io, options.cert, &cert_buf);
+    const key_pem = try std.Io.Dir.cwd().readFile(io, options.key, &key_buf);
+
+    var harness: Harness = .{
+        .allocator = allocator,
+        .session_config = sessionConfig(options),
+        .max_sessions = options.max_sessions,
+    };
+
+    // `quic.Server` demultiplexes by connection ID, so a peer may open
+    // several connections: Firefox opens two to one origin, and the
+    // single-`Connection` loop this replaced answered only one of them
+    // (and re-aimed its replies at whichever address sent last).
+    const alpn = [_][]const u8{"h3"};
+    var server = try quic.Server.init(.{
+        .allocator = allocator,
+        .tls_cert_pem = cert_pem,
+        .tls_key_pem = key_pem,
+        .alpn_protocols = &alpn,
+        .transport_params = transportParams(),
+        .on_connection_will_close = Harness.onConnectionWillClose,
+        .on_connection_will_close_user_data = &harness,
+    });
+    // `deinit` runs the will-close hook for every live slot, which
+    // releases each connection's HTTP/3 state before its connection.
+    defer server.deinit();
 
     // Everything goes to stderr: on current Zig master the buffered
     // stdout writer flushes at its own logical offset (pwrite
@@ -131,43 +175,19 @@ fn runServer(allocator: std.mem.Allocator, io: std.Io, options: Options) !void {
     // append-consistent; harness drivers capture with `2>&1` anyway.
     std.debug.print("READY {d}\n", .{sock.address.getPort()});
 
-    var peer: ?Net.IpAddress = null;
-    var transport_params_set = false;
-    var now_us: u64 = 1_000_000;
-    const start_us = now_us;
+    const start_us = nowUs(io);
     const lifetime_us: u64 = options.max_lifetime_ms * 1_000;
     var rx: [64 * 1024]u8 = undefined;
-    var tx: [4096]u8 = undefined;
-    var events: std.ArrayList(http3_zig.session.Event) = .empty;
-    defer {
-        for (events.items) |event| event.deinit(allocator);
-        events.deinit(allocator);
-    }
-    var driver = http3_zig.TransportEndpoint.withSession(conn, &h3, &events);
+    var tx: [64 * 1024]u8 = undefined;
+    var iteration: u64 = 0;
 
-    const UdpSink = struct {
-        socket: @TypeOf(sock),
-        io: std.Io,
-        peer: Net.IpAddress,
-
-        pub fn send(self: *@This(), bytes: []const u8) !void {
-            // Peer-provoked send faults (ICMP-fed ConnectionRefused/reset,
-            // oversize) drop the datagram: loss recovery retransmits, and a
-            // dead peer is reaped by the idle timeout. Local faults propagate.
-            self.socket.send(self.io, &self.peer, bytes) catch |err|
-                switch (quic.transport.classifySendError(err)) {
-                    .tolerate => {},
-                    // The loop's own task was cancelled: return so it exits.
-                    .canceled, .fatal => return err,
-                };
-        }
-    };
-
-    while (!conn.isClosed() and !app.isDone(now_us)) {
+    while (true) : (iteration += 1) {
+        var now_us = nowUs(io);
         if (now_us - start_us > lifetime_us) {
             std.debug.print("EXIT lifetime {d}ms exceeded\n", .{options.max_lifetime_ms});
             break;
         }
+        if (harness.isDone(now_us)) break;
 
         const maybe_msg = sock.receiveTimeout(io, &rx, .{
             .duration = .{
@@ -179,87 +199,157 @@ fn runServer(allocator: std.mem.Allocator, io: std.Io, options: Options) !void {
             .fatal => return err,
         };
 
+        now_us = nowUs(io);
         if (maybe_msg) |msg| {
-            peer = msg.from;
-            if (!transport_params_set) {
-                const ids = peekInitialIds(msg.data) orelse continue;
-                const params: quic.tls.TransportParams = .{
-                    .original_destination_connection_id = quic.conn.path.ConnectionId.fromSlice(ids.dcid),
-                    .initial_source_connection_id = quic.conn.path.ConnectionId.fromSlice(&server_cid),
-                    .max_idle_timeout_ms = 30_000,
-                    .initial_max_data = 16 * 1024 * 1024,
-                    .initial_max_stream_data_bidi_local = 16 * 1024 * 1024,
-                    .initial_max_stream_data_bidi_remote = 16 * 1024 * 1024,
-                    .initial_max_stream_data_uni = 1024 * 1024,
-                    .initial_max_streams_bidi = 128,
-                    .initial_max_streams_uni = 128,
-                    .max_udp_payload_size = 65527, // RFC default — Chrome sends 1250-byte
-                    // Initials (quiche kDefaultMaxPacketSize); the old 1200 pin made the
-                    // transport close before the handshake, the exact bug class the
-                    // client-side harness fixed once before.
-                    .active_connection_id_limit = 8,
-                    .max_datagram_frame_size = 1200,
-                };
-                try conn.acceptInitial(msg.data, params);
-                transport_params_set = true;
+            // A datagram the server cannot place (or that does not
+            // authenticate) is dropped inside `feed`; an error here is
+            // per-datagram, never a reason to stop serving.
+            _ = server.feed(msg.data, quic.transport.udp_batch.ipAddressToPathAddress(msg.from), now_us) catch |err| {
+                std.debug.print("OBSERVED datagram dropped by feed: {s}\n", .{@errorName(err)});
+            };
+            while (server.drainStatelessResponse()) |response| {
+                const dst = quic.transport.udp_server.pathAddressToIpAddress(response.dst) orelse continue;
+                sendTolerant(io, sock, dst, response.slice()) catch |err| return err;
             }
-            try driver.handle(msg.data, null, now_us);
         }
 
-        _ = try driver.drainSession();
-        for (events.items) |event| try app.observe(&h3_server, event, now_us);
-        clearEvents(allocator, &events);
-
-        if (peer) |p| {
-            var sink = UdpSink{ .socket = sock, .io = io, .peer = p };
-            _ = try driver.flush(&tx, now_us, &sink);
+        // HTTP/3 per connection: read events first, then tick, then
+        // drain the outbox (quic's foreign-loop order: the stream GC in
+        // `tick` must not reap data the application has not read).
+        for (server.iterator()) |slot| {
+            const state = harness.ensureState(slot) catch |err| {
+                std.debug.print("OBSERVED connection state failed conn={d}: {s}\n", .{ slot.slot_id, @errorName(err) });
+                continue;
+            };
+            harness.pump(state, now_us) catch |err| {
+                std.debug.print("OBSERVED session error conn={d}: {s}\n", .{ state.slot_id, @errorName(err) });
+                state.session.close(http3_zig.protocol.ErrorCode.internal_error, "");
+            };
         }
-        try driver.tick(now_us);
-        now_us += http3_zig.driver.default_step_us;
+        for (server.iterator()) |slot| {
+            if (slot.conn.closeState() == .closed) continue;
+            slot.conn.tick(now_us) catch {};
+            while (slot.conn.pollDatagram(&tx, now_us) catch null) |out| {
+                const to = out.to orelse slot.peer_addr orelse continue;
+                const dst = quic.transport.udp_server.pathAddressToIpAddress(to) orelse continue;
+                try sendTolerant(io, sock, dst, tx[0..out.len]);
+            }
+        }
+        if (iteration % 64 == 0) _ = server.reap();
     }
 
     std.debug.print(
-        "EXIT sessions={d}/{d} closed={any}\n",
-        .{ app.sessions_completed, options.max_sessions, conn.isClosed() },
+        "EXIT sessions={d}/{d} connections={d}\n",
+        .{ harness.sessions_completed, options.max_sessions, harness.connections_accepted },
     );
 }
 
-const App = struct {
-    const completion_drain_us: u64 = 1_000_000;
-
-    const AcceptedSession = struct {
-        wt: http3_zig.WebTransportServerStream,
-        completed: bool = false,
+/// Peer-provoked send faults (ICMP-fed ConnectionRefused/reset,
+/// oversize) drop the datagram: loss recovery retransmits, and a dead
+/// peer is reaped by the idle timeout. Local faults propagate.
+fn sendTolerant(io: std.Io, sock: anytype, dst: Net.IpAddress, bytes: []const u8) !void {
+    sock.send(io, &dst, bytes) catch |err| switch (quic.transport.classifySendError(err)) {
+        .tolerate => {},
+        // The loop's own task was cancelled: return so it exits.
+        .canceled, .fatal => return err,
     };
+}
 
-    allocator: std.mem.Allocator,
+/// One accepted QUIC connection's HTTP/3 state, hung off
+/// `Slot.user_data` on first sight and freed by the will-close hook.
+const ConnState = struct {
+    session: http3_zig.Session,
+    facade: http3_zig.Server,
+    endpoint: http3_zig.TransportEndpoint,
+    events: std.ArrayList(http3_zig.session.Event),
     runner: http3_zig.ServerRunner,
     accepted: std.AutoHashMapUnmanaged(u64, AcceptedSession) = .empty,
+    slot_id: u64,
+};
+
+const AcceptedSession = struct {
+    wt: http3_zig.WebTransportServerStream,
+    completed: bool = false,
+};
+
+const Harness = struct {
+    const completion_drain_us: u64 = 1_000_000;
+
+    allocator: std.mem.Allocator,
+    session_config: http3_zig.session.Config,
+    /// Sessions to complete, across all connections, before exiting.
     max_sessions: u64,
     sessions_completed: u64 = 0,
     completed_at_us: ?u64 = null,
+    connections_accepted: u64 = 0,
 
-    fn init(allocator: std.mem.Allocator, max_sessions: u64) App {
-        return .{
-            .allocator = allocator,
-            .runner = http3_zig.ServerRunner.init(allocator),
-            .max_sessions = max_sessions,
-        };
-    }
-
-    fn deinit(self: *App) void {
-        self.runner.deinit();
-        self.accepted.deinit(self.allocator);
-    }
-
-    fn isDone(self: *const App, now_us: u64) bool {
+    fn isDone(self: *const Harness, now_us: u64) bool {
         if (self.max_sessions == 0) return false;
         if (self.sessions_completed < self.max_sessions) return false;
         const completed_at = self.completed_at_us orelse return false;
         return now_us - completed_at >= completion_drain_us;
     }
 
-    fn observe(self: *App, server: *http3_zig.Server, event: http3_zig.session.Event, now_us: u64) !void {
+    fn noteCompleted(self: *Harness, now_us: u64) void {
+        self.sessions_completed += 1;
+        if (self.max_sessions != 0 and
+            self.sessions_completed >= self.max_sessions and
+            self.completed_at_us == null)
+        {
+            self.completed_at_us = now_us;
+        }
+    }
+
+    fn stateOf(slot: *quic.Server.Slot) ?*ConnState {
+        const ptr = slot.user_data orelse return null;
+        return @ptrCast(@alignCast(ptr));
+    }
+
+    fn ensureState(self: *Harness, slot: *quic.Server.Slot) !*ConnState {
+        if (stateOf(slot)) |state| return state;
+        const state = try self.allocator.create(ConnState);
+        errdefer self.allocator.destroy(state);
+        state.* = .{
+            .session = http3_zig.Session.init(self.allocator, .server, slot.conn, self.session_config),
+            .facade = undefined,
+            .endpoint = undefined,
+            .events = .empty,
+            .runner = http3_zig.ServerRunner.init(self.allocator),
+            .slot_id = slot.slot_id,
+        };
+        // The facade and endpoint point into the heap ConnState: wire
+        // them only once it is at its final address.
+        state.facade = http3_zig.Server.init(&state.session);
+        state.endpoint = http3_zig.TransportEndpoint.withSession(slot.conn, &state.session, &state.events);
+        slot.user_data = state;
+        self.connections_accepted += 1;
+        std.debug.print("OBSERVED connection accepted conn={d}\n", .{state.slot_id});
+        return state;
+    }
+
+    /// `quic.Server.Config.on_connection_will_close`: runs in `reap` and
+    /// in `Server.deinit` while `slot.conn` is still valid — the last
+    /// safe place to release the session that borrows it.
+    fn onConnectionWillClose(ctx: ?*anyopaque, slot: *quic.Server.Slot) void {
+        const self: *Harness = @ptrCast(@alignCast(ctx.?));
+        const state = stateOf(slot) orelse return;
+        state.session.clearEvents(&state.events);
+        state.events.deinit(self.allocator);
+        state.accepted.deinit(self.allocator);
+        state.runner.deinit();
+        state.session.deinit();
+        self.allocator.destroy(state);
+        slot.user_data = null;
+    }
+
+    fn pump(self: *Harness, state: *ConnState, now_us: u64) !void {
+        // Drains the session (auto-starting it on first use).
+        _ = try state.endpoint.drainSession();
+        defer _ = state.endpoint.clearEvents();
+        for (state.events.items) |event| try self.observe(state, event, now_us);
+    }
+
+    fn observe(self: *Harness, state: *ConnState, event: http3_zig.session.Event, now_us: u64) !void {
         // The runner classifies HTTP/3 frame events; WebTransport-
         // specific stream events fall through as `.ignored` from the
         // tracker's perspective, so we inspect them on the raw event
@@ -269,7 +359,8 @@ const App = struct {
             // stream parsed; a browser that closes before this line
             // failed below HTTP/3 or on its first frames.
             .peer_settings => |ps| {
-                std.debug.print("OBSERVED peer settings enable_connect_protocol={} h3_datagram={}\n", .{
+                std.debug.print("OBSERVED peer settings conn={d} enable_connect_protocol={} h3_datagram={}\n", .{
+                    state.slot_id,
                     ps.enable_connect_protocol,
                     ps.h3_datagram,
                 });
@@ -279,7 +370,7 @@ const App = struct {
                     "OBSERVED wt stream data session={d} stream={d} kind={s} bytes={d}\n",
                     .{ data.session_id, data.stream_id, @tagName(data.kind), data.data.len },
                 );
-                try self.echoUni(data.session_id, data.data);
+                try echoUni(state, data.session_id, data.data);
             },
             .webtransport_stream_finished => |finished| {
                 std.debug.print(
@@ -300,7 +391,7 @@ const App = struct {
                 );
             },
             .datagram => |dg| {
-                if (self.accepted.getPtr(dg.stream_id)) |entry| {
+                if (state.accepted.getPtr(dg.stream_id)) |entry| {
                     var wt = entry.wt;
                     try wt.sendDatagram(dg.payload);
                     entry.wt = wt;
@@ -316,16 +407,10 @@ const App = struct {
             // moment it arrives — count completion here so a peer whose
             // FIN trails (or never lands cleanly) still completes.
             .webtransport_session_closed => |closed| {
-                if (self.accepted.getPtr(closed.session_id)) |entry| {
+                if (state.accepted.getPtr(closed.session_id)) |entry| {
                     if (!entry.completed) {
                         entry.completed = true;
-                        self.sessions_completed += 1;
-                        if (self.max_sessions != 0 and
-                            self.sessions_completed >= self.max_sessions and
-                            self.completed_at_us == null)
-                        {
-                            self.completed_at_us = now_us;
-                        }
+                        self.noteCompleted(now_us);
                     }
                     std.debug.print("OBSERVED wt session closed session={d} how={s} total={d}\n", .{
                         closed.session_id,
@@ -336,31 +421,26 @@ const App = struct {
             },
             else => {},
         }
-        switch (try self.runner.observe(event)) {
+        switch (try state.runner.observe(event)) {
             .request_updated, .request_complete => |request_state| {
                 const request = request_state.reader();
-                if (!self.accepted.contains(request.streamId()) and request.headers().len > 0 and request.isWebTransport()) {
-                    const wt = try server.acceptWebTransport(self.allocator, request, .{});
-                    try self.accepted.put(self.allocator, request.streamId(), .{ .wt = wt });
-                    std.debug.print("OBSERVED wt accepted session={d} era={s}\n", .{
+                if (!state.accepted.contains(request.streamId()) and request.headers().len > 0 and request.isWebTransport()) {
+                    const wt = try state.facade.acceptWebTransport(self.allocator, request, .{});
+                    try state.accepted.put(self.allocator, request.streamId(), .{ .wt = wt });
+                    std.debug.print("OBSERVED wt accepted session={d} era={s} conn={d}\n", .{
                         request.streamId(),
-                        @tagName(server.session.webTransportNegotiatedDraft() orelse .draft16),
+                        @tagName(state.session.webTransportNegotiatedDraft() orelse .draft16),
+                        state.slot_id,
                     });
                 }
                 if (request.complete()) {
-                    if (self.accepted.getPtr(request.streamId())) |entry| {
+                    if (state.accepted.getPtr(request.streamId())) |entry| {
                         if (!entry.completed) {
                             var wt = entry.wt;
                             try wt.finish();
                             entry.wt = wt;
                             entry.completed = true;
-                            self.sessions_completed += 1;
-                            if (self.max_sessions != 0 and
-                                self.sessions_completed >= self.max_sessions and
-                                self.completed_at_us == null)
-                            {
-                                self.completed_at_us = now_us;
-                            }
+                            self.noteCompleted(now_us);
                         }
                         std.debug.print("OBSERVED wt session done session={d} total={d}\n", .{ request.streamId(), self.sessions_completed });
                     }
@@ -368,12 +448,13 @@ const App = struct {
             },
             .connection_closed => |closed| {
                 std.debug.print(
-                    "OBSERVED connection close source={s} space={s} code={d} reason={s}\n",
+                    "OBSERVED connection close source={s} space={s} code={d} reason={s} conn={d}\n",
                     .{
                         @tagName(closed.source),
                         @tagName(closed.error_space),
                         closed.error_code,
                         closed.reason,
+                        state.slot_id,
                     },
                 );
             },
@@ -381,8 +462,8 @@ const App = struct {
         }
     }
 
-    fn echoUni(self: *App, session_id: u64, payload: []const u8) !void {
-        const entry = self.accepted.getPtr(session_id) orelse return;
+    fn echoUni(state: *ConnState, session_id: u64, payload: []const u8) !void {
+        const entry = state.accepted.getPtr(session_id) orelse return;
         if (entry.completed) {
             std.debug.print("OBSERVED wt stream echo skipped session={d} reason=session-complete\n", .{session_id});
             return;
@@ -424,32 +505,6 @@ fn parseArgs(init: std.process.Init, allocator: std.mem.Allocator) !Options {
 fn clearEvents(allocator: std.mem.Allocator, events: *std.ArrayList(http3_zig.session.Event)) void {
     for (events.items) |event| event.deinit(allocator);
     events.clearRetainingCapacity();
-}
-
-const InitialIds = struct {
-    dcid: []const u8,
-    scid: []const u8,
-};
-
-fn peekInitialIds(bytes: []const u8) ?InitialIds {
-    if (bytes.len < 6) return null;
-    if ((bytes[0] & 0x80) == 0) return null;
-    const long_type_bits = (bytes[0] >> 4) & 0x03;
-    if (long_type_bits != 0) return null;
-    const dcid_len = bytes[5];
-    if (dcid_len > 20) return null;
-    var pos: usize = 6;
-    if (bytes.len < pos + @as(usize, dcid_len) + 1) return null;
-    const dcid = bytes[pos .. pos + dcid_len];
-    pos += dcid_len;
-
-    const scid_len = bytes[pos];
-    if (scid_len > 20) return null;
-    pos += 1;
-    if (bytes.len < pos + @as(usize, scid_len)) return null;
-    const scid = bytes[pos .. pos + scid_len];
-
-    return .{ .dcid = dcid, .scid = scid };
 }
 
 fn classifyError(err: anyerror) Category {

@@ -189,9 +189,10 @@ WT_INTEROP_URL=https://webtransport-test-server.example/wt zig build run-externa
 
 The `wt-interop-matrix` build step iterates over a list of URLs supplied
 via the `WT_INTEROP_MATRIX_URLS` environment variable (newline- or
-comma-separated). It runs the harness against each URL, prints
-per-target status, and exits non-zero only if **every** target failed
-(so a missing aioquic doesn't mask a working webtransport-go).
+comma-separated). It runs the harness against each URL and prints
+per-target status. By default it exits non-zero only if **every**
+target failed. With `--require-all` (what CI passes) any failed target
+fails the run, and an unset or empty URL list is a failure, not a skip.
 
 ```sh
 export WT_INTEROP_MATRIX_URLS="\
@@ -201,7 +202,23 @@ zig build wt-interop-matrix
 ```
 
 If `WT_INTEROP_MATRIX_URLS` is unset, the matrix step prints a skip
-message and exits 0.
+message and exits 0 (exit 1 with `--require-all`).
+
+```sh
+zig build wt-interop-matrix -- --require-all
+```
+
+## Multi-connection check
+
+`two_clients.sh` runs two clients at once against one in-tree server
+(`--max-sessions 2`) and needs both to pass. Browsers can open more than
+one QUIC connection to one origin (Firefox opens two), so the in-tree
+server serves every connection through `quic.Server`.
+
+```sh
+zig build external-wt-server external-wt-client
+bash interop/external_wt/two_clients.sh
+```
 
 ## What the harness verifies
 

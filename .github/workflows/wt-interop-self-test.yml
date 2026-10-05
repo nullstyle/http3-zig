@@ -167,6 +167,13 @@ jobs:
             wait "$PID" 2>/dev/null || true
           fi
 
+      # Third gating leg: two clients at once against one server.
+      # Firefox opens two QUIC connections to one origin; a server that
+      # serves only one connection fails this (the single-Connection
+      # server did, 2026-10-04).
+      - name: Two concurrent connections against one server
+        run: bash interop/external_wt/two_clients.sh
+
       - name: Server logs (for debugging)
         if: always()
         run: |

@@ -5,8 +5,9 @@ const http3_zig = @import("http3_zig");
 
 const Net = std.Io.net;
 
-const initial_dcid = [_]u8{ 0xd3, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01 };
-const local_scid = [_]u8{ 0xc3, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01 };
+/// Connection-ID length for the client's first Destination CID and its
+/// own Source CID (RFC 9000 §7.2: at least 8 bytes, unpredictable).
+const cid_len = 8;
 
 const Options = struct {
     connect: []const u8 = "127.0.0.1:4433",
@@ -44,6 +45,12 @@ pub fn main(init: std.process.Init) !void {
     const conn = try quic.Connection.createClient(allocator, client_tls, sni);
     defer conn.destroy();
 
+    // Fresh random IDs per run (RFC 9000 §7.2); fixed ones made every
+    // run look like the same connection to a server that routes by ID.
+    var initial_dcid: [cid_len]u8 = undefined;
+    var local_scid: [cid_len]u8 = undefined;
+    try boringssl.crypto.rand.fillBytes(&initial_dcid);
+    try boringssl.crypto.rand.fillBytes(&local_scid);
     try conn.setInitialDcid(&initial_dcid);
     try conn.setPeerDcid(&initial_dcid);
     try conn.setLocalScid(&local_scid);
