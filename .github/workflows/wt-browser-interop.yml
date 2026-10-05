@@ -33,9 +33,9 @@ on:
 # non-built-in roots, and a test server that served one QUIC connection
 # when Firefox opens two. Then two consecutive green dispatched runs,
 # "PASS firefox browser interop (era=draft02)": 37273251146,
-# 37273727252. Its dispatch-only `if:` is lifted, so it runs on every
-# push and schedule; it stays advisory until two consecutive green runs
-# there, then drop its `continue-on-error`.
+# 37273727252. Its dispatch-only `if:` was lifted; then two consecutive
+# green push runs (37274271134, 37276086898) promoted it to a hard gate
+# on 2026-10-05. The demotion rule below applies.
 #
 # DEMOTION RULE (pre-agreed, not a debate): two failures within a week
 # for causes not attributable to http3-zig (browser rollout breakage,
@@ -111,12 +111,10 @@ jobs:
           retention-days: 14
 
   firefox:
-    # Runs on every event since 2026-10-05; advisory until two green
-    # push/schedule runs (see the FIREFOX note above).
+    # Hard gate since 2026-10-05 (see the FIREFOX note above).
     name: WT browser interop (Firefox latest vs http3-zig server)
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    continue-on-error: true
     steps:
       - name: Checkout http3-zig
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
