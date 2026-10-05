@@ -221,6 +221,10 @@ const ServerTask = struct {
     stop: std.atomic.Value(bool) = .init(false),
     failed: std.atomic.Value(bool) = .init(false),
     served: std.atomic.Value(u64) = .init(0),
+    /// `--server-keep-requests`: do NOT release finished requests from
+    /// the runner (what examples/udp_server.zig did), to show what a
+    /// long-lived connection then retains per request.
+    keep_requests: bool = false,
     /// Live slots after the last loop iteration (closing ones included).
     live_slots: std.atomic.Value(u64) = .init(0),
 
@@ -276,10 +280,7 @@ const ServerTask = struct {
                     _ = try state.facade.respond(allocator, stream_id, .{ .status = "200", .body = response_body });
                     // Release the finished exchange: a long-lived
                     // connection must not keep every request it served.
-                    if (state.runner.tracker.remove(stream_id)) |done| {
-                        done.deinit(state.runner.tracker.allocator);
-                        state.runner.tracker.allocator.destroy(done);
-                    }
+                    if (!task.keep_requests) state.runner.release(stream_id);
                     _ = task.served.fetchAdd(1, .monotonic);
                 },
                 else => {},
@@ -459,10 +460,7 @@ const ClientConn = struct {
             const reader = response.reader();
             if (!std.mem.eql(u8, reader.status() orelse "", "200")) return error.UnexpectedStatus;
             if (!std.mem.eql(u8, reader.body(), response_body)) return error.UnexpectedBody;
-            if (self.runner.tracker.remove(request.stream_id)) |done| {
-                done.deinit(self.runner.tracker.allocator);
-                self.runner.tracker.allocator.destroy(done);
-            }
+            self.runner.release(request.stream_id);
             return;
         }
     }
@@ -509,6 +507,10 @@ const CellResult = struct {
     malloc_warm_bytes: u64 = 0,
     malloc_end_bytes: u64 = 0,
     malloc_growth_bytes_per_op: f64 = 0,
+    /// h3_get: Zig-heap bytes still held per request at the end, on a
+    /// connection that stays open.
+    client_retained_bytes_per_op: f64 = 0,
+    server_retained_bytes_per_op: f64 = 0,
     client_heap_warm: u64 = 0,
     client_heap_end: u64 = 0,
     server_heap_warm: u64 = 0,
@@ -589,7 +591,17 @@ const Bench = struct {
         conn.seed_allocs = self.seed_allocs;
         // Warm-up: handshake, SETTINGS, QPACK state, first stream.
         for (0..16) |_| try conn.get();
+        // Earlier cells' connections may still be draining on the
+        // server; their reaping must not land inside this measurement.
+        // The connection under test keeps answering meanwhile.
+        const deadline = nowUs(self.io) + op_timeout_us;
+        while (self.server.live_slots.load(.monotonic) > 1) {
+            if (nowUs(self.io) > deadline) return error.ServerNeverQuiesced;
+            try conn.step();
+        }
         const before = conn.conn.stats();
+        const client_heap0 = self.client_counting.bytes_in_use.load(.monotonic);
+        const server_heap0 = self.server.counting.bytes_in_use.load(.monotonic);
         const c0 = self.client_counting.allocs.load(.monotonic);
         const s0 = self.server.counting.allocs.load(.monotonic);
         const t0 = nowUs(self.io);
@@ -600,6 +612,11 @@ const Bench = struct {
         }
         const wall = nowUs(self.io) - t0;
         const after = conn.conn.stats();
+        // Let the server finish its side of the last exchanges (ACKs,
+        // stream GC on tick) before reading what it still holds.
+        for (0..50) |_| try conn.step();
+        const client_heap1 = self.client_counting.bytes_in_use.load(.monotonic);
+        const server_heap1 = self.server.counting.bytes_in_use.load(.monotonic);
         conn.close();
         return .{
             .cell = .h3_get,
@@ -613,7 +630,13 @@ const Bench = struct {
             .client_packets_received_per_op = perOp(after.packets_received - before.packets_received, n),
             .client_bytes_sent_per_op = perOp(after.bytes_sent - before.bytes_sent, n),
             .client_bytes_received_per_op = perOp(after.bytes_received - before.bytes_received, n),
+            .client_retained_bytes_per_op = signedPerOp(client_heap1, client_heap0, n),
+            .server_retained_bytes_per_op = signedPerOp(server_heap1, server_heap0, n),
         };
+    }
+
+    fn signedPerOp(end: u64, start: u64, ops: u64) f64 {
+        return (@as(f64, @floatFromInt(end)) - @as(f64, @floatFromInt(start))) / @as(f64, @floatFromInt(@max(ops, 1)));
     }
 
     /// Waits until the server has reaped every connection (closing and
@@ -700,6 +723,11 @@ fn printResult(r: CellResult) void {
             r.client_bytes_sent_per_op,   r.client_bytes_received_per_op,
         });
     }
+    if (r.cell == .h3_get) {
+        std.debug.print("  Zig heap retained per request on the open connection: client {d:.1}, server {d:.1} bytes\n", .{
+            r.client_retained_bytes_per_op, r.server_retained_bytes_per_op,
+        });
+    }
     if (r.cell == .soak) {
         std.debug.print("  RSS after quiesce: {d} -> {d} bytes ({d:.1} bytes/connection)\n", .{
             r.rss_warm_bytes, r.rss_end_bytes, r.rss_growth_bytes_per_op,
@@ -779,6 +807,10 @@ const wire_ratio = 1.25;
 const packet_slack = 0.5;
 const byte_slack = 64.0;
 const max_malloc_growth_bytes_per_op = 16.0;
+/// h3_get: Zig-heap bytes a long-lived connection may still hold per
+/// request served (absolute). A server that never releases finished
+/// requests from its runner holds ~378 bytes per request.
+const max_retained_bytes_per_op = 16.0;
 
 fn checkMetric(name: []const u8, cell: []const u8, current: f64, baseline: f64, ratio: f64, slack: f64) bool {
     const limit = baseline * ratio + slack;
@@ -800,6 +832,16 @@ fn checkAgainst(io: std.Io, allocator: std.mem.Allocator, path: []const u8, resu
     var ok = true;
     for (results) |r| {
         const name = @tagName(r.cell);
+        if (r.cell == .h3_get) {
+            inline for (.{ "client", "server" }) |side| {
+                const v = if (comptime std.mem.eql(u8, side, "client")) r.client_retained_bytes_per_op else r.server_retained_bytes_per_op;
+                const pass = v <= max_retained_bytes_per_op;
+                std.debug.print("  h3_get {s} retained: {d:.1} bytes/request (limit {d:.1}) {s}\n", .{
+                    side, v, max_retained_bytes_per_op, if (pass) "ok" else "FAIL",
+                });
+                ok = ok and pass;
+            }
+        }
         if (r.cell == .soak) {
             const pass = r.malloc_growth_bytes_per_op <= max_malloc_growth_bytes_per_op;
             std.debug.print("  soak malloc growth: {d:.1} bytes/connection (limit {d:.1}) {s}\n", .{
@@ -835,6 +877,7 @@ pub fn main(init: std.process.Init) !void {
     var seed_leak_bytes: usize = 0;
     var check_path: ?[]const u8 = null;
     var seed_allocs: usize = 0;
+    var server_keep_requests = false;
     {
         var args = try std.process.Args.Iterator.initAllocator(init.minimal.args, init.gpa);
         defer args.deinit();
@@ -848,6 +891,8 @@ pub fn main(init: std.process.Init) !void {
                 n_override = try std.fmt.parseInt(u64, args.next() orelse return error.MissingN, 10);
             } else if (std.mem.eql(u8, arg, "--seed-leak")) {
                 seed_leak_bytes = try std.fmt.parseInt(usize, args.next() orelse return error.MissingSeedLeak, 10);
+            } else if (std.mem.eql(u8, arg, "--server-keep-requests")) {
+                server_keep_requests = true;
             } else if (std.mem.eql(u8, arg, "--seed-allocs")) {
                 seed_allocs = try std.fmt.parseInt(usize, args.next() orelse return error.MissingSeedAllocs, 10);
             } else if (std.mem.eql(u8, arg, "--check")) {
@@ -878,6 +923,7 @@ pub fn main(init: std.process.Init) !void {
         .sock = server_sock,
         .cert_pem = cert_pem,
         .key_pem = key_pem,
+        .keep_requests = server_keep_requests,
     };
     const thread = try std.Thread.spawn(.{}, ServerTask.run, .{&server});
     defer thread.join();
