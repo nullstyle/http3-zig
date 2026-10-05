@@ -35,6 +35,12 @@ breaking changes; see notes per release.
 
 ### Fixed
 
+- The WT interop client never sent its CLOSE_WEBTRANSPORT_SESSION: it
+  left its loop when it queued the capsule (printing "close all
+  flushed"), so no peer received it and the close phase of every WT
+  interop run tested nothing. It now waits until the peer's transport
+  has acknowledged the CONNECT stream, or the peer closes the
+  connection cleanly after our CLOSE.
 - **A tight peer uni window no longer breaks `Session.start`.** The
   GREASE uni stream (`Config.enable_grease`, default on) opened right
   after the control stream and before the QPACK streams, and a

@@ -257,12 +257,16 @@ fn runHarness(allocator: std.mem.Allocator, io: std.Io, options: Options) !void 
 
     while (!saw_finish) : (iters += 1) {
         if (now_us >= deadline_us or iters >= options.max_iterations) return error.HarnessTimedOut;
-        if (conn.isClosed()) {
-            std.debug.print("external_wt: connection closed before harness completed\n", .{});
-            return error.ConnectionClosedEarly;
+        // A closed connection gets one more drain: its `connection_closed`
+        // event (handled below) says whether the peer was answering our
+        // CLOSE. pumpOnce drains before it receives, so a close that
+        // arrived in the last pump has not been surfaced yet.
+        const closed_before_pump = conn.isClosed();
+        if (closed_before_pump) {
+            _ = try endpoint.drainSession();
+        } else {
+            try pumpOnce(allocator, io, &endpoint, &events, sock, remote_addr, &rx, &tx, now_us, conn);
         }
-
-        try pumpOnce(allocator, io, &endpoint, &events, sock, remote_addr, &rx, &tx, now_us, conn);
 
         for (events.items) |event| {
             const observation = try runner.observe(event);
@@ -286,8 +290,10 @@ fn runHarness(allocator: std.mem.Allocator, io: std.Io, options: Options) !void 
                             return error.WebTransportRejected;
                         }
                     }
-                    if (observation == .response_complete and response.streamId() == session_id) {
-                        saw_finish = true;
+                    // A FIN on the CONNECT stream before our close means
+                    // the peer ended the session on its own.
+                    if (observation == .response_complete and response.streamId() == session_id and !sent_close) {
+                        return error.SessionEndedBeforeClose;
                     }
                 },
                 .datagram => |dgram| {
@@ -309,6 +315,20 @@ fn runHarness(allocator: std.mem.Allocator, io: std.Io, options: Options) !void 
                     }
                 },
                 .connection_closed => |closed| {
+                    // Peers that serve one session (the pinned
+                    // webtransport-go and pywebtransport servers) close
+                    // the connection once our CLOSE ended it. After our
+                    // close, a clean connection close is that answer.
+                    const clean = closed.error_code == 0 or
+                        closed.error_code == http3_zig.protocol.ErrorCode.no_error;
+                    if (sent_close and clean) {
+                        std.debug.print(
+                            "external_wt: phase 3 — peer closed the connection after CLOSE (error_code=0x{x})\n",
+                            .{closed.error_code},
+                        );
+                        saw_finish = true;
+                        continue;
+                    }
                     std.debug.print(
                         "external_wt: peer closed connection (error_code=0x{x})\n",
                         .{closed.error_code},
@@ -319,6 +339,30 @@ fn runHarness(allocator: std.mem.Allocator, io: std.Io, options: Options) !void 
             }
         }
         clearEvents(allocator, &events);
+        if (saw_finish) break;
+        if (closed_before_pump) {
+            std.debug.print("external_wt: connection closed before harness completed\n", .{});
+            return error.ConnectionClosedEarly;
+        }
+
+        // After CLOSE: done once the peer's transport has acknowledged
+        // every byte of the CONNECT stream, the CLOSE capsule included.
+        // (After a local close our session drops the peer's answering
+        // FIN, so the transport ACK is the proof the close arrived.) A
+        // stream already reaped is closed both ways: also done.
+        if (sent_close) {
+            const acknowledged = if (h3.streamSendState(session_id)) |state|
+                state.acked_bytes == state.written_bytes and !state.has_pending
+            else |err| switch (err) {
+                error.MissingStream => true,
+                else => return err,
+            };
+            if (acknowledged) {
+                std.debug.print("external_wt: phase 3 — peer acknowledged the CLOSE\n", .{});
+                saw_finish = true;
+                break;
+            }
+        }
 
         // Once the peer accepts the CONNECT, push our datagram + uni
         // stream payload, then send CLOSE in a follow-up loop iteration
@@ -351,21 +395,22 @@ fn runHarness(allocator: std.mem.Allocator, io: std.Io, options: Options) !void 
                 "external_wt: phase 3 — sent CLOSE_WEBTRANSPORT_SESSION (code=0x{x}, reason=\"{s}\")\n",
                 .{ close_code, close_reason },
             );
+            // Not done yet: keep pumping until the peer's FIN on the
+            // CONNECT stream shows the close arrived. (Stopping here left
+            // the CLOSE capsule queued and never sent.)
             sent_close = true;
-            saw_finish = true;
         }
 
         try endpoint.tick(now_us);
         now_us += http3_zig.driver.default_step_us;
 
-        // Once we've sent CLOSE, either a CONNECT stream
-        // response_complete or a post-close datagram echo is enough to
-        // prove the peer received and processed the exchange. If the
-        // peer is unresponsive we still fall through to the deadline /
+        // Once we've sent CLOSE, the peer's FIN on the CONNECT stream
+        // (response_complete above) ends the run. If the peer is
+        // unresponsive we still fall through to the deadline /
         // iteration bound checks at the top of the loop.
     }
 
-    std.debug.print("external_wt: success — handshake + datagram + uni stream + close all flushed\n", .{});
+    std.debug.print("external_wt: success — handshake + datagram + uni stream + close acknowledged\n", .{});
 }
 
 fn pumpOnce(
