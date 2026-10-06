@@ -88,16 +88,3 @@ Their first idea (not measured): run the `runUdpClient` hook before
 `tick`, and add an event for the end of a stream (FIN, or reset with
 its code), so no loop order can lose it. They tell us with the
 release. Keep drain-before-tick after a repair too: it costs nothing.
-
-## Repaired in quic v0.28.0 (2026-10-05)
-
-Tag `v0.28.0` = `a9078d8`. http3-zig moved to it the same day.
-- `Connection.streamRecvEnd(id)` says how a receive half ended (clean
-  FIN, or reset with its code), also after the reclaiming `tick`
-  (through the next tick; a ring of 256 records per connection).
-  http3-zig's Session does not use it yet: with handle -> tick -> drain
-  it still loses the end. The documented order (drain before `tick`)
-  stays.
-- `runUdpClient` calls its hook before `tick`.
-- GC timing and stream credit are unchanged.
-- `streamReadFin`'s `fin` is false once the peer reset the stream.
