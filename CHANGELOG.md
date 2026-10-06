@@ -9,13 +9,23 @@ breaking changes; see notes per release.
 
 ## [Unreleased]
 
+## [0.5.2] - 2026-10-05
+
+Verified toolchain: zig 0.17.0, quic-zig v0.28.1, boringssl-zig 0.6.7.
+Additive API only (`release` on the runners and trackers). quic-zig
+v0.28.1 (the end of a stream cannot be lost). The new real-socket bench
+tier (`zig build bench-e2e`, gated in CI) found two memory-retention
+bugs (WebTransport substream state in the library; requests kept by
+the UDP server example) and a loop order in the embedding guide that
+could lose a stream end. All three are fixed.
+
 ### Changed
 
 - **quic-zig v0.28.1** (v0.28.0, the end of a stream cannot be lost:
   the repair of the trap http3-zig reported; v0.28.1 fixes v0.28.0's
   32-bit build, which http3-zig's x86-linux-musl CI leg caught;
-  boringssl pin unchanged). No
-  http3-zig code change. `quic.transport.runUdpClient` now calls its
+  boringssl pin unchanged). No http3-zig code change.
+  `quic.transport.runUdpClient` now calls its
   `on_iteration` hook before `tick`, so `examples/udp_client.zig` reads
   every stream end. One more allocation per connection on each side
   (bench-e2e: 75/89, was 74/88): quic's ring of how reclaimed streams
