@@ -116,16 +116,15 @@ The numbers above are in-process. `bench/e2e.zig` runs a `quic.Server`
 loop on a background thread and real QUIC clients over loopback UDP
 (ReleaseSafe), so the packet path, the server's connection-ID demux,
 and the kernel are in the loop. Recorded 2026-10-05 on quic v0.28.1 in
-`bench/baselines/`. The Linux column is the CI run of `dea48e5` (quic
-v0.27.0) with v0.28's one extra allocation per connection added:
+`bench/baselines/` (Linux: the CI run of `3c2f4c8`):
 
 | Cell | macOS arm64 (M5 Max) | Linux x86_64 (CI runner) |
 | --- | --- | --- |
-| `h3_connect` (handshake, SETTINGS, GET, close) | 388/s, p50 2.9 ms | 854/s, p50 1.0 ms |
-| `h3_get` (one connection) | 18,213/s, p50 51 us | 21,949/s, p50 44 us |
-| `wt_session` (open + close on one connection) | 9,043/s, p50 109 us | 11,548/s, p50 86 us |
-| `wt_datagram` (echo round trip) | 22,742/s, p50 41 us | 27,653/s, p50 35 us |
-| `wt_uni` (uni-stream echo round trip) | 22,226/s, p50 43 us | 23,536/s, p50 43 us |
+| `h3_connect` (handshake, SETTINGS, GET, close) | 388/s, p50 2.9 ms | 901/s, p50 1.1 ms |
+| `h3_get` (one connection) | 18,213/s, p50 51 us | 24,300/s, p50 40 us |
+| `wt_session` (open + close on one connection) | 9,043/s, p50 109 us | 11,625/s, p50 84 us |
+| `wt_datagram` (echo round trip) | 22,742/s, p50 41 us | 29,352/s, p50 34 us |
+| `wt_uni` (uni-stream echo round trip) | 22,226/s, p50 43 us | 25,393/s, p50 40 us |
 | allocations per connection (client / server) | 75 / 89 | 75 / 89 |
 | allocations per GET (client / server) | 17 / 22 | 17 / 22 |
 | allocations per WT session / datagram / uni stream (client) | 16 / 3 / 11.1 | 16 / 3 / 11.1 |
