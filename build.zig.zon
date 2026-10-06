@@ -1,6 +1,6 @@
 .{
     .name = .http3_zig,
-    .version = "0.5.2",
+    .version = "0.5.3",
     .fingerprint = 0x71cd45b0dc74266b,
     .minimum_zig_version = "0.17.0",
     .dependencies = .{
@@ -31,6 +31,11 @@
         // tools/coexist-smoke/sibling/build.zig.zon, and mirror any
         // boringssl pin change below byte-for-byte
         // (tools/check-boringssl-pin.sh checks both).
+        // Owner policy (2026-10-06): the quic packages (capnp-zig,
+        // http3-zig, qmsg, qmesh-zig, nest, mruby-quic) move to a new
+        // quic tag together and release after all agree, so one program
+        // can link any of them with one quic. Exception: a security fix
+        // may tag first.
         // Tarball URL form (not `git+…#tag`): release tags are annotated,
         // and the git form resolves them to a different (unnamed N-V)
         // fingerprint than the release tarball the upstream announcement

@@ -9,6 +9,15 @@ breaking changes; see notes per release.
 
 ## [Unreleased]
 
+## [0.5.3] - 2026-10-06
+
+Verified toolchain: zig 0.17.0, quic-zig v0.29.0, boringssl-zig 0.6.7.
+No API change. http3-zig takes quic and BoringSSL from quic's exported
+modules with the option map the other quic packages use, so it links in
+one program with any of them that pins the same quic (v0.29.0 today:
+qmsg v0.8.0 and mruby-quic; capnp-zig, qmesh-zig and nest move next).
+quic v0.29.0 cuts a connection pair's memory by about 80%.
+
 ### Changed
 
 - **http3-zig works in one program with other quic packages**
