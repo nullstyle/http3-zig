@@ -11,6 +11,20 @@ breaking changes; see notes per release.
 
 ### Changed
 
+- **http3-zig works in one program with other quic packages**
+  (capnp-zig, qmsg, qmesh-zig, nest). `build.zig` takes quic and
+  BoringSSL from quic's own exported modules, with the option map those
+  packages use (`.target`, `.release = optimize != .debug`,
+  `.@"sanitize-c" = "trap"`). Before, it built its own quic module from
+  quic's source files, and a program with http3-zig and capnp-zig
+  (`-Dquic=true`) failed: "file exists in modules 'quic' and 'quic0'".
+  Effects: quic and BoringSSL build Debug or ReleaseSafe only (a
+  ReleaseFast http3-zig gets a ReleaseSafe quic); BoringSSL's C/C++
+  uses the `trap` UB sanitizer. A project that declares quic itself
+  gets the same instance with the same pin and that map
+  (docs/embedding-guide.md). New CI gate `tools/coexist-smoke`; the pin
+  lint checks its quic pin. The `boringssl` entry in `build.zig.zon` is
+  no longer used by the build; it stays for quic-zig's pin lint.
 - **quic-zig v0.29.0** (no wire change; boringssl pin unchanged). No
   http3-zig code change. A connection holds much less memory: the
   in-process memory profile's two-connection warm-up fell from 2.03 MB

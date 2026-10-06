@@ -4,46 +4,33 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    const boringssl_dep = b.dependency("boringssl", .{
-        .target = target,
-        .optimize = optimize,
-    });
-    const boringssl_mod = boringssl_dep.module("boringssl");
-
-    // quic is a source-only dependency here: every quic module below is
-    // recreated with this build's target, optimize mode, and shared
-    // boringssl module. Do not forward build options to quic's own build
-    // script: its configured modules (and the Debug-by-default mode they
-    // get from an empty option map) are never consumed by this build, so
-    // the quic code in every artifact here is compiled at `optimize`.
+    // quic and BoringSSL come from quic's own exported modules, asked for
+    // with the option map that every quic package in the coordinated set
+    // uses (capnp-zig, qmsg, qmesh-zig, nest). Zig makes one copy of a
+    // dependency only when every parent passes exactly the same options,
+    // so an application that links http3-zig and one of those packages
+    // gets ONE quic module and ONE BoringSSL (`tools/coexist-smoke`
+    // checks it). Change this map only together with those packages.
+    //   - `release`, not `optimize`: quic builds Debug or ReleaseSafe
+    //     only (it refuses ReleaseFast/ReleaseSmall for its network
+    //     parser). An http3-zig ReleaseFast build gets a ReleaseSafe quic.
+    //   - `sanitize-c = trap`: BoringSSL's C/C++ keeps its UB checks
+    //     without a link dependency on the UBSan runtime.
     // `zig build --verbose -Doptimize=ReleaseSafe` shows `-Osafe` in front
     // of `-Mquic=`.
-    const quic_dep = b.dependency("quic", .{});
-    // quic-zig's root.zig single-sources version() from a `build_options`
-    // module that its own build.zig provides. Because we recreate the
-    // quic module here (to share http3-zig's boringssl instance across
-    // the diamond, see build.zig.zon), we must supply that module too or a
-    // reference to quic.version() fails to compile. Value is cosmetic —
-    // http3-zig never calls version() — but must match the quic version
-    // pinned in build.zig.zon; tools/check-boringssl-pin.sh lints this
-    // on tag pins (bare-SHA pins skip the check).
-    const quic_build_options = b.addOptions();
-    quic_build_options.addOption([]const u8, "version", "0.29.0");
-    const quic_build_options_mod = quic_build_options.createModule();
+    const quic_dep = b.dependency("quic", .{
+        .target = target,
+        .release = optimize != .debug,
+        .@"sanitize-c" = @as([]const u8, "trap"),
+    });
+    const quic_mod = quic_dep.module("quic");
+    const boringssl_mod = quic_dep.module("boringssl");
 
     // Single-source http3-zig's own version() from build.zig.zon so it can
     // never drift from the manifest (mirrors quic-zig's build_options pattern).
     const h3_build_options = b.addOptions();
     h3_build_options.addOption([]const u8, "version", @import("build.zig.zon").version);
     const h3_build_options_mod = h3_build_options.createModule();
-
-    const quic_mod = b.createModule(.{
-        .root_source_file = quic_dep.path("src/root.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    quic_mod.addImport("boringssl", boringssl_mod);
-    quic_mod.addImport("build_options", quic_build_options_mod);
 
     const http3_zig_mod = b.addModule("http3_zig", .{
         .root_source_file = b.path("src/root.zig"),
@@ -69,12 +56,12 @@ pub fn build(b: *std.Build) void {
 
     // Export the exact module instances http3_zig itself links against.
     // The public API is quic-typed (`Session.init` takes a
-    // `*quic.Connection`; TLS helpers take `boringssl.tls.Context`),
-    // so a consumer that declared its own quic-zig/boringssl dependency
-    // would get distinct module instances whose types do not unify with
-    // http3_zig's. Registering the shared instances lets consumers write
+    // `*quic.Connection`; TLS helpers take `boringssl.tls.Context`).
+    // Registering the shared instances lets consumers write
     // `dep.module("quic")` / `dep.module("boringssl")` and import
-    // types with the correct identity. See also the `pub const quic`
+    // types with the correct identity. A consumer that declares quic
+    // itself with the shared option map above gets the same instances;
+    // with any other options it gets a second quic. See also the `pub const quic`
     // / `pub const boringssl` re-exports in src/root.zig, which cover
     // consumers that only import `http3_zig`.
     b.modules.put(b.graph.arena, "quic", quic_mod) catch @panic("OOM");
@@ -736,25 +723,19 @@ pub fn build(b: *std.Build) void {
     // whole point of this binary, and they only function with safety
     // on.
     //
-    // Builds private boringssl + quic + http3_zig module
-    // instances at the same `.ReleaseSafe` mode so the link-time
-    // ubsan handler symbols match across the C++ archives and the Zig
-    // root. Mirrors the pattern `wt-load` uses for its own pinned
-    // optimize. See `docs/memory-profile.md` for the published
-    // numbers.
+    // Builds a private http3_zig module at `.ReleaseSafe` over quic's
+    // ReleaseSafe modules (the shared option map with `.release = true`;
+    // the same instance as `quic_dep` when the top-level build is
+    // already ReleaseSafe). `wt-load` reuses them. See
+    // `docs/memory-profile.md` for the published numbers.
     const mem_profile_optimize: std.builtin.OptimizeMode = .ReleaseSafe;
-    const boringssl_safe_dep = b.dependency("boringssl", .{
+    const quic_safe_dep = b.dependency("quic", .{
         .target = target,
-        .optimize = mem_profile_optimize,
+        .release = true,
+        .@"sanitize-c" = @as([]const u8, "trap"),
     });
-    const boringssl_safe_mod = boringssl_safe_dep.module("boringssl");
-    const quic_safe_mod = b.createModule(.{
-        .root_source_file = quic_dep.path("src/root.zig"),
-        .target = target,
-        .optimize = mem_profile_optimize,
-    });
-    quic_safe_mod.addImport("boringssl", boringssl_safe_mod);
-    quic_safe_mod.addImport("build_options", quic_build_options_mod);
+    const boringssl_safe_mod = quic_safe_dep.module("boringssl");
+    const quic_safe_mod = quic_safe_dep.module("quic");
     const http3_zig_safe_mod = b.createModule(.{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
@@ -830,18 +811,10 @@ pub fn build(b: *std.Build) void {
     // iteration regardless of the optimize mode — the load test
     // returns explicit error tags rather than relying on `assert`.
     const wt_load_optimize: std.builtin.OptimizeMode = .ReleaseFast;
-    const boringssl_release_dep = b.dependency("boringssl", .{
-        .target = target,
-        .optimize = wt_load_optimize,
-    });
-    const boringssl_release_mod = boringssl_release_dep.module("boringssl");
-    const quic_release_mod = b.createModule(.{
-        .root_source_file = quic_dep.path("src/root.zig"),
-        .target = target,
-        .optimize = wt_load_optimize,
-    });
-    quic_release_mod.addImport("boringssl", boringssl_release_mod);
-    quic_release_mod.addImport("build_options", quic_build_options_mod);
+    // quic refuses ReleaseFast for its network parser, so the load test
+    // runs a ReleaseFast http3_zig over the ReleaseSafe quic/BoringSSL.
+    const boringssl_release_mod = boringssl_safe_mod;
+    const quic_release_mod = quic_safe_mod;
     const http3_zig_release_mod = b.createModule(.{
         .root_source_file = b.path("src/root.zig"),
         .target = target,

@@ -11,10 +11,7 @@ Add http3-zig as a `build.zig.zon` dependency and import three modules —
 `http3_zig` plus the `quic`/`boringssl` instances it exports. The
 embedding API below is quic-typed (your app constructs and owns the
 `*quic.Connection`), and the TLS helpers traffic in
-`boringssl.tls.Context`, so both sibling modules are load-bearing. Never
-declare your own quic-zig or boringssl-zig dependency next to http3-zig:
-that creates second module instances whose types do not unify with
-http3-zig's (`expected quic.Connection, found quic.Connection`).
+`boringssl.tls.Context`, so both sibling modules are load-bearing.
 
 ```zig
 const http3_dep = b.dependency("http3_zig", .{ .target = target, .optimize = optimize });
@@ -27,6 +24,33 @@ If you prefer a single import, the same instances are re-exported as
 `http3_zig.quic` and `http3_zig.boringssl`. A complete out-of-tree
 consumer (CI-checked) lives in
 [`tools/consumer-smoke/`](../tools/consumer-smoke/).
+
+### With other quic packages in one program
+
+http3-zig takes quic and BoringSSL from quic's own exported modules,
+with the option map that capnp-zig, qmsg, qmesh-zig and nest use. Zig
+makes one copy of a dependency only when every parent asks for it with
+exactly the same options, so these packages share ONE quic and ONE
+BoringSSL in your program. If your project declares quic itself, use
+the same pin as http3-zig and the same map:
+
+```zig
+const quic_dep = b.dependency("quic", .{
+    .target = target,
+    .release = optimize != .debug,
+    .@"sanitize-c" = @as([]const u8, "trap"),
+});
+exe.root_module.addImport("quic", quic_dep.module("quic"));
+exe.root_module.addImport("boringssl", quic_dep.module("boringssl"));
+```
+
+Any other options, or another quic pin, make a second quic module. Zig
+then stops with "file exists in modules 'quic' and 'quic0'", or the
+types do not unify (`expected quic.Connection, found quic.Connection`).
+quic builds Debug or ReleaseSafe only: in a ReleaseFast program, quic
+and BoringSSL are ReleaseSafe. CI checks the shared case with
+[`tools/coexist-smoke/`](../tools/coexist-smoke/) (a sibling package
+that takes quic the way capnp-zig does).
 
 ## One Connection Shape
 

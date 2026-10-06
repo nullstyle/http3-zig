@@ -59,7 +59,7 @@ For real-network numbers, see the WebTransport interop matrix
 | OS | macOS (Darwin 27.0.0), arm64 |
 | Zig | 0.17.0 |
 | quic-zig | 0.25.0 |
-| Build mode | `ReleaseFast` |
+| Build mode | `ReleaseFast` (http3-zig; quic and BoringSSL are ReleaseSafe since 2026-10-06) |
 | Cache dirs | project defaults (`.zig-cache`, `.zig-global-cache`) |
 | Date | 2026-10-04 (Zig 0.17.0 + quic v0.25.0 pin move) |
 | Iterations | 10 warmup + 1000 measured |

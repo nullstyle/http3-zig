@@ -51,12 +51,10 @@ exe.root_module.addImport("http3_zig", http3_zig.module("http3_zig"));
 ```
 
 http3-zig pulls in `quic-zig` and `boringssl-zig` as transitive
-dependencies — do **not** declare your own copies of them. The embedding
-API is quic-typed (`Session.init` takes a `*quic.Connection` that
-your app owns), so every real endpoint needs those types with the same
-module identity http3-zig was built against; a separately-declared
-quic-zig dependency produces a second module instance whose types do not
-unify. http3-zig exports the shared instances:
+dependencies. The embedding API is quic-typed (`Session.init` takes a
+`*quic.Connection` that your app owns), so every real endpoint needs
+those types with the same module identity http3-zig was built against.
+http3-zig exports the shared instances:
 
 ```zig
 // Same module instances http3_zig itself links against:
@@ -68,6 +66,12 @@ Alternatively, skip the extra imports and reach the same modules through
 the re-exports `http3_zig.quic` and `http3_zig.boringssl`. A
 buildable out-of-tree consumer showing the full wiring lives in
 [`tools/consumer-smoke/`](tools/consumer-smoke/) and is checked in CI.
+
+http3-zig works in one program with other quic packages (capnp-zig,
+qmsg, qmesh-zig, nest): it asks for quic with their option map, so the
+program gets one quic and one BoringSSL. If you declare quic yourself,
+use the same pin and that map; see
+[Embedding Guide: With other quic packages](docs/embedding-guide.md#with-other-quic-packages-in-one-program).
 
 ## Quick example
 

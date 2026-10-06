@@ -99,9 +99,9 @@ const std = @import("std");
 /// Re-export of the boringssl-zig module http3-zig links against. The TLS
 /// helpers (`server.initTlsContext` / `client.initTlsContext`) traffic in
 /// `boringssl.tls.Context`; consumers that need to construct or configure
-/// a context themselves must use this instance — a separately-declared
-/// boringssl-zig dependency produces a distinct module whose types do not
-/// unify with http3-zig's.
+/// a context themselves must use this instance. It is quic-zig's exported
+/// `boringssl` module, so a quic dependency declared with the shared
+/// option map (docs/embedding-guide.md) gives the same instance.
 pub const boringssl = @import("boringssl");
 
 /// Re-export of the quic-zig module http3-zig is built against. The
@@ -109,8 +109,9 @@ pub const boringssl = @import("boringssl");
 /// `*quic.Connection`; the embedder owns the connection, socket, and
 /// clock), so every real endpoint needs these types. Import them from here
 /// (`http3_zig.quic.Connection`) or via `dep.module("quic")` in
-/// build.zig; a consumer-side quic-zig dependency declaration would not
-/// type-unify with this instance.
+/// build.zig. It is quic-zig's exported `quic` module: a consumer-side
+/// quic dependency with the same pin and the shared option map
+/// (docs/embedding-guide.md) is this instance; any other is not.
 pub const quic = @import("quic");
 
 pub const protocol = @import("protocol.zig");

@@ -104,32 +104,21 @@ fi
 
 printf 'boringssl pin matches pinned quic-zig (%s)\n' "$http3_boringssl_hash"
 
-# build.zig recreates the quic module and must hand it a build_options
-# "version" string. The value is cosmetic, but it must not drift from the
-# tag pinned in build.zig.zon (it did once: 0.6.0 vs v0.7.5).
-quic_tag=""
-case "$quic_url" in
-    git+https://github.com/*/*.git#*)
-        quic_tag=${quic_url#*.git#}
-        ;;
-    https://github.com/*/*/archive/refs/tags/*.tar.gz)
-        quic_tag=${quic_url#*/archive/refs/tags/}
-        quic_tag=${quic_tag%.tar.gz}
-        ;;
-esac
-case "$quic_tag" in
-    v*)
-        quic_version=${quic_tag#v}
-        build_zig=$(dirname "$http3_zon")/build.zig
-        [ -f "$build_zig" ] || die "missing build.zig next to $http3_zon"
-        if ! grep -q "addOption(\[\]const u8, \"version\", \"$quic_version\")" "$build_zig"; then
-            printf 'quic build_options version in build.zig does not match pinned tag %s\n' "$quic_tag" >&2
-            grep -n 'addOption(\[\]const u8, "version"' "$build_zig" >&2 || true
-            exit 1
-        fi
-        printf 'quic build_options version matches pinned tag (%s)\n' "$quic_tag"
-        ;;
-    *)
-        printf 'note: quic pin is not a release tag (%s); skipping build_options version check\n' "${quic_tag:-$quic_url}"
-        ;;
-esac
+# tools/coexist-smoke/sibling stands in for capnp-zig & co. It must pin
+# the same quic package as http3-zig (url and hash): a different pin is a
+# different package, and the coexist smoke test would prove nothing.
+sibling_zon=$(dirname "$http3_zon")/tools/coexist-smoke/sibling/build.zig.zon
+[ -f "$sibling_zon" ] || die "missing coexist sibling manifest: $sibling_zon"
+quic_hash=$(extract_dep_field quic hash "$http3_zon") ||
+    die "could not read quic.hash from $http3_zon"
+sibling_quic_url=$(extract_dep_field quic url "$sibling_zon") ||
+    die "could not read quic.url from $sibling_zon"
+sibling_quic_hash=$(extract_dep_field quic hash "$sibling_zon") ||
+    die "could not read quic.hash from $sibling_zon"
+if [ "$quic_url" != "$sibling_quic_url" ] || [ "$quic_hash" != "$sibling_quic_hash" ]; then
+    printf 'quic pin mismatch between build.zig.zon and %s\n' "$sibling_zon" >&2
+    printf '  http3-zig url:  %s\n  sibling   url:  %s\n' "$quic_url" "$sibling_quic_url" >&2
+    printf '  http3-zig hash: %s\n  sibling   hash: %s\n' "$quic_hash" "$sibling_quic_hash" >&2
+    exit 1
+fi
+printf 'coexist sibling pins the same quic (%s)\n' "$quic_hash"

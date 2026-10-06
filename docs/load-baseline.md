@@ -48,7 +48,7 @@ Transport-params tuning relative to the integration fixture:
 - Apple M5 Max (`Mac17,6`), 18 cores, 128 GiB RAM.
 - macOS Darwin 25.4.0 arm64.
 - Zig `0.17.0-dev.256+04481c76c`.
-- Built with `-Doptimize=ReleaseFast` (the build step pins this regardless of the top-level optimize so the numbers below are comparable across runs).
+- Built with `-Doptimize=ReleaseFast` (the build step pins this regardless of the top-level optimize so the numbers below are comparable across runs). Since 2026-10-06 that is http3-zig only: quic and BoringSSL come from quic's exported modules and build ReleaseSafe (quic refuses ReleaseFast). Numbers recorded before that date had quic at ReleaseFast too.
 
 ## Results (5-run sample)
 

@@ -1,0 +1,11 @@
+.{
+    .name = .coexist_smoke,
+    .version = "0.0.0",
+    .fingerprint = 0x9a120d8c2afaf4f8,
+    .minimum_zig_version = "0.17.0",
+    .dependencies = .{
+        .http3_zig = .{ .path = "../.." },
+        .sibling = .{ .path = "sibling" },
+    },
+    .paths = .{""},
+}

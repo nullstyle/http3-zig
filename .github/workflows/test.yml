@@ -164,6 +164,18 @@ jobs:
           zig build --summary all
           zig build run
 
+      # An application that links http3-zig AND a package that takes quic
+      # the way capnp-zig, qmsg, qmesh-zig and nest do (quic's exported
+      # modules, the shared option map). The build must hold one quic and
+      # one BoringSSL (tools/coexist-smoke/src/main.zig). Debug and
+      # ReleaseSafe: the map passes `.release = optimize != .debug`.
+      - name: Coexist smoke (one quic with other quic packages)
+        if: matrix.os == 'ubuntu-latest' && matrix.target == 'native'
+        run: |
+          cd tools/coexist-smoke
+          zig build -Doptimize=${{ matrix.optimize }} --summary all
+          zig build -Doptimize=${{ matrix.optimize }} run
+
   # Long-running-session memory regression gate. `zig build mem-profile` runs
   # the WebTransport long-lived-session profiler (always ReleaseSafe) and exits
   # non-zero if per-iteration retained-memory growth exceeds the gate in
