@@ -47,6 +47,14 @@ exe.root_module.addImport("boringssl", quic_dep.module("boringssl"));
 Any other options, or another quic pin, make a second quic module. Zig
 then stops with "file exists in modules 'quic' and 'quic0'", or the
 types do not unify (`expected quic.Connection, found quic.Connection`).
+
+Pass your `optimize` to http3-zig AND to every other package that uses
+quic (`b.dependency("http3_zig", .{ .target = target, .optimize =
+optimize })`). Each package computes `release` from its own optimize: a
+package that gets no `optimize` stays Debug in a `-Doptimize=ReleaseSafe`
+build, asks for quic with `.release = false`, and the build gets two
+quics. (`--release=safe` is not affected: every package follows it.)
+Found by the mruby-quic session, 2026-10-06.
 quic builds Debug or ReleaseSafe only: in a ReleaseFast program, quic
 and BoringSSL are ReleaseSafe. CI checks the shared case with
 [`tools/coexist-smoke/`](../tools/coexist-smoke/) (a sibling package
