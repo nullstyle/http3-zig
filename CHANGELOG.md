@@ -11,6 +11,14 @@ breaking changes; see notes per release.
 
 ### Changed
 
+- **quic-zig v0.28.0** (the end of a stream cannot be lost: the repair
+  of the trap http3-zig reported; boringssl pin unchanged). No
+  http3-zig code change. `quic.transport.runUdpClient` now calls its
+  `on_iteration` hook before `tick`, so `examples/udp_client.zig` reads
+  every stream end. One more allocation per connection on each side
+  (bench-e2e: 75/89, was 74/88): quic's ring of how reclaimed streams
+  ended (~10 KiB, made on the first stream reclaim; a quic server holds
+  about 1.1 MB per live connection). Baselines updated.
 - **quic-zig v0.27.0** (session tickets that live through a restart;
   boringssl pin unchanged). No http3-zig code change: we pass
   `Client.Config.resumption_state` and never call
@@ -61,9 +69,8 @@ breaking changes; see notes per release.
   state until the connection closes (~390 bytes per WebTransport
   session in bench-e2e). The guide now says handle, drain, process,
   clear, then `tick` and `poll`. The interop clients use this order.
-  quic v0.27.0's `quic.transport.runUdpClient` calls its
-  `on_iteration` hook after `tick`, so a hook that drains HTTP/3 has
-  this risk until quic changes; see
+  quic v0.28.0 moved `quic.transport.runUdpClient`'s `on_iteration`
+  hook to before `tick`, so that loop is safe too; see
   `docs/upstream/quic-stream-gc-bare-fin.md`.
 
 ## [0.5.1] - 2026-10-05

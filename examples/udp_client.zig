@@ -115,8 +115,10 @@ const FetchFlow = struct {
 
     /// `transport.RunUdpClientOptions.on_iteration` — fires once per
     /// loop iteration on the loop thread, after inbound datagrams are
-    /// handled and the clock ticked; anything queued here ships on the
-    /// very next outbox drain.
+    /// handled and before the clock ticks (quic v0.28.0+), so a stream
+    /// end that arrived this iteration is still readable here. It runs
+    /// once more after a `tick` that closes the connection. Anything
+    /// queued here ships on the very next outbox drain.
     pub fn onIteration(ctx: ?*anyopaque, client: *quic.Client, now_us: u64) anyerror!void {
         const flow: *FetchFlow = @ptrCast(@alignCast(ctx.?));
         if (flow.done) return;

@@ -122,10 +122,10 @@ stream end, and its per-stream state stays until the connection closes. With
 `handle` → `tick` → `drain`, a WebTransport session whose CONNECT
 stream the peer ends with a bare FIN kept about 390 bytes per session
 on a long-lived connection; the real-socket bench
-(`zig build bench-e2e`) found it. quic v0.27.0's
+(`zig build bench-e2e`) found it
+(`docs/upstream/quic-stream-gc-bare-fin.md`). Since quic v0.28.0,
 `quic.transport.runUdpClient` calls its `on_iteration` hook after
-`tick`, so a hook that drains HTTP/3 has this risk
-(`docs/upstream/quic-stream-gc-bare-fin.md`).
+`handle` and before `tick`, so a hook that drains HTTP/3 is safe.
 
 The small `http3_zig.TransportEndpoint` helper keeps the repeated QUIC/H3 order
 in one place without owning sockets or clocks:
