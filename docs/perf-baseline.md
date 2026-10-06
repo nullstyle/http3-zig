@@ -115,18 +115,30 @@ lowest-of-runs convention below.
 The numbers above are in-process. `bench/e2e.zig` runs a `quic.Server`
 loop on a background thread and real QUIC clients over loopback UDP
 (ReleaseSafe), so the packet path, the server's connection-ID demux,
-and the kernel are in the loop. Recorded 2026-10-05 in
-`bench/baselines/`:
+and the kernel are in the loop. Recorded 2026-10-05 on quic v0.28.1 in
+`bench/baselines/`. The Linux column is the CI run of `dea48e5` (quic
+v0.27.0) with v0.28's one extra allocation per connection added:
 
 | Cell | macOS arm64 (M5 Max) | Linux x86_64 (CI runner) |
 | --- | --- | --- |
-| `h3_connect` (handshake, SETTINGS, GET, close) | 491/s, p50 2.0 ms | 985/s, p50 1.1 ms |
-| `h3_get` (one connection) | 3,131/s, p50 123 us | 15,890/s, p50 53 us |
-| allocations per connection (client / server) | 74 / 88 | 74 / 88 |
+| `h3_connect` (handshake, SETTINGS, GET, close) | 388/s, p50 2.9 ms | 854/s, p50 1.0 ms |
+| `h3_get` (one connection) | 18,213/s, p50 51 us | 21,949/s, p50 44 us |
+| `wt_session` (open + close on one connection) | 9,043/s, p50 109 us | 11,548/s, p50 86 us |
+| `wt_datagram` (echo round trip) | 22,742/s, p50 41 us | 27,653/s, p50 35 us |
+| `wt_uni` (uni-stream echo round trip) | 22,226/s, p50 43 us | 23,536/s, p50 43 us |
+| allocations per connection (client / server) | 75 / 89 | 75 / 89 |
 | allocations per GET (client / server) | 17 / 22 | 17 / 22 |
-| client packets per connection (sent / received) | 9.0 / 7.5 | 9.0 / 7.0 |
-| client bytes per connection (sent / received) | 1,571 / 3,867 | 1,571 / 2,652 |
-| client bytes per GET (sent / received) | 82 / 48 | 82 / 48 |
+| allocations per WT session / datagram / uni stream (client) | 16 / 3 / 11.1 | 16 / 3 / 11.1 |
+| client packets per connection (sent / received) | 8.0 / 7.0 | 8.0 / 7.0 |
+| client bytes per connection (sent / received) | 1,540 / 2,592 | 1,540 / 2,592 |
+| client bytes per GET (sent / received) | 55 / 48 | 55 / 48 |
+
+History: the GET rows fell from 2 packets per GET (and, on macOS,
+~123 us p50) when the bench client began to read before `tick` (its
+ACK now rides on the next request). quic v0.28.0 added one allocation per connection on
+each side (74/88 before): the ring that remembers how reclaimed
+streams ended (`streamRecvEnd`, about 10 KiB, made on the first stream
+reclaim).
 
 What CI gates (`bench/baselines/README.md`): the allocation counts
 (identical on both systems; one new allocation per operation fails),
