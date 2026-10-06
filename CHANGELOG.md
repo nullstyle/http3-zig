@@ -9,6 +9,24 @@ breaking changes; see notes per release.
 
 ## [Unreleased]
 
+### Changed
+
+- **quic-zig v0.29.0** (no wire change; boringssl pin unchanged). No
+  http3-zig code change. A connection holds much less memory: the
+  in-process memory profile's two-connection warm-up fell from 2.03 MB
+  to 0.41 MB (quic's sent-packet tracker and CRYPTO buffers now grow on
+  demand). The price: five more allocations per connection on each side
+  (bench-e2e: 80/94, was 75/89); baselines updated. Also from quic: late
+  packets no longer count as lost (much faster on reordering paths),
+  CUBIC/NewReno recovery starts at loss detection, and clients connect
+  through handshake loss.
+
+### Fixed
+
+- `docs/memory-profile.md` still showed the 259 bytes/iteration slope.
+  That slope was the WebTransport substream leak fixed in 0.5.2
+  (`4fc9d01`): the profile reads 0.56 bytes/iteration since that fix.
+
 ## [0.5.2] - 2026-10-05
 
 Verified toolchain: zig 0.17.0, quic-zig v0.28.1, boringssl-zig 0.6.7.

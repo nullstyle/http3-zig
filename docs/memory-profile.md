@@ -39,31 +39,41 @@ working-set claim.
 ## The numbers
 
 2 000-iteration trace on the current tree (http3-zig against quic
-0.25.0, Zig 0.17.0, 2026-10-04):
+0.29.0, Zig 0.17.0, 2026-10-06):
 
 | Stage | iters | bytes-in-use | max-bytes-ever | Δ vs warm-up |
 | --- | ---: | ---: | ---: | ---: |
-| warm-up | 0 | 2 014 127 | 2 014 488 | +0 |
-| 500 iters | 500 | 2 144 513 | 2 147 194 | +130 386 |
-| 1k iters | 1 000 | 2 273 921 | 2 276 602 | +259 794 |
-| 2k iters | 2 000 | 2 532 737 | 2 535 418 | +518 610 |
+| warm-up | 0 | 410 575 | 410 968 | +0 |
+| 500 iters | 500 | 411 689 | 414 594 | +1 114 |
+| 1k iters | 1 000 | 411 689 | 414 594 | +1 114 |
+| 2k iters | 2 000 | 411 689 | 414 594 | +1 114 |
 
-**Δ bytes-in-use warm-up → 2k iters: +518 610 bytes over 2 000 iters
-(≈ 259 bytes/iter).** `gpa.deinit()` reports **ok** — every allocation
-made during the loop is reachable from the `Session` deinit chain.
+**Δ bytes-in-use warm-up → 2k iters: +1 114 bytes over 2 000 iters
+(≈ 0.56 bytes/iter), all of it before iteration 500; flat after.**
+`gpa.deinit()` reports **ok** — every allocation made during the loop
+is reachable from the `Session` deinit chain.
+
+Two steps made these numbers (both measured with this profile):
+- **The slope, 259 → 0.56 bytes/iter: a leak, fixed in `4fc9d01`
+  (2026-10-05).** Each iteration opens one WebTransport uni stream, and
+  a finished substream kept its state until the connection closed.
+  `9920527` (just before the fix) reads 259.3 bytes/iter; `4fc9d01`
+  reads 0.56. Teardown freed the state, so the leak check passed; the
+  slope gate (600 bytes/iter) was too wide to catch it. The real-socket
+  bench found it (`wt_uni`, retained bytes per stream).
+- **The warm-up, ≈ 2.03 MB → ≈ 0.41 MB per pair: quic 0.29.0.** Its
+  sent-packet tracker grows on demand and its CRYPTO buffers live on
+  the heap and go away with the keys (quic 0.28.1 reads 2 034 639
+  bytes, 0.29.0 reads 410 575).
 
 The fixed warm-up footprint's history: it roughly doubled moving quic
 0.10 → 0.12 (≈ 2.5 MB → ≈ 6.2 MB for the two-connection pair) when the
 transport grew its modern congestion-control spine, then quic 0.13.0's
 sent-packet tracker right-sizing (Initial/Handshake trackers 4096 → 256
 slots, capacity now an init-time choice) took it down to **≈ 1.87 MB /
-pair** — below even the 0.10 figure. On quic 0.19.0 the warm-up is
-**≈ 2.01 MB / pair** and the slope is ≈ 259 bytes/iter; quic 0.25.0
-reads the same (warm-up identical to the byte, slope +130 bytes over
-2 000 iterations). The modest
-increase spans six transport releases and this aggregate profile does
-not isolate a single cause; teardown remains leak-clean and the slope
-stays well below the regression gate.
+pair** — below even the 0.10 figure. On quic 0.19.0 to 0.28.1 the
+warm-up is **≈ 2.01-2.03 MB / pair**; quic 0.29.0 takes it to
+**≈ 0.41 MB / pair** (above).
 
 **What this profile cannot see: the C heap.** The counting allocator
 wraps Zig allocations only. BoringSSL allocates with `malloc`, so the
@@ -97,9 +107,10 @@ larger. RSS is printed too, but it is not a leak signal: it grew 10-40
 KB per connection on macOS with nothing leaking, from the allocator
 keeping freed pages.
 
-Two numbers from the same runs, for context: a `quic.Server` holds about
-1.1 MB of Zig heap per live connection, and a closed connection stays
-live while it drains. And `h3_get` reads the Zig heap a long-lived
+Two numbers from the same runs, for context: a `quic.Server` held about
+1.1 MB of Zig heap per live connection (quic 0.28.x; quic 0.29.0 says
+91 KB, and its own test bounds it at 131 072 bytes), and a closed
+connection stays live while it drains. And `h3_get` reads the Zig heap a long-lived
 connection retains per request: 0.0 on both sides with
 `ServerRunner.release`, 377 bytes on the server without it (what
 `examples/udp_server.zig` did until 2026-10-05).
@@ -137,9 +148,10 @@ freed only at whole-connection teardown.
 ## Regression gate
 
 `bench/wt_memory.zig` exits non-zero when per-iteration growth exceeds
-`max_bytes_per_iter_gate` (600 bytes/iter — ≈ 2.3× the current figure, so
-allocator / platform variation passes, but a reintroduced per-stream leak
-in the thousands of bytes/iter fails). CI runs `zig build mem-profile` and
+`max_bytes_per_iter_gate` (600 bytes/iter; set when the slope read
+≈ 259 bytes/iter, so a reintroduced per-stream leak in the thousands of
+bytes/iter fails). The slope reads 0.56 bytes/iter now, so the gate is
+far wider than the figure: it let the 259 bytes/iter leak above pass. CI runs `zig build mem-profile` and
 gates on that exit code, so a memory regression breaks the build rather
 than silently drifting the published number. Bump the gate deliberately
 (and update the numbers above) if a legitimate change raises the baseline.

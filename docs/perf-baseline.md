@@ -116,7 +116,8 @@ The numbers above are in-process. `bench/e2e.zig` runs a `quic.Server`
 loop on a background thread and real QUIC clients over loopback UDP
 (ReleaseSafe), so the packet path, the server's connection-ID demux,
 and the kernel are in the loop. Recorded 2026-10-05 on quic v0.28.1 in
-`bench/baselines/` (Linux: the CI run of `3c2f4c8`):
+`bench/baselines/` (Linux: the CI run of `3c2f4c8`); allocation rows
+updated for quic v0.29.0 (2026-10-06):
 
 | Cell | macOS arm64 (M5 Max) | Linux x86_64 (CI runner) |
 | --- | --- | --- |
@@ -125,7 +126,7 @@ and the kernel are in the loop. Recorded 2026-10-05 on quic v0.28.1 in
 | `wt_session` (open + close on one connection) | 9,043/s, p50 109 us | 11,625/s, p50 84 us |
 | `wt_datagram` (echo round trip) | 22,742/s, p50 41 us | 29,352/s, p50 34 us |
 | `wt_uni` (uni-stream echo round trip) | 22,226/s, p50 43 us | 25,393/s, p50 40 us |
-| allocations per connection (client / server) | 75 / 89 | 75 / 89 |
+| allocations per connection (client / server) | 80 / 94 | 80 / 94 |
 | allocations per GET (client / server) | 17 / 22 | 17 / 22 |
 | allocations per WT session / datagram / uni stream (client) | 16 / 3 / 11.1 | 16 / 3 / 11.1 |
 | client packets per connection (sent / received) | 8.0 / 7.0 | 8.0 / 7.0 |
@@ -134,10 +135,13 @@ and the kernel are in the loop. Recorded 2026-10-05 on quic v0.28.1 in
 
 History: the GET rows fell from 2 packets per GET (and, on macOS,
 ~123 us p50) when the bench client began to read before `tick` (its
-ACK now rides on the next request). quic v0.28.0 added one allocation per connection on
-each side (74/88 before): the ring that remembers how reclaimed
-streams ended (`streamRecvEnd`, about 10 KiB, made on the first stream
-reclaim).
+ACK now rides on the next request). quic v0.28.0 added one allocation
+per connection on each side (74/88 before): the ring that remembers how
+reclaimed streams ended (`streamRecvEnd`, about 10 KiB, made on the
+first stream reclaim). quic v0.29.0 added five more (75/89 -> 80/94): its
+sent-packet tracker and CRYPTO buffers now grow on demand, and a
+connection holds about 0.8 MB less (the in-process profile's
+two-connection warm-up: 2.03 MB -> 0.41 MB).
 
 What CI gates (`bench/baselines/README.md`): the allocation counts
 (identical on both systems; one new allocation per operation fails),
