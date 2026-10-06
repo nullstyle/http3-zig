@@ -4,9 +4,11 @@
     .fingerprint = 0x71cd45b0dc74266b,
     .minimum_zig_version = "0.17.0",
     .dependencies = .{
-        // quic — latest release. v0.29.0 (a connection costs ~91 KB of
-        // Zig heap, not ~1.1 MB; late packets are not lost packets;
-        // clients connect through loss), v0.28.1 (v0.28.0 with its
+        // quic — latest release. v0.30.1 (a probe timeout is not a loss,
+        // RFC 9002 6.2.4; the handshake probe timeout is bounded at ~1 s;
+        // behavior only, same API and option map), v0.29.0 (a connection
+        // costs ~91 KB of Zig heap, not ~1.1 MB; late packets are not lost
+        // packets; clients connect through loss), v0.28.1 (v0.28.0 with its
         // 32-bit build fixed: v0.28.0 failed to compile for
         // x86-linux-musl), v0.28.0
         // (the end of a stream cannot be lost: `streamRecvEnd` answers
@@ -42,8 +44,8 @@
         // hashes. The tarball is the canonical pin form upstream
         // publishes — same convention as boringssl below.
         .quic = .{
-            .url = "https://github.com/nullstyle/quic-zig/archive/refs/tags/v0.29.0.tar.gz",
-            .hash = "quic-0.29.0-DnSYvahYOwAdaHX-Ct3_iZGZycF387GmpAbI9G9wjFGg",
+            .url = "https://github.com/nullstyle/quic-zig/archive/refs/tags/v0.30.1.tar.gz",
+            .hash = "quic-0.30.1-DnSYvVnOOwBfpDxHQWI41E6YxM1RqqkCuven5bK46jXR",
         },
         // build.zig does NOT use this entry: BoringSSL comes from quic's
         // exported `boringssl` module, so there is one BoringSSL by
@@ -53,7 +55,7 @@
         // quic's entry; remove it only together with quic-zig.
         //
         // Commit-SHA tarball rather than a tag: this is the boringssl-zig
-        // 0.6.7 package at ff30fe9, exactly the entry quic v0.29.0 pins.
+        // 0.6.7 package at ff30fe9, exactly the entry quic v0.30.1 pins.
         .boringssl = .{
             .url = "https://github.com/nullstyle/boringssl-zig/archive/ff30fe9953b07f838d7ac09ace84dacfb1e896ca.tar.gz",
             .hash = "boringssl-0.6.7-Vv5DN8RMAgDGST3F3NpoMjez8Z_J60megIom9Ru9XqD2",

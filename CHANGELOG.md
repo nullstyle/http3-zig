@@ -9,6 +9,15 @@ breaking changes; see notes per release.
 
 ## [Unreleased]
 
+### Changed
+
+- **quic-zig v0.30.1** (behavior only; no API change; the coordinated
+  option map and boringssl pin are unchanged). No http3-zig code change.
+  A probe timeout no longer counts as a loss (RFC 9002 section 6.2.4:
+  no window cut for an ACK that was only late), and a client waiting
+  for a lost handshake flight probes every second instead of 1, 2, 4,
+  8 s. (Not v0.30.0: it did not compile on Windows.)
+
 ## [0.5.3] - 2026-10-06
 
 Verified toolchain: zig 0.17.0, quic-zig v0.29.0, boringssl-zig 0.6.7.
