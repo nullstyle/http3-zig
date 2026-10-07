@@ -9,6 +9,15 @@ breaking changes; see notes per release.
 
 ## [Unreleased]
 
+### Changed
+
+- **quic-zig v0.31.0** (behavior only; no API change; the coordinated
+  option map and boringssl pin are unchanged). No http3-zig code change.
+  A client confirms its handshake on an ACK of one of its own 1-RTT
+  packets (RFC 9001 section 4.1.2), so a lost HANDSHAKE_DONE no longer
+  keeps it resending Finished; `quic.Server.feed` leaves a dropped
+  datagram unchanged.
+
 ## [0.5.4] - 2026-10-06
 
 Verified toolchain: zig 0.17.0, quic-zig v0.30.1, boringssl-zig 0.6.7.
