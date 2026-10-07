@@ -318,6 +318,15 @@ Stream windows, on `quic.tls.TransportParams` (since quic 0.24):
   takes one more place at session start and gives it back once the peer
   stops it. WebTransport uni streams and push streams share what is
   left.
+- Data windows (`initial_max_stream_data_*`, `initial_max_data`) are
+  the windows you keep (since quic 0.32): the credit stays one announced
+  window ahead of what the application read. Before, it was a fixed
+  1 MiB per stream and 16 MiB per connection after the first window. A
+  stream moves at most its window per round trip, so announce what your
+  largest body needs; a slow reader can then hold that much per stream
+  (bounded by quic's `max_connection_memory`, 32 MiB by default). For
+  one fast stream, also raise the sender's `max_buffered_send` (default
+  1 MiB) on the `Client`/`Server` config.
 - `error.StreamLimitExceeded` from `openRequest` or a WebTransport
   `openUniStream` / `openBidiStream` is always temporary: pump the
   connection (the peer's MAX_STREAMS arrives as streams close), then

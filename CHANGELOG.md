@@ -11,17 +11,28 @@ breaking changes; see notes per release.
 
 ### Changed
 
-- **quic-zig v0.31.1** (behavior only; no API change; the coordinated
-  option map and boringssl pin are unchanged). No http3-zig code change.
-  Fixes a regression in http3-zig 0.5.4 (quic v0.30.1): a connection to
-  a dead peer lived about three times its idle timeout (a 2 s timeout
-  ended after ~6 s), because every probe sent restarted the idle timer.
-  Now the timer follows RFC 9000 section 10.1, and an idle timeout below
-  three probe timeouts is raised to them. From v0.31.0: a client
-  confirms its handshake on an ACK of one of its own 1-RTT packets
-  (RFC 9001 section 4.1.2), so a lost HANDSHAKE_DONE no longer keeps it
-  resending Finished; `quic.Server.feed` leaves a dropped datagram
-  unchanged.
+- **quic-zig v0.32.0** (no API change; the coordinated option map and
+  boringssl pin are unchanged). No http3-zig code change.
+  - Fixes a regression in http3-zig 0.5.4 (quic v0.30.1, fixed in quic
+    v0.31.1): a connection to a dead peer lived about three times its
+    idle timeout (a 2 s timeout ended after ~6 s), because every probe
+    sent restarted the idle timer. Now the timer follows RFC 9000
+    section 10.1, and an idle timeout below three probe timeouts is
+    raised to them.
+  - The receive window you announce is the window you keep. Through
+    quic v0.31.1 the credit after the first window was a fixed 1 MiB
+    per stream and 16 MiB per connection, whatever the transport
+    parameters said. Now it stays one announced window ahead of what
+    the application read. If you announce the defaults (1 MiB / 16
+    MiB), nothing changes; if you announce less, a large body now moves
+    that much per round trip. http3-zig's examples announce 1 MiB per
+    bidi stream (unchanged); `udp_client`/`udp_server` announce 256 KiB
+    per uni stream. New sender knob `max_buffered_send` (default 1 MiB);
+    see docs/embedding-guide.md.
+  - Also: a client confirms its handshake on an ACK of one of its own
+    1-RTT packets (RFC 9001 section 4.1.2); `quic.Server.feed` leaves a
+    dropped datagram unchanged; ACK frames carry up to 64 ranges; loss
+    thresholds that widened for reordering shrink back.
 
 ## [0.5.4] - 2026-10-06
 

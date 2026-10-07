@@ -4,7 +4,9 @@
     .fingerprint = 0x71cd45b0dc74266b,
     .minimum_zig_version = "0.17.0",
     .dependencies = .{
-        // quic — latest release. v0.31.1 (a dead peer is noticed one idle
+        // quic — latest release. v0.32.0 (the receive window an endpoint
+        // announces is the window it keeps; behavior only, same API and
+        // option map), v0.31.1 (a dead peer is noticed one idle
         // timeout after the first probe again, as on v0.29.0; RFC 9000
         // 10.1), v0.31.0 (a client confirms the handshake
         // on an ACK of its own 1-RTT packet; Server.feed leaves a dropped
@@ -38,19 +40,19 @@
         // tools/coexist-smoke/sibling/build.zig.zon, and mirror any
         // boringssl pin change below byte-for-byte
         // (tools/check-boringssl-pin.sh checks both).
-        // Owner policy (2026-10-06): the quic packages (capnp-zig,
-        // http3-zig, qmsg, qmesh-zig, nest, mruby-quic) move to a new
-        // quic tag together and release after all agree, so one program
-        // can link any of them with one quic. Exception: a security fix
-        // may tag first.
+        // Owner policy (2026-10-07, quic-zig CONTRIBUTING.md "Releases"):
+        // the quic packages move per CLUSTER. Packages that link into one
+        // binary must pin the same quic tag: http3-zig and capnp-zig are
+        // cluster B and move together. Every package keeps the option map
+        // below. A security fix is a move for all.
         // Tarball URL form (not `git+…#tag`): release tags are annotated,
         // and the git form resolves them to a different (unnamed N-V)
         // fingerprint than the release tarball the upstream announcement
         // hashes. The tarball is the canonical pin form upstream
         // publishes — same convention as boringssl below.
         .quic = .{
-            .url = "https://github.com/nullstyle/quic-zig/archive/refs/tags/v0.31.1.tar.gz",
-            .hash = "quic-0.31.1-DnSYvW4iPABrXhGsw_q3ZbQUaoDirSODEPybR5kXQ1CB",
+            .url = "https://github.com/nullstyle/quic-zig/archive/refs/tags/v0.32.0.tar.gz",
+            .hash = "quic-0.32.0-DnSYvcGOPADCEZMispvPbD9RznRtyIGq77zHIgmS8iVl",
         },
         // build.zig does NOT use this entry: BoringSSL comes from quic's
         // exported `boringssl` module, so there is one BoringSSL by
@@ -60,7 +62,7 @@
         // quic's entry; remove it only together with quic-zig.
         //
         // Commit-SHA tarball rather than a tag: this is the boringssl-zig
-        // 0.6.7 package at ff30fe9, exactly the entry quic v0.31.1 pins.
+        // 0.6.7 package at ff30fe9, exactly the entry quic v0.32.0 pins.
         .boringssl = .{
             .url = "https://github.com/nullstyle/boringssl-zig/archive/ff30fe9953b07f838d7ac09ace84dacfb1e896ca.tar.gz",
             .hash = "boringssl-0.6.7-Vv5DN8RMAgDGST3F3NpoMjez8Z_J60megIom9Ru9XqD2",
