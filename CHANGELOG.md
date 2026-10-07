@@ -9,6 +9,14 @@ breaking changes; see notes per release.
 
 ## [Unreleased]
 
+## [0.5.4] - 2026-10-06
+
+Verified toolchain: zig 0.17.0, quic-zig v0.30.1, boringssl-zig 0.6.7.
+No API change. quic-zig v0.30.1 (fewer false window cuts; faster
+handshake recovery). The pair of capnp-zig v0.21.0: both pin quic
+v0.30.1 with the coordinated option map, so one program links both
+with one quic (measured by capnp-zig).
+
 ### Changed
 
 - **quic-zig v0.30.1** (behavior only; no API change; the coordinated
