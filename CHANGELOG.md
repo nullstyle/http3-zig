@@ -9,6 +9,15 @@ breaking changes; see notes per release.
 
 ## [Unreleased]
 
+## [0.5.5] - 2026-10-07
+
+Verified toolchain: zig 0.17.0, quic-zig v0.32.0, boringssl-zig 0.6.7.
+No API change. quic-zig v0.32.0 fixes the dead-peer bug of 0.5.4 (a
+dead peer's connection lived about three times its idle timeout) and
+keeps the receive window an endpoint announces. The pair of capnp-zig
+v0.22.0: both pin quic v0.32.0 with the coordinated option map, so one
+program links both with one quic.
+
 ### Changed
 
 - **quic-zig v0.32.0** (no API change; the coordinated option map and
