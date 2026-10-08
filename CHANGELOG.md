@@ -9,6 +9,25 @@ breaking changes; see notes per release.
 
 ## [Unreleased]
 
+### Changed
+
+- **quic-zig v0.33.0** (the line-rate release; no API change; the
+  coordinated option map and boringssl pin are unchanged). No http3-zig
+  code change. One stream now reaches the path's rate on the defaults.
+  - Receive windows tune themselves: the window you announce is the
+    starting window, and a fast reader's window doubles up to quic's
+    caps (`max_stream_receive_window` 8 MiB, `max_connection_receive_window`
+    16 MiB). A fast reader's connection can hold that much memory; set
+    the caps or `auto_tune_receive_windows = false` (quic v0.32.0's
+    behavior) on the `Client`/`Server` config to bound it.
+  - The send buffer follows the peer's credit (`max_buffered_send` is
+    now the floor, up to `max_buffered_send_cap` 16 MiB).
+  - A write past the connection's memory budget returns short instead
+    of `error.ExcessiveLoad`. http3-zig already treats a short write as
+    stalled (`Error.WriteStalled`).
+  - Packet numbers are 2 to 4 bytes on the wire, never one: bench-e2e
+    reads about one byte more per packet (inside the gate).
+
 ## [0.5.5] - 2026-10-07
 
 Verified toolchain: zig 0.17.0, quic-zig v0.32.0, boringssl-zig 0.6.7.
