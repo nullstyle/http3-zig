@@ -9,6 +9,16 @@ breaking changes; see notes per release.
 
 ## [Unreleased]
 
+## [0.5.6] - 2026-10-08
+
+Verified toolchain: zig 0.17.0, quic-zig v0.37.1, boringssl-zig 0.6.7.
+No API change. quic-zig v0.33.0 to v0.37.1: one stream reaches the
+path's rate on the defaults, about 2x goodput, fewer ACKs in bulk, idle
+connections hold about 22 KB, and probes to a silent peer carry stream
+data again. The pair of capnp-zig's first release on quic v0.37.1: both
+pin it with the coordinated option map, so one program links both with
+one quic.
+
 ### Changed
 
 - **quic-zig v0.37.1** (v0.33.0 to v0.37.1 in one move; the
