@@ -11,9 +11,22 @@ breaking changes; see notes per release.
 
 ### Changed
 
-- **quic-zig v0.33.0** (the line-rate release; no API change; the
-  coordinated option map and boringssl pin are unchanged). No http3-zig
-  code change. One stream now reaches the path's rate on the defaults.
+- **quic-zig v0.37.1** (v0.33.0 to v0.37.1 in one move; the
+  coordinated option map and boringssl pin are unchanged; nothing
+  breaking for code that uses quic's `Client`/`Server`/`Connection`
+  wrappers). No http3-zig code change.
+  - v0.34.0 to v0.37.1: about 2x goodput at the same wire; an ACK for
+    every second packet of a burst (and at once after a 1 ms gap); the
+    Acknowledgement Frequency extension with an automatic policy; loss
+    detection tuned for reordering paths; an idle server connection
+    holds ~22 KB (was ~92 KB) and a new ready API
+    (`Server.takeReady`/`tickDue`/`nextDeadline`) makes a loop pass
+    cost O(active connections); a probe timeout to a silent peer
+    carries stream data on every probe again (lost since quic 0.30.0).
+    Raw-internals changes (`Connection.packetKeys`, `SendStream.bytes`)
+    do not touch http3-zig.
+  - v0.33.0, the line-rate release: one stream reaches the path's rate
+    on the defaults.
   - Receive windows tune themselves: the window you announce is the
     starting window, and a fast reader's window doubles up to quic's
     caps (`max_stream_receive_window` 8 MiB, `max_connection_receive_window`

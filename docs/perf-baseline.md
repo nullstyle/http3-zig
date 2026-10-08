@@ -126,11 +126,11 @@ updated for quic v0.29.0 (2026-10-06):
 | `wt_session` (open + close on one connection) | 9,043/s, p50 109 us | 11,625/s, p50 84 us |
 | `wt_datagram` (echo round trip) | 22,742/s, p50 41 us | 29,352/s, p50 34 us |
 | `wt_uni` (uni-stream echo round trip) | 22,226/s, p50 43 us | 25,393/s, p50 40 us |
-| allocations per connection (client / server) | 80 / 94 | 80 / 94 |
+| allocations per connection (client / server) | 82 / 96 | 82 / 96 |
 | allocations per GET (client / server) | 17 / 22 | 17 / 22 |
 | allocations per WT session / datagram / uni stream (client) | 16 / 3 / 11.1 | 16 / 3 / 11.1 |
-| client packets per connection (sent / received) | 8.0 / 7.0 | 8.0 / 7.0 |
-| client bytes per connection (sent / received) | 1,540 / 2,592 | 1,540 / 2,592 |
+| client packets per connection (sent / received) | 6.0 / 7.0 | 6.0 / 7.0 |
+| client bytes per connection (sent / received) | 1,472 / 2,592 | 1,472 / 2,592 |
 | client bytes per GET (sent / received) | 55 / 48 | 55 / 48 |
 
 History: the GET rows fell from 2 packets per GET (and, on macOS,
@@ -141,7 +141,12 @@ reclaimed streams ended (`streamRecvEnd`, about 10 KiB, made on the
 first stream reclaim). quic v0.29.0 added five more (75/89 -> 80/94): its
 sent-packet tracker and CRYPTO buffers now grow on demand, and a
 connection holds about 0.8 MB less (the in-process profile's
-two-connection warm-up: 2.03 MB -> 0.41 MB).
+two-connection warm-up: 2.03 MB -> 0.41 MB). quic v0.35.0 acknowledges every second packet of a burst: the
+client sends 6 packets per connection, not 8. quic v0.36.0 added two
+more allocations per connection on each side (80/94 -> 82/96): an idle
+connection now gives memory back (about 22 KB idle, was about 92 KB)
+and allocates again when it works. (Allocation and packet rows above are
+for quic v0.37.1; the rate rows are older.)
 
 What CI gates (`bench/baselines/README.md`): the allocation counts
 (identical on both systems; one new allocation per operation fails),
