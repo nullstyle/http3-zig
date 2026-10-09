@@ -9,6 +9,23 @@ breaking changes; see notes per release.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A short quic write no longer cuts an HTTP/3 frame.** Session writes
+  a frame as a header and then a payload. When quic took only part of it
+  (the stream's send buffer or the connection's memory budget was full),
+  Session returned `Error.WriteStalled` with a cut frame on the wire, so
+  the peer saw a malformed stream. Now Session keeps the bytes quic did
+  not take in a per-stream send tail, and `drain` hands them to quic
+  first; the frame reaches the peer whole. A new write on a stream with
+  a tail is refused whole with `Error.SendBufferFull` (nothing written;
+  `canWrite` is false until the tail is sent), and a `finish` sends its
+  FIN after the tail. `Session.streamSendState` counts the tail as
+  written and buffered. `Error.WriteStalled` stays in the error set but
+  Session's writes no longer return it. Found while checking quic
+  v0.38.0, whose smaller writer share makes short writes come sooner;
+  tests/integration/short_writes.zig (red before the fix).
+
 ### Changed
 
 - **quic-zig v0.38.0** (no API change; the coordinated option map and

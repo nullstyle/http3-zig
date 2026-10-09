@@ -118,10 +118,10 @@ pub const Error = quic.conn.state.Error ||
         /// (e.g. `sendResponseHeaders` on a client session, or
         /// `cancelRequest` on a server session).
         InvalidRole,
-        /// The underlying QUIC stream's send buffer accepted zero bytes —
-        /// either the stream is fully blocked by flow control or its local
-        /// `max_stream_send_buffered` cap is hit. Caller should drain
-        /// acknowledgements (run a pump) and retry.
+        /// Kept for API stability; Session's writes no longer return it
+        /// (since 0.5.7). A write quic takes only in part keeps the rest
+        /// in the stream's send tail, sent by `drain`; the next write on
+        /// that stream returns `SendBufferFull` until the tail is sent.
         WriteStalled,
         /// `rememberPeerSettings` was called after the peer's real SETTINGS
         /// already arrived; remembered settings only make sense before the
@@ -321,6 +321,13 @@ pub const WebTransportStream = struct {
     }
 };
 
+/// Bytes of whole frames that quic did not take yet (`Session.send_tails`).
+const SendTail = struct {
+    bytes: std.ArrayList(u8) = .empty,
+    /// The application finished the stream: send the FIN after the bytes.
+    fin: bool = false,
+};
+
 pub const Session = struct {
     allocator: std.mem.Allocator,
     role: protocol.Role,
@@ -396,6 +403,14 @@ pub const Session = struct {
     qpack_encoder_capacity: usize = 0,
 
     streams: std.AutoHashMapUnmanaged(u64, *StreamState) = .empty,
+    /// Frame bytes quic did not take yet, per local stream. quic's
+    /// `streamWrite` can return short (the stream's send buffer or the
+    /// connection's memory budget is full); Session never leaves a frame
+    /// cut in half on the wire, so it keeps the rest here, in order, and
+    /// `drain` hands it to quic first. A stream with a tail refuses a new
+    /// frame from the application (`Error.SendBufferFull`); its FIN waits
+    /// for the tail. See `writeAll`.
+    send_tails: std.AutoHashMapUnmanaged(u64, SendTail) = .empty,
     received_push_promises: std.AutoHashMapUnmanaged(u64, []qpack.FieldLine) = .empty,
     request_priorities: std.AutoHashMapUnmanaged(u64, priority_mod.Priority) = .empty,
     push_priorities: std.AutoHashMapUnmanaged(u64, priority_mod.Priority) = .empty,
@@ -472,6 +487,9 @@ pub const Session = struct {
     }
 
     pub fn deinit(self: *Session) void {
+        var tails = self.send_tails.valueIterator();
+        while (tails.next()) |tail| tail.bytes.deinit(self.allocator);
+        self.send_tails.deinit(self.allocator);
         var it = self.streams.iterator();
         while (it.next()) |entry| {
             const state = entry.value_ptr.*;
@@ -822,6 +840,7 @@ pub const Session = struct {
     /// spam). Sessions without a peer limit are unaffected.
     pub fn writeWebTransportStream(self: *Session, stream_id: u64, bytes: []const u8) Error!void {
         if (bytes.len == 0) return;
+        try self.ensureNoSendTail(stream_id);
         try self.gateWebTransportSendBytes(stream_id, bytes.len);
         try self.writeAll(stream_id, bytes);
         self.recordWebTransportSendBytes(stream_id, bytes.len);
@@ -938,7 +957,7 @@ pub const Session = struct {
 
     /// Sends a FIN on a WebTransport stream.
     pub fn finishWebTransportStream(self: *Session, stream_id: u64) Error!void {
-        try self.quic.streamFinish(stream_id);
+        try self.finishQuicStream(stream_id);
         // As in `finishStream`: the send side is done, so a locally
         // opened uni substream is fully closed and `gcClosedStreams`
         // reclaims it. Without this every finished substream kept its
@@ -956,6 +975,7 @@ pub const Session = struct {
         stream_id: u64,
         app_error_code: u32,
     ) Error!void {
+        self.dropSendTail(stream_id);
         try self.quic.streamReset(stream_id, webtransport_mod.appErrorToHttp3(app_error_code));
         if (self.streams.get(stream_id)) |state| state.locally_finished = true;
     }
@@ -968,6 +988,7 @@ pub const Session = struct {
         stream_id: u64,
         wire_code: u64,
     ) Error!void {
+        self.dropSendTail(stream_id);
         try self.quic.streamReset(stream_id, wire_code);
         if (self.streams.get(stream_id)) |state| state.locally_finished = true;
     }
@@ -2012,7 +2033,7 @@ pub const Session = struct {
     /// against a session we've already abandoned.
     pub fn finishStream(self: *Session, stream_id: u64) Error!void {
         if (self.shutdown_state == .closed) return Error.SessionClosed;
-        try self.quic.streamFinish(stream_id);
+        try self.finishQuicStream(stream_id);
         if (self.streams.get(stream_id)) |state| state.locally_finished = true;
         if (self.webTransportSessionExists(stream_id)) {
             // Local FIN ends the session: sweep live substreams with
@@ -2087,6 +2108,7 @@ pub const Session = struct {
     /// abandonment, same as `finishStream`'s handling.
     pub fn resetStream(self: *Session, stream_id: u64, application_error_code: u64) Error!void {
         self.qpack_encoder_state.cancelStream(stream_id);
+        self.dropSendTail(stream_id);
         try self.quic.streamReset(stream_id, application_error_code);
         if (self.streams.get(stream_id)) |state| state.locally_finished = true;
         self.trace(.{
@@ -2336,14 +2358,17 @@ pub const Session = struct {
 
     pub fn streamSendState(self: *const Session, stream_id: u64) Error!StreamSendState {
         const stream = self.quic.stream(stream_id) orelse return Error.MissingStream;
-        const written = stream.send.writtenBytes();
+        // Bytes in Session's send tail are written by the application and
+        // not yet acknowledged: they count in both.
+        const tail: u64 = self.sendTailLen(stream_id);
+        const written = stream.send.writtenBytes() + tail;
         const acked = stream.send.ackedFloor();
         return .{
             .stream_id = stream_id,
             .written_bytes = written,
             .acked_bytes = acked,
             .buffered_bytes = written - acked,
-            .has_pending = stream.send.hasPendingChunk(),
+            .has_pending = stream.send.hasPendingChunk() or tail > 0,
             .flow_blocked = self.streamFlowBlocked(stream_id),
         };
     }
@@ -2367,7 +2392,17 @@ pub const Session = struct {
         return null;
     }
 
+    /// Can the application start a write of `additional_bytes` on this
+    /// stream now: no frame bytes wait in its send tail, and the bytes fit
+    /// `Config.max_stream_send_buffered`.
     pub fn canBufferStreamBytes(self: *const Session, stream_id: u64, additional_bytes: usize) Error!bool {
+        if (self.sendTailLen(stream_id) > 0) return false;
+        return self.fitsStreamSendCap(stream_id, additional_bytes);
+    }
+
+    /// `Config.max_stream_send_buffered` alone (tail bytes count as
+    /// buffered). Used inside a frame, where the tail may be non-empty.
+    fn fitsStreamSendCap(self: *const Session, stream_id: u64, additional_bytes: usize) Error!bool {
         const max_buffered = self.config.max_stream_send_buffered orelse return true;
         const state = try self.streamSendState(stream_id);
         const max: u64 = @intCast(max_buffered);
@@ -2400,6 +2435,8 @@ pub const Session = struct {
         if (self.in_drain) return Error.ReentrantDrain;
         self.in_drain = true;
         defer self.in_drain = false;
+        // Frame bytes quic did not take on an earlier write go first.
+        try self.flushSendTails();
         var budget = self.drainBudget();
         try self.drainConnectionEvents(events, &budget);
         try self.drainDatagrams(events, &budget);
@@ -2886,7 +2923,7 @@ pub const Session = struct {
             else => return err,
         }).id;
         try self.writeStreamType(id, protocol.greaseValue(grease_stream_type_n));
-        try self.quic.streamFinish(id);
+        try self.finishQuicStream(id);
     }
 
     fn openQpackStreams(self: *Session) Error!void {
@@ -5173,6 +5210,7 @@ pub const Session = struct {
         // not change per chunk).
         try encoder.observeDataFrame();
 
+        try self.ensureNoSendTail(stream_id);
         try self.ensureStreamSendCapacity(stream_id, self.dataFramesEncodedLen(payload_len));
 
         const chunk_size = if (self.config.max_data_frame_payload == 0)
@@ -5472,20 +5510,119 @@ pub const Session = struct {
         try self.writeAll(stream_id, buf[0..n]);
     }
 
+    /// Hands `bytes` to quic in order and never returns with part of them
+    /// unsent: what quic does not take (its stream buffer or the
+    /// connection's memory budget is full) goes to the stream's send tail,
+    /// which `drain` writes first. So a frame written as a header and a
+    /// payload is never cut on the wire. Callers that START a frame on a
+    /// stream the application writes check `ensureNoSendTail` first; the
+    /// pieces of one frame then append to the tail behind each other.
     fn writeAll(self: *Session, stream_id: u64, bytes: []const u8) Error!void {
         try self.ensureStreamSendCapacity(stream_id, bytes.len);
+        if (bytes.len == 0) return;
 
+        if (self.send_tails.getPtr(stream_id)) |tail| {
+            if (tail.bytes.items.len > 0) {
+                try tail.bytes.appendSlice(self.allocator, bytes);
+                return;
+            }
+        }
         var rest = bytes;
         while (rest.len > 0) {
             const n = try self.quic.streamWrite(stream_id, rest);
-            if (n == 0) return Error.WriteStalled;
+            if (n == 0) break;
             rest = rest[n..];
         }
+        if (rest.len == 0) return;
+        const gop = try self.send_tails.getOrPut(self.allocator, stream_id);
+        if (!gop.found_existing) gop.value_ptr.* = .{};
+        try gop.value_ptr.bytes.appendSlice(self.allocator, rest);
     }
 
     fn ensureStreamSendCapacity(self: *const Session, stream_id: u64, additional_bytes: usize) Error!void {
-        if (try self.canBufferStreamBytes(stream_id, additional_bytes)) return;
+        if (try self.fitsStreamSendCap(stream_id, additional_bytes)) return;
         return Error.SendBufferFull;
+    }
+
+    /// The bytes of `stream_id` that wait in its send tail.
+    fn sendTailLen(self: *const Session, stream_id: u64) usize {
+        const tail = self.send_tails.getPtr(stream_id) orelse return 0;
+        return tail.bytes.items.len;
+    }
+
+    /// Before a new frame on a stream: hand its tail to quic; if part of
+    /// it still waits, refuse the frame whole (nothing written).
+    fn ensureNoSendTail(self: *Session, stream_id: u64) Error!void {
+        try self.flushSendTail(stream_id);
+        if (self.sendTailLen(stream_id) > 0) return Error.SendBufferFull;
+    }
+
+    /// Writes as much of the stream's tail as quic takes now; when the
+    /// tail is empty, sends the FIN it holds. A stream quic no longer
+    /// accepts writes on (reset, stopped, gone) drops its tail.
+    fn flushSendTail(self: *Session, stream_id: u64) Error!void {
+        const tail = self.send_tails.getPtr(stream_id) orelse return;
+        var written: usize = 0;
+        while (written < tail.bytes.items.len) {
+            const n = self.quic.streamWrite(stream_id, tail.bytes.items[written..]) catch |err| switch (err) {
+                error.OutOfMemory => return err,
+                else => {
+                    self.dropSendTail(stream_id);
+                    return;
+                },
+            };
+            if (n == 0) break;
+            written += n;
+        }
+        if (written > 0) tail.bytes.replaceRangeAssumeCapacity(0, written, &.{});
+        if (tail.bytes.items.len > 0) return;
+        const fin = tail.fin;
+        self.dropSendTail(stream_id);
+        if (fin) self.quic.streamFinish(stream_id) catch |err| switch (err) {
+            error.OutOfMemory => return err,
+            else => {},
+        };
+    }
+
+    /// `flushSendTail` for every stream with a tail (start of `drain`).
+    fn flushSendTails(self: *Session) Error!void {
+        if (self.send_tails.count() == 0) return;
+        var ids: [64]u64 = undefined;
+        var more = true;
+        while (more) {
+            var n: usize = 0;
+            var it = self.send_tails.keyIterator();
+            more = false;
+            while (it.next()) |id| {
+                if (n == ids.len) {
+                    more = true;
+                    break;
+                }
+                ids[n] = id.*;
+                n += 1;
+            }
+            const before = self.send_tails.count();
+            for (ids[0..n]) |id| try self.flushSendTail(id);
+            // Stop when a pass frees nothing: the rest waits for quic.
+            if (self.send_tails.count() == before) break;
+        }
+    }
+
+    fn dropSendTail(self: *Session, stream_id: u64) void {
+        const removed = self.send_tails.fetchRemove(stream_id) orelse return;
+        var tail = removed.value;
+        tail.bytes.deinit(self.allocator);
+    }
+
+    /// The FIN for `stream_id`: now, or after its send tail.
+    fn finishQuicStream(self: *Session, stream_id: u64) Error!void {
+        if (self.send_tails.getPtr(stream_id)) |tail| {
+            if (tail.bytes.items.len > 0) {
+                tail.fin = true;
+                return;
+            }
+        }
+        try self.quic.streamFinish(stream_id);
     }
 
     fn observeGoaway(self: *Session, id: u64) Error!void {

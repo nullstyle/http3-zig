@@ -147,6 +147,12 @@ order:
 6. Poll outgoing QUIC datagrams with `quic.poll` until it returns `null`, then
    send those bytes through your socket.
 
+`drain` also sends frame bytes that quic did not take on an earlier
+write (a full stream buffer or memory budget): Session keeps them in a
+per-stream send tail so a frame never goes out cut. Until the tail is
+sent, a new write on that stream returns `SendBufferFull` and
+`canWrite` is false; pump the connection and try again.
+
 Drain (step 2) before `tick` (step 5). `tick` runs quic's stream garbage
 collection. It can reap a stream whose last FIN (or RESET_STREAM)
 arrived in step 1 before HTTP/3 has read it. HTTP/3 then never sees the

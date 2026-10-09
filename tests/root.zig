@@ -21,6 +21,7 @@ test {
     _ = @import("integration/push.zig");
     _ = @import("integration/session_errors.zig");
     _ = @import("integration/budgets.zig");
+    _ = @import("integration/short_writes.zig");
     _ = @import("integration/lifecycle_streams.zig");
     _ = @import("integration/qpack_dynamic_posture.zig");
     _ = @import("integration/lifecycle_datagrams.zig");
