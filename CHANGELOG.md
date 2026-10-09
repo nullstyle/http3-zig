@@ -9,6 +9,15 @@ breaking changes; see notes per release.
 
 ## [Unreleased]
 
+## [0.5.7] - 2026-10-09
+
+Verified toolchain: zig 0.17.0, quic-zig v0.38.0, boringssl-zig 0.6.7.
+No API change. A short quic write no longer cuts an HTTP/3 frame (Session
+keeps the rest and sends it on the next drain), and quic-zig v0.38.0
+keeps the peer from closing a connection whose own writes filled the
+memory budget. The pair of capnp-zig v0.25.0: both pin quic v0.38.0
+with the coordinated option map.
+
 ### Fixed
 
 - **A short quic write no longer cuts an HTTP/3 frame.** Session writes
