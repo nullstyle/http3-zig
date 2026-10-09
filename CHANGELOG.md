@@ -9,6 +9,20 @@ breaking changes; see notes per release.
 
 ## [Unreleased]
 
+### Changed
+
+- **quic-zig v0.38.0** (no API change; the coordinated option map and
+  boringssl pin are unchanged). No http3-zig code change. Fixes a defect
+  in http3-zig 0.5.6 (quic since 0.33.0, found by capnp-zig): the
+  application's own writes could take the whole connection memory
+  budget, and the peer's next honest STREAM byte then closed the
+  connection for "excessive resource use". Now writes stop at the
+  writer's share (with the defaults, 16 MiB of resident bytes, not 32),
+  so a write may return short sooner; the receive side keeps its share.
+  A connection window announced above half of `max_connection_memory`
+  now starves the writer; http3-zig's tools announce at most 16 MiB (half
+  of the 32 MiB default).
+
 ## [0.5.6] - 2026-10-08
 
 Verified toolchain: zig 0.17.0, quic-zig v0.37.2, boringssl-zig 0.6.7.
