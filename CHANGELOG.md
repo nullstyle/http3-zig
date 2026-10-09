@@ -11,17 +11,17 @@ breaking changes; see notes per release.
 
 ## [0.5.6] - 2026-10-08
 
-Verified toolchain: zig 0.17.0, quic-zig v0.37.1, boringssl-zig 0.6.7.
-No API change. quic-zig v0.33.0 to v0.37.1: one stream reaches the
+Verified toolchain: zig 0.17.0, quic-zig v0.37.2, boringssl-zig 0.6.7.
+No API change. quic-zig v0.33.0 to v0.37.2: one stream reaches the
 path's rate on the defaults, about 2x goodput, fewer ACKs in bulk, idle
 connections hold about 22 KB, and probes to a silent peer carry stream
-data again. The pair of capnp-zig's first release on quic v0.37.1: both
+data again. The pair of capnp-zig's first release on quic v0.37.2: both
 pin it with the coordinated option map, so one program links both with
 one quic.
 
 ### Changed
 
-- **quic-zig v0.37.1** (v0.33.0 to v0.37.1 in one move; the
+- **quic-zig v0.37.2** (v0.33.0 to v0.37.2 in one move; the
   coordinated option map and boringssl pin are unchanged; nothing
   breaking for code that uses quic's `Client`/`Server`/`Connection`
   wrappers). No http3-zig code change.
@@ -33,6 +33,11 @@ one quic.
     (`Server.takeReady`/`tickDue`/`nextDeadline`) makes a loop pass
     cost O(active connections); a probe timeout to a silent peer
     carries stream data on every probe again (lost since quic 0.30.0).
+    v0.37.2 fixes a defect of v0.36.0 (found by capnp-zig): a connection
+    "at rest" skipped the tick that reclaims a finished stream, so the
+    stream and its id stayed until the next datagram (a sender of many
+    short streams could run out of ids). It also lets server
+    connections come to rest at all (they never did since 0.36.0).
     Raw-internals changes (`Connection.packetKeys`, `SendStream.bytes`)
     do not touch http3-zig.
   - v0.33.0, the line-rate release: one stream reaches the path's rate

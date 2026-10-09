@@ -8,8 +8,8 @@
         // tools/check-boringssl-pin.sh checks it. A different pin is a
         // different package, and the smoke test would prove nothing.
         .quic = .{
-            .url = "https://github.com/nullstyle/quic-zig/archive/refs/tags/v0.37.1.tar.gz",
-            .hash = "quic-0.37.1-DnSYvTlfPwChWkn-M8TGtX81DkFobQDQQat0GMff1YRe",
+            .url = "https://github.com/nullstyle/quic-zig/archive/refs/tags/v0.37.2.tar.gz",
+            .hash = "quic-0.37.2-DnSYvb2bPwDUgMMPDFV3tX0CgvsCbn2u2ed60n4tUtZ-",
         },
     },
     .paths = .{""},

@@ -4,7 +4,9 @@
     .fingerprint = 0x71cd45b0dc74266b,
     .minimum_zig_version = "0.17.0",
     .dependencies = .{
-        // quic — latest release. v0.37.1 (four engine sprints after
+        // quic — latest release. v0.37.2 (a stream whose halves ended is
+        // reclaimed at once even on a connection at rest; servers come to
+        // rest), v0.37.1 (four engine sprints after
         // v0.33.0: ~2x goodput, fewer ACKs in bulk, the ACK Frequency
         // extension, idle connections ~22 KB, a ready API for O(active)
         // loops; probes carry stream data again; same option map),
@@ -58,8 +60,8 @@
         // hashes. The tarball is the canonical pin form upstream
         // publishes — same convention as boringssl below.
         .quic = .{
-            .url = "https://github.com/nullstyle/quic-zig/archive/refs/tags/v0.37.1.tar.gz",
-            .hash = "quic-0.37.1-DnSYvTlfPwChWkn-M8TGtX81DkFobQDQQat0GMff1YRe",
+            .url = "https://github.com/nullstyle/quic-zig/archive/refs/tags/v0.37.2.tar.gz",
+            .hash = "quic-0.37.2-DnSYvb2bPwDUgMMPDFV3tX0CgvsCbn2u2ed60n4tUtZ-",
         },
         // build.zig does NOT use this entry: BoringSSL comes from quic's
         // exported `boringssl` module, so there is one BoringSSL by
@@ -69,7 +71,7 @@
         // quic's entry; remove it only together with quic-zig.
         //
         // Commit-SHA tarball rather than a tag: this is the boringssl-zig
-        // 0.6.7 package at ff30fe9, exactly the entry quic v0.37.1 pins.
+        // 0.6.7 package at ff30fe9, exactly the entry quic v0.37.2 pins.
         .boringssl = .{
             .url = "https://github.com/nullstyle/boringssl-zig/archive/ff30fe9953b07f838d7ac09ace84dacfb1e896ca.tar.gz",
             .hash = "boringssl-0.6.7-Vv5DN8RMAgDGST3F3NpoMjez8Z_J60megIom9Ru9XqD2",
